@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
@@ -51,13 +53,25 @@ const TESTS = Object.freeze([
 ]);
 
 function runAll() {
-  for (const file of TESTS) {
-    const result = spawnSync(process.execPath, [path.join(__dirname, file)], {
-      cwd: path.join(__dirname, '..'),
-      stdio: 'inherit',
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) process.exit(result.status || 1);
+  // 多个 suite 用 mkdtemp 在 os.tmpdir() 里造自己的沙箱（codex-watch、codex-rate-limits、
+  // metering、portable-runtime…），其中几个以 process.exit 结尾、根本没走到清理 ——
+  // 跑几次 /tmp 里就堆一片 workmeow-codex-* 之类的空壳（实测 20:41~21:54 那一轮留下 15 个）。
+  // 与其逐个 suite 补 try/finally，不如把整次运行的 TMPDIR 指到一个临时根里，跑完删根：
+  // 一处生效、覆盖以后的 suite，也不会碰用户真正的 /tmp。
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'workmeow-suite-'));
+  const env = { ...process.env, TMPDIR: tmpRoot, TMP: tmpRoot, TEMP: tmpRoot };
+  try {
+    for (const file of TESTS) {
+      const result = spawnSync(process.execPath, [path.join(__dirname, file)], {
+        cwd: path.join(__dirname, '..'),
+        stdio: 'inherit',
+        env,
+      });
+      if (result.error) throw result.error;
+      if (result.status !== 0) process.exit(result.status || 1);
+    }
+  } finally {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
   }
   console.log(`\nWorkMeow: ${TESTS.length} test suites passed`);
 }
