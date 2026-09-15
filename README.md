@@ -84,7 +84,7 @@ WorkMeow 只把处理后的副本保存在当前用户的 `~/.workmeow/pet-asset
 | Claude Code | `hook/workmeow-hook.js` 生命周期 hook、transcript、进程信息 | 合并安装/卸载 WorkMeow hook，不覆盖已有 hook | 支持 | ✅ 已实测 |
 | Codex | 增量读取本机 rollout JSONL；官方 App Server 订阅额度通知 | 不修改 Codex 配置、不读取凭据文件 | 只读提醒 | ➖ 未适配 |
 | TRAE | 读取本机 IDE 日志与进程信息 | 仅在检测到 TRAE 后合并安装 hook | 只读提醒 | ➖ 未适配 |
-| WorkBuddy | hook、transcript、用量与 credit 字段 | 仅在检测到 WorkBuddy 后合并安装 hook（含阻塞式 `PermissionRequest`） | 支持（授权 + 选择题） | ✅ 状态 + 用量 + 积分已实测 |
+| WorkBuddy | hook、transcript、用量与 credit 字段 | 仅在检测到 WorkBuddy 后合并安装 hook（含阻塞式 `PermissionRequest`） | 支持（授权 + 选择题） | ✅ 状态 + 用量 + 积分已实测；授权通道桌宠侧已实测 |
 | opencode | 官方插件机制、事件与用量文件 | 安装/卸载一个独立插件文件 | 只读提醒 | ➖ 未适配 |
 
 首次启动只接入当前用户已经使用过的工具，不会为未检测到的 Agent 凭空创建配置目录。Codex 始终只读，不安装 hook。

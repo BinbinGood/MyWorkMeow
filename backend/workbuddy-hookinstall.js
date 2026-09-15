@@ -17,17 +17,26 @@
 //     `{session_id, transcript_path, cwd, hook_event_name, tool_name, tool_input,
 //       tool_use_id, permission_suggestions}` POST 出去，再读回
 //     `hookSpecificOutput.decision`，只认 behavior 为 allow / deny 的决策。
-//   • 触发时机正好是「权限对话框要弹」那一刻（checkPermission 的 default 分支），
-//     所以不会劫持掉宿主本来的权限系统。
+//   • 触发点在 checkPermission → switch(behavior) 的 `default:` 分支
+//     → dispatchPermissionRequestHook()，也就是「权限对话框本来要弹」那一刻。
+//     拿到 allow 就 cachePreToolUseResult({allowed:true, modifiedInput: decision.updatedInput})；
+//     deny 就 cache {allowed:false, message}；**拿不到决策则原样往下走**，宿主自己弹框。
+//     所以它不会劫持掉宿主本来的权限系统，兜底也是安全的。
 //   • http 类型 hook 的**响应体**会被解析成 hook output（executeHttpHook 里
-//     `el.hookSpecificOutput = eA.hookSpecificOutput`），timeout 默认 60s、可用
-//     hook 上的 `timeout` 字段覆盖 —— 与 Claude Code 走的是同一套协议。
-// 官方文档也写了：`PreToolUse` / `PermissionRequest` 均可用 hooks 扩展权限
-// （cli/dist/web-ui/docs/cn/cli/permissions.md 「用 Hooks 扩展权限」）。
+//     `el.hookSpecificOutput = eA.hookSpecificOutput`），超时默认 60 秒、单位是秒、
+//     可用 hook 上的 `timeout` 字段覆盖 —— 与 Claude Code 走的是同一套协议。
+//
+// ⚠️ 注意：**官方文档没有列这个事件**。cli/dist/web-ui/docs/cn/cli/hooks.md 的事件表
+// 只有 PreToolUse / PostToolUse / Notification / UserPromptSubmit / Stop / SubagentStop /
+// PreCompact / SessionStart / SessionEnd；permissions.md 的「用 Hooks 扩展权限」一节
+// 只讲 PreToolUse。也就是说这是「内核实现里有、文档没写」的内部事件 —— 上面的证据
+// 全部来自读 codebuddy.js，因此**可能在 WorkBuddy 升级中被调整**。要换成有文档背书的
+// 方案只能走 PreToolUse（但那条在权限判断**之前**运行，语义不同，需重新设计兜底）。
 //
 // 结论：WorkBuddy 的授权请求与 AskUserQuestion 都能像 Claude Code 一样在喵上直接
 // 选，不需要用户切回 WorkBuddy 窗口。唯一的能力差是 `updatedPermissions`（「始终
-// 允许」落盘）它不认，所以那一排按钮对 WorkBuddy 不画 —— 见 main.js 的 onAdded。
+// 允许」落盘）它不认（allow 分支只读 updatedInput，全程没读 updatedPermissions），
+// 所以那一排按钮对 WorkBuddy 不画 —— 见 main.js 的 onAdded。
 //
 // 兜底：万一这份安装被 WorkBuddy 的敏感外传审查拦下、或 http 请求超时，hook 不返回
 // 决策，WorkBuddy 会照常弹自己的对话框 —— 即退化成今天的行为，不会更差。
