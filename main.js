@@ -51,6 +51,9 @@ const { createCodexRateLimits, unavailableState: unavailableCodexQuota } = requi
 const { estimateWeeklyQuota } = require('./backend/codex-quota-estimate');
 const codexQuotaTray = require('./backend/codex-quota-tray');
 const { createWorkbuddyMetering } = require('./backend/workbuddy-metering');
+const { readWorkbuddySession } = require('./backend/workbuddy-session');
+const macLoginItem = require('./backend/mac-login-item');
+const trayStatus = require('./backend/tray-status');
 const { createTraeMetering } = require('./backend/trae-metering');
 const { createOpenCodeMetering } = require('./backend/opencode-metering');
 const { emptyUsage, normalizeSourceRow, mergeUsageRows, mergeDaily } = require('./backend/usage-stats');
@@ -144,6 +147,7 @@ const primaryPetState = () => (petWin && !petWin.isDestroyed() ? petState.get(pe
 
 let lastStats = null;   // 全量快照（面板与桌宠共用）
 let statsTimer = null;
+let trayTimer = null;
 let emitDebounce = null;
 const recentOps = []; // ring for the panel "操作流"; newest first, capped
 const pendingQuotaAlerts = new Map();
@@ -958,6 +962,12 @@ function bootBackend() {
   // Periodic refresh so idle→sleeping transitions + cost updates reach the UI.
   statsTimer = setInterval(emitStats, 4000);
   if (statsTimer.unref) statsTimer.unref();
+
+  // 托盘顶部现在是各数据源的今日用量，得跟着台账走。单独一个低频定时器，
+  // 不复用 4s 的 emitStats —— 重建一次原生菜单比发一次 IPC 贵得多，而且菜单
+  // 正被打开时频繁重建没有意义。
+  trayTimer = setInterval(refreshTrayMenu, 20000);
+  if (trayTimer.unref) trayTimer.unref();
 }
 
 // minimal entry shape for adapter.projectName()
@@ -1276,12 +1286,59 @@ function autoLaunchSettings(enabled, name = BRAND.appId) {
 }
 
 function autoLaunchSupported() {
+  if (process.platform === 'darwin') return true;
   return process.platform === 'win32'
     && typeof app.getLoginItemSettings === 'function'
     && typeof app.setLoginItemSettings === 'function';
 }
 
+// ── macOS ─────────────────────────────────────────────────────────────────────
+// Electron 的 setLoginItemSettings 在 macOS 上只注册当前 app bundle 本体：
+// `path` / `args` 两个字段在官方类型定义里标注为 win32 only，开发态用它只会把
+// 「Electron.app」本身登记成登录项，开机拉起一个不带参数的 Electron，本项目代码
+// 不会加载。所以只有打包成 .app 才走原生登录项，开发态交给
+// backend/mac-login-item.js 写 LaunchAgent（ProgramArguments 里写死可执行文件 +
+// 项目路径）。两条路的「已开启」判据不同，必须成套切换，不能只切一边。
+function macAutoLaunchNative() {
+  return process.platform === 'darwin' && app.isPackaged === true
+    && typeof app.getLoginItemSettings === 'function'
+    && typeof app.setLoginItemSettings === 'function';
+}
+
+function macAutoLaunchArgs() {
+  // 打包态启动的是 app 本体，不需要额外参数；开发态要把项目路径传给 Electron。
+  return app.isPackaged ? [] : [app.getAppPath()];
+}
+
+function macAutoLaunchStatus() {
+  if (macAutoLaunchNative()) {
+    try {
+      const settings = app.getLoginItemSettings();
+      // macOS 13+ 会把新登记的登录项挂成「待批准」，用户要去系统设置里放行，
+      // 此时 openAtLogin 已经是 true 但实际不会生效，必须单独报出来。
+      return {
+        supported: true,
+        enabled: !!settings.openAtLogin,
+        stale: false,
+        error: settings.status === 'requires-approval' ? 'requires-approval' : null,
+      };
+    } catch {
+      return { supported: true, enabled: false, stale: false, error: 'read' };
+    }
+  }
+  try {
+    return macLoginItem.readStatus({
+      appId: BRAND.appId,
+      execPath: process.execPath,
+      args: macAutoLaunchArgs(),
+    });
+  } catch {
+    return { supported: true, enabled: false, stale: false, error: 'read' };
+  }
+}
+
 function getAutoLaunchStatus() {
+  if (process.platform === 'darwin') return macAutoLaunchStatus();
   if (!autoLaunchSupported()) return { supported: false, enabled: false, error: null };
   try {
     const settings = app.getLoginItemSettings(autoLaunchMatchOptions());
@@ -1299,6 +1356,32 @@ function getAutoLaunchStatus() {
 
 function setAutoLaunch(enabled) {
   const desired = !!enabled;
+  if (process.platform === 'darwin') {
+    if (macAutoLaunchNative()) {
+      try {
+        app.setLoginItemSettings({ openAtLogin: desired });
+      } catch {
+        return { ...getAutoLaunchStatus(), ok: false, error: 'write' };
+      }
+      const status = getAutoLaunchStatus();
+      refreshTrayMenu();
+      // 「待批准」不算成功：登记写进去了，但用户没放行前不会真的自启。
+      return { ...status, ok: !status.error && status.enabled === desired };
+    }
+    try {
+      const result = desired
+        ? macLoginItem.enable({
+          appId: BRAND.appId,
+          execPath: process.execPath,
+          args: macAutoLaunchArgs(),
+        })
+        : macLoginItem.disable({ appId: BRAND.appId });
+      refreshTrayMenu();
+      return { ...result, ok: !result.error && result.enabled === desired };
+    } catch {
+      return { ...getAutoLaunchStatus(), ok: false, error: 'write' };
+    }
+  }
   if (!autoLaunchSupported()) return { supported: false, enabled: false, ok: false, error: 'unsupported' };
   try {
     app.setLoginItemSettings(autoLaunchSettings(desired));
@@ -1363,14 +1446,55 @@ function quotaStatusLabel(quota) {
   return t('tray.quotaStatusUnavailable');
 }
 
-function refreshTrayMenu() {
-  if (!tray) return;
-  const privacyMode = config.get().privacyMode === true;
-  const quota = codexQuotaTray.displayRows(codexQuotaState);
-  const baseTooltip = t(privacyMode ? 'tray.tooltipPrivate' : 'tray.tooltip');
-  tray.setToolTip(baseTooltip);
-  const petVisible = !!(mergedWin && !mergedWin.isDestroyed() && mergedWin.isVisible());
-  const items = [
+// 缓存「哪些工具被检测到」，但**不**缓存用量数字 —— 用量是内存里的现成结果，
+// 取一次几乎零成本，而集成检测要读若干配置文件。托盘的刷新触发点包含 Codex
+// 额度的每次状态变化，没必要每次都去摸一遍磁盘。
+const DETECTED_TTL_MS = 15000;
+let detectedCache = { at: 0, ids: new Set() };
+
+function detectedSourceIds() {
+  const now = Date.now();
+  if (now - detectedCache.at < DETECTED_TTL_MS) return detectedCache.ids;
+  try {
+    const ids = new Set(
+      currentIntegrationHealth().integrations.filter((row) => row.detected).map((row) => row.id),
+    );
+    detectedCache = { at: now, ids };
+    return ids;
+  } catch {
+    return detectedCache.ids;
+  }
+}
+
+// 每个数据源一行分组。只有「已接入且真跑过」的才会出现在托盘里（过滤逻辑在
+// backend/tray-status.js），Codex 额度块也只在检测到 Codex 时附加。
+function traySourceRows() {
+  const meters = meterStats();
+  const detected = detectedSourceIds();
+  const session = readWorkbuddySession();
+  return withSourceValues(meters).map(({ id, label, value }) => {
+    const today = (value && value.today) || {};
+    const lifetime = (value && value.lifetime) || {};
+    return {
+      id,
+      label,
+      detected: detected.has(id),
+      tokens: today.tokens,
+      msgs: today.msgs ?? today.messages,
+      cost: today.cost,
+      credit: today.credit,
+      lifetimeTokens: lifetime.tokens,
+      lifetimeCredit: lifetime.credit,
+      // 上下文水位只有 WorkBuddy 有独立数据源（只读 db，缺表/锁库时返回 null）。
+      context: id === 'workbuddy' ? session : null,
+    };
+  });
+}
+
+// Codex 额度块。以前它是托盘菜单的固定开头，现在只在「机器上确实装了 Codex
+// 且额度可用」时才作为额外分组附上 —— 菜单不再预设用户接的是哪一个 agent。
+function codexQuotaRows(quota) {
+  return [
     { label: t('tray.quotaTitle', { account: quota.account }), enabled: false },
     { type: 'separator' },
     { label: t('tray.quotaWindow', quota.fiveHour), enabled: false },
@@ -1380,6 +1504,24 @@ function refreshTrayMenu() {
     ...(quota.status === 'ready' ? [] : [
       { label: t('tray.quotaStatus', { status: quotaStatusLabel(quota) }), enabled: false },
     ]),
+  ];
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  const privacyMode = config.get().privacyMode === true;
+  const baseTooltip = t(privacyMode ? 'tray.tooltipPrivate' : 'tray.tooltip');
+  tray.setToolTip(baseTooltip);
+  const petVisible = !!(mergedWin && !mergedWin.isDestroyed() && mergedWin.isVisible());
+  const codexReady = codexDetected() && codexQuotaState.status === 'ready';
+  const statusRows = trayStatus.buildStatusRows({
+    sources: traySourceRows(),
+    codexRows: codexReady ? codexQuotaRows(codexQuotaTray.displayRows(codexQuotaState)) : [],
+    codexReady,
+    t,
+  });
+  const items = [
+    ...statusRows,
     { type: 'separator' },
     { label: t('tray.panel'), click: () => openPanel() },
     { label: petVisible ? t('tray.hidePet') : t('tray.showPet'), click: () => (petVisible ? hidePet() : showPet()) },

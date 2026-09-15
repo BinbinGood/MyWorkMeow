@@ -221,6 +221,62 @@ async function main() {
   // 幂等：再扫一次不能翻倍
   await real.scan();
   assert(real.getStats().today.tokens === 39623, `re-scan of real-shaped rows stays idempotent (got ${real.getStats().today.tokens})`);
+
+  // ── 积分（providerData.rawUsage.credit）──────────────────────────────────
+  // WorkBuddy 客户端里的「积分」就是 usage.cost.amount，内核按 requestId 累加进
+  // session_usage.credit_json；转录侧同名字段挂在 providerData.rawUsage 上。
+  // 它必须随 daily / byModel / lifetime 一起聚合，且不能从 message.usage 里再读一次。
+  m._processObject({}, jsonl, {
+    type: 'function_call', timestamp: todayTs(11), providerData: {
+      model: 'gpt-4o', messageId: 'credit-m1',
+      usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 },
+      rawUsage: { total_tokens: 110, credit: 4.17 },
+    },
+  });
+  const withCredit = m.getStats();
+  assert(Math.abs(withCredit.today.credit - 4.17) < 1e-9, `credit aggregated into today (got ${withCredit.today.credit})`);
+  assert(Math.abs(withCredit.byModel['gpt-4o'].credit - 4.17) < 1e-9,
+    `credit aggregated per model (got ${withCredit.byModel['gpt-4o'].credit})`);
+  assert(Math.abs(withCredit.lifetime.credit - 4.17) < 1e-9, 'credit aggregated into lifetime');
+
+  // 同一 messageId 再次落盘只补增量 —— 与 token 的流式语义、以及内核
+  // credit_json 的「同 requestId 累加」一致。真实转录里 messageId 全是唯一的，
+  // 这条只是保证万一重复落盘不会翻倍（简单相加会得到 13.74）。
+  m._processObject({}, jsonl, {
+    type: 'function_call', timestamp: todayTs(11), providerData: {
+      model: 'gpt-4o', messageId: 'credit-m1',
+      usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 },
+      rawUsage: { total_tokens: 110, credit: 9.57 },
+    },
+  });
+  assert(Math.abs(m.getStats().today.credit - 9.57) < 1e-9,
+    `a repeated messageId contributes only the credit delta (got ${m.getStats().today.credit})`);
+  assert(m.getStats().today.msgs === withCredit.today.msgs, 'credit-only update does not add a round');
+
+  // 负数一律按 0 处理，不能把台账拉低
+  m._processObject({}, jsonl, {
+    type: 'function_call', timestamp: todayTs(11), providerData: {
+      model: 'gpt-4o', messageId: 'credit-bad',
+      usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 },
+      rawUsage: { total_tokens: 11, credit: -5 },
+    },
+  });
+  assert(Math.abs(m.getStats().today.credit - 9.57) < 1e-9, 'negative credit is clamped to 0');
+
+  // v7 台账没有 credit 字段：必须被丢弃重扫，否则历史积分永远是空的。
+  await fsp.writeFile(path.join(realBase, 'workbuddy-usage.json'), JSON.stringify({
+    schemaVersion: 7,
+    daily: { [todayKey]: { tokens: 999999, msgs: 99, credit: 0 } },
+  }), 'utf8');
+  const upgraded = createWorkbuddyMetering({
+    projectsDir: path.join(realBase, 'projects'),
+    stateDir: realBase,
+    pricingCachePath: path.join(realBase, 'absent-cache.json'),
+    pricingOverridePath: path.join(realBase, 'absent-override.json'),
+  });
+  await upgraded.scan();
+  assert(upgraded.getStats().today.tokens === 39623,
+    `a v7 ledger is discarded and rescanned (got ${upgraded.getStats().today.tokens})`);
   await fsp.rm(realBase, { recursive: true, force: true });
 
   // cleanup

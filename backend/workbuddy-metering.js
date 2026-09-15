@@ -19,6 +19,20 @@
 // 因此这里按「字段是否存在」识别用量行，而不是按 role/type 判断：旧实现要求
 // role/type === "assistant"，在 WorkBuddy 上永远匹配不到，用量恒为 0。
 //
+// 积分（credit）：
+// 同一行还带 `providerData.rawUsage.credit`，就是 WorkBuddy 客户端里显示的「积分」
+// 消耗。语义来自内核源码
+// packages/workbuddy-core/src/conversations/node/persistence/
+// sqlite-conversation-usage-port.ts —— 它把 `usage.cost.amount` 按 requestId 累加
+// 进 session_usage.credit_json。本机实测：1429 行有正值，且这些行**全部**同时带
+// providerData.usage / rawUsage.total_tokens，所以 credit 是现有用量行的子集，
+// 不需要新增任何行选择逻辑，也不会引入「只有 credit 没有 token」的行。
+// 与 USD 等价费用不同，积分是厂商自己的计价单位，不做任何换算、不加价目表。
+//
+// 两侧口径核对过（2026-09-15 本机）：转录侧加总 1728.7，DB 的 credit_json 加总
+// 1692.5，差额来自被软删除的会话（DB 只留未删除会话）与个别没落转录的请求。
+// 选用转录侧是因为它带时间戳，才能落进「今日」口径。
+//
 // Pricing policy (per product decision): use the EXACT prices found in the
 // models.dev price source — if a model has a price there, use it; if not, do NOT
 // estimate, just report tokens (cost 0). The source cache carries explicitly
@@ -44,7 +58,12 @@ const PRICING_OVERRIDE_PATH = path.join(STATE_DIR, 'workbuddy-pricing.json'); //
 // v6: numeric Unix timestamps were previously passed to Date.parse(), which
 // failed and assigned every historical row to the scan day. Force one clean
 // rescan so already-persisted "today" buckets are repaired automatically.
-const SCHEMA_VERSION = 6;
+// v7: 用量行识别从 role/type === "assistant" 改为按字段识别。WorkBuddy 的转录行
+// 是 function_call / message，旧条件永远匹配不到。此前那次提交的说明写了「升到
+// 7」，但代码实际没改到（仍是 6），所以这一版一并补上。
+// v8: usage 形状新增 credit（积分）字段，并随 daily / byModelByDay / lifetime 一起
+// 聚合。旧台账里没有这个字段，必须重扫，否则历史积分永远是空的。
+const SCHEMA_VERSION = 8;
 const DAILY_KEEP_DAYS = 95;
 const BACKFILL_MS = DAILY_KEEP_DAYS * 24 * 60 * 60 * 1000;
 
@@ -138,7 +157,12 @@ function usageCost(usage, price) {
 }
 
 function emptyUsage() {
-  return { tokens: 0, input: 0, output: 0, cachedInput: 0, reasoningOutput: 0, cacheWrite: 0, cost: 0 };
+  // credit 与 cost 是两种互不相干的计价：cost 是按 models.dev 价目算出的美元等价
+  // 估算，credit 是 WorkBuddy 自己的积分消耗。两者都可能有值，也可能只有一个。
+  return {
+    tokens: 0, input: 0, output: 0, cachedInput: 0, reasoningOutput: 0,
+    cacheWrite: 0, cost: 0, credit: 0,
+  };
 }
 
 // Map WorkBuddy's usage onto the normalized token shape. Two shapes exist in
@@ -150,7 +174,10 @@ function emptyUsage() {
 // 缓存写入部分；cachedInput 只表示缓存「读取」、cacheWrite 只表示缓存「写入」。
 // 此前 Anthropic 形状把 cache_creation 当 cachedInput 返回（写入价按读取价计），
 // 且 cacheWrite 虽统计却从未参与计费，两个 bug 一起修掉。
-function normalizeUsage(raw) {
+// credit 是额外的入参而不是从 raw 里读：它挂在 providerData.rawUsage 上，与
+// usage 是两个不同的对象，混在一起读会让这个函数的输入形状变得含糊。
+// num() 对负数返回 0，所以异常负 credit 不会把台账拉低。
+function normalizeUsage(raw, credit = 0) {
   const u = raw && typeof raw === 'object' ? raw : {};
   const isAnthropicShape = u.inputTokens == null && u.input_tokens != null;
   const baseInput = num(u.inputTokens ?? u.input_tokens);
@@ -175,6 +202,7 @@ function normalizeUsage(raw) {
   return {
     tokens: total || input + output,
     input, output, cachedInput, reasoningOutput, cacheWrite, cost: 0,
+    credit: num(credit),
   };
 }
 
@@ -291,7 +319,9 @@ function createWorkbuddyMetering(options = {}) {
   }
 
   function record(ts, model, usage, messageId) {
-    if (!['input', 'output', 'cachedInput', 'reasoningOutput', 'cacheWrite']
+    // credit 也参与「这行有没有内容」的判断：理论上存在只有积分、没有 token 的
+    // 记录（虽然本机实测没有），此时丢掉积分比多记一个 msgs 更可惜。
+    if (!['input', 'output', 'cachedInput', 'reasoningOutput', 'cacheWrite', 'credit']
       .some((field) => num(usage && usage[field]) > 0)) return;
     const key = messageId || `${model}@${ts}`;
     const prev = state.messages[key];
@@ -337,8 +367,10 @@ function createWorkbuddyMetering(options = {}) {
     // details); fall back to message.usage (Anthropic shape) only if absent.
     const usageRaw = pd.usage || (o.message && o.message.usage);
     if (!usageRaw || typeof usageRaw !== 'object') return;
-    const normalized = normalizeUsage(usageRaw);
-    if (normalized.tokens <= 0) return;
+    // 积分是 providerData 上的兄弟字段，不在 usage 里面（形状见文件头注释）。
+    const rawUsage = pd.rawUsage && typeof pd.rawUsage === 'object' ? pd.rawUsage : null;
+    const normalized = normalizeUsage(usageRaw, rawUsage ? rawUsage.credit : 0);
+    if (normalized.tokens <= 0 && normalized.credit <= 0) return;
     const model = pd.model || (o.message && o.message.model) || o.model || 'unknown';
     const messageId = pd.messageId || o.id || `${o.requestId || ''}:${o.timestamp || ''}`;
     const ts = parseTimestamp(o.timestamp);

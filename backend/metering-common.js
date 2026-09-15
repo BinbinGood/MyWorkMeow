@@ -40,10 +40,12 @@ function parseTimestamp(value, fallback = Date.now()) {
 // never turn a source outage/partial transcript into a lower all-time total.
 // These are the usage fields shared by the provider ledgers (unknown fields
 // are intentionally ignored so old state files remain forward-compatible).
+// `credit` is WorkBuddy's vendor-side point counter — same monotonic reasoning
+// as the token fields (only WorkBuddy ledgers carry it; others stay unaffected).
 const MONOTONIC_USAGE_FIELDS = Object.freeze([
   'tokens', 'input', 'output', 'inputTotal', 'cachedInput', 'cacheRead', 'cacheWrite',
   'cacheWrite5m', 'cacheWrite1h', 'cacheCreate', 'reasoningOutput', 'msgs',
-  'messages',
+  'messages', 'credit',
 ]);
 
 function mergeUsageMax(previous, current) {

@@ -111,12 +111,27 @@ function renderStatus(messageKey = null, kind = '') {
   statusEl.textContent = messageKey ? t(messageKey) : t(enabled ? 'settings.enabled' : 'settings.disabled');
 }
 
+// error 里有两个「开关本身没问题、但当前不会生效」的语义，必须各自给提示，
+// 不能一律落到「保存失败」：
+//   requires-approval → macOS 13+ 已登记但等用户在系统设置里放行
+//   stale             → 记录的路径变了（项目挪位/重装依赖），重新开关一次即可
+function autoLaunchMessage(result) {
+  const error = result && result.error ? String(result.error) : '';
+  if (error === 'requires-approval') return { key: 'settings.autoLaunchApproval', kind: 'unsupported' };
+  if (error === 'stale') return { key: 'settings.autoLaunchStale', kind: 'unsupported' };
+  if (error) return { key: 'settings.failed', kind: 'error' };
+  return null;
+}
+
 function applyState(result, messageKey = null, kind = '') {
   supported = result && result.supported !== false;
   enabled = !!(result && result.enabled);
+  const derived = autoLaunchMessage(result);
   const hasError = !!(result && result.error);
-  renderStatus(messageKey || (hasError ? 'settings.failed' : supported ? null : 'settings.unsupported'),
-    kind || (hasError ? 'error' : supported ? '' : 'unsupported'));
+  renderStatus(
+    messageKey || (derived ? derived.key : hasError ? 'settings.failed' : supported ? null : 'settings.unsupported'),
+    kind || (derived ? derived.kind : hasError ? 'error' : supported ? '' : 'unsupported'),
+  );
 }
 
 async function loadSettings() {
@@ -130,8 +145,10 @@ async function toggleAutoLaunch() {
   renderStatus('settings.saving');
   try {
     const result = await window.pet.setAutoLaunch(!enabled);
+    // 不在这里硬编码失败文案：requires-approval / stale 都需要各自的提示，
+    // 交给 applyState 按 error 归类（见 autoLaunchMessage）。
     if (result && result.ok) applyState(result, 'settings.saved');
-    else applyState(result, 'settings.failed', 'error');
+    else applyState(result);
   } catch { renderStatus('settings.failed', 'error'); }
   finally { busy = false; toggle.disabled = !supported; }
 }
