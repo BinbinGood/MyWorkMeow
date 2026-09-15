@@ -19,10 +19,10 @@
 > [!IMPORTANT]
 > **This is a macOS port of [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow), maintained independently in this repository.**
 >
-> The upstream project supports Windows x64 only. This fork makes it run on macOS, scoped to **status monitoring for Claude Code and WorkBuddy**:
+> The upstream project supports Windows x64 only. This fork makes it run on macOS, scoped to **status monitoring and token metering for Claude Code and WorkBuddy**:
 >
 > - ✅ Claude Code monitoring works on macOS from source (EPT CLI, the VS Code extension, cc-connect and friends all read the same `~/.claude/settings.json`, so one hook install covers every client)
-> - ⚠️ WorkBuddy goes through the same installer path and is covered by unit tests, but `~/.workbuddy/` does not exist on this machine, so it is **not verified end to end**
+> - ✅ WorkBuddy is verified on macOS: the hook contract matches the agent kernel field by field (5/5 events delivered in an offline harness) and the usage fields are readable (248M tokens over 2563 rounds on this machine)
 > - ➖ Codex / TRAE / opencode are untouched — no macOS adaptation
 > - ➖ No packaging, auto-update, or SSH remote monitoring; run from source on macOS
 >
@@ -81,7 +81,7 @@ WorkMeow stores only a processed copy under `~/.workmeow/pet-assets` for the cur
 | Claude Code | Lifecycle hooks, transcript, and process data | Merge-safe WorkMeow hook install/uninstall | Supported | ✅ Verified |
 | Codex | Incremental local rollout JSONL reader; official App Server quota notifications | Does not modify Codex configuration or read credential files | Read-only alerts | ➖ Not ported |
 | TRAE | Local IDE logs and process data | Installs a merge-safe hook only when TRAE is detected | Read-only alerts | ➖ Not ported |
-| WorkBuddy | Hooks, transcripts, and usage fields | Installs a merge-safe hook only when WorkBuddy is detected | Read-only alerts | ⚠️ Code ready, unverified |
+| WorkBuddy | Hooks, transcripts, and usage fields | Installs a merge-safe hook only when WorkBuddy is detected | Read-only alerts | ✅ Status + usage verified |
 | opencode | Official plugin mechanism, events, and usage file | Installs/removes one standalone plugin file | Read-only alerts | ➖ Not ported |
 
 On first launch, WorkMeow only integrates with tools already used by the current account. It does not create configuration folders for undetected agents. Codex is always read-only and requires no hook.
@@ -101,7 +101,21 @@ npm start          # detaches from the terminal — the pet survives closing it
 
 `npm start` returns immediately. To stop the pet: quit from the menu-bar cat icon, or `pkill -f "MyWorkMeow/node_modules/electron"`.
 
-Once running, open Settings and hit the integration self-check / repair to install the hook into `~/.claude/settings.json` (**merged in — your existing hooks are left alone**).
+Once running, open Settings and hit the integration self-check / repair to install the hook into `~/.claude/settings.json` and `~/.workbuddy/settings.json` (**merged in — your existing hooks are left alone**).
+
+### Verified on macOS (2026-09-15)
+
+| Path | Status | Evidence |
+| --- | --- | --- |
+| Status tracking | ✅ works | WorkBuddy's hook engine lives in the agent kernel (`app.asar.unpacked/cli/dist/codebuddy.js`), not in the Electron shell. All 15 events this fork subscribes to are supported, and every payload field (`session_id`, `transcript_path`, `cwd`, `tool_name`, `prompt`, `notification_type`, `stop_hook_active`) matches. Driven offline with a stub server and real payloads: 5/5 events delivered, state mapping correct. |
+| Token usage | ✅ works | WorkBuddy transcript rows are `type:"function_call"` / `type:"message"` — there is **no** `role:"assistant"` row. Usage lives in `providerData.usage` (`inputTokens`, `outputTokens`, `totalTokens`, `inputTokensDetails.cached_tokens`, `outputTokensDetails.reasoning_tokens`). After fixing row detection: 248M tokens / 2563 rounds across 27 sessions on this machine. |
+
+Two macOS environment traps that look like broken code (both handled in code here):
+
+1. **Inherited `ELECTRON_RUN_AS_NODE=1`** — the WorkBuddy / Claude Code CLIs run the Electron kernel as Node, so every child process inherits the variable and Electron silently degrades to plain Node (`require('electron')` returns a path string, `app` is undefined), crashing on startup. `backend/electron-bootstrap.js` detects this before Electron loads and relaunches with a clean environment; `start-detached.js` strips the variable as well.
+2. **Sandboxed `rename` returns EPERM** — under an inherited sandbox profile the tmp+rename atomic write into `~/.workmeow/` is refused. `hook-runtime` now degrades to an overwrite, and hook installation is wrapped so a failure only costs state tracking instead of crashing the pet.
+
+Note that point 2 cannot be disproved with a plain `mv` in a shell: an interactive shell runs through the authorization channel while the GUI child inherits the restricted profile, so the two can legitimately disagree.
 
 ### Windows
 
@@ -151,17 +165,11 @@ The main process owns watcher lifecycles, the tray, and windows. The backend sta
 
 ## Origin and licensing
 
-This repository is a **three-layer derivative**, credited in full:
-
-```
-myunwang/LLMPET               original project
-  └─ vista-zhangg/WorkMeow       reworked into multi-agent monitoring + Windows desktop UX
-       └─ BinbinGood/MyWorkMeow     ← this repository: macOS port
-```
+This repository is built on [LLMPET](https://github.com/myunwang/LLMPET), reworked through [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) — a **three-layer derivative**, credited in full:
 
 - **Original project**: [LLMPET](https://github.com/myunwang/LLMPET)
-- **Direct upstream**: [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) v1.7.6 — built on LLMPET with multi-agent integrations, unified usage reporting, Windows desktop behavior, and project structure. The vast majority of the code here comes from upstream.
-- **What this fork adds**: the macOS port (hook command generation, process-chain resolution, Dock/icon handling, ask-dialog style fixes), scoped to Claude Code + WorkBuddy status monitoring. See the initial commit message for details.
+- **Direct upstream**: [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) v1.7.6 — extends the original project with multi-agent integrations, unified usage reporting, Windows desktop behavior, and project structure. The vast majority of the code here comes from upstream.
+- **What this fork adds**: the macOS port (hook command generation, process-chain resolution, Dock/icon handling, ask-dialog style fixes, Electron startup self-healing, sandbox-tolerant atomic writes), scoped to Claude Code + WorkBuddy status monitoring and token metering, plus the WorkBuddy usage-row detection fix. See the initial commit message and later commits for details.
 
 Upstream is kept as the `upstream` remote, so you can diff or pull at any time:
 

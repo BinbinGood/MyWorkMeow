@@ -19,10 +19,10 @@
 > [!IMPORTANT]
 > **这是 [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) 的 macOS 移植分支，在本仓库独立维护。**
 >
-> 上游原项目仅支持 Windows x64。本分支让它能在 macOS 上运行，范围限定为 **Claude Code 与 WorkBuddy 的状态监控**：
+> 上游原项目仅支持 Windows x64。本分支让它能在 macOS 上运行，范围限定为 **Claude Code 与 WorkBuddy 的状态监控与用量统计**：
 >
 > - ✅ macOS 上跑源码即可监控 Claude Code（EPT CLI、VS Code 扩展、cc-connect 等客户端都走同一份 `~/.claude/settings.json`，装一次 hook 全覆盖）
-> - ⚠️ WorkBuddy 的改动走同一套安装通路、单测已覆盖，但本机无 `~/.workbuddy/`，**未做端到端实测**
+> - ✅ WorkBuddy 已在本机做完实测：hook 契约与内核逐字段对齐（离线驱动 5/5 事件全通），用量字段也确实可读（本机实测今日 2152 万 token、累计 2.48 亿）
 > - ➖ Codex / TRAE / opencode 未做 mac 适配，代码保持上游原样
 > - ➖ 打包发版、自动更新、SSH 远程监控均未做；mac 上请用源码启动
 >
@@ -83,7 +83,7 @@ WorkMeow 只把处理后的副本保存在当前用户的 `~/.workmeow/pet-asset
 | Claude Code | `hook/workmeow-hook.js` 生命周期 hook、transcript、进程信息 | 合并安装/卸载 WorkMeow hook，不覆盖已有 hook | 支持 | ✅ 已实测 |
 | Codex | 增量读取本机 rollout JSONL；官方 App Server 订阅额度通知 | 不修改 Codex 配置、不读取凭据文件 | 只读提醒 | ➖ 未适配 |
 | TRAE | 读取本机 IDE 日志与进程信息 | 仅在检测到 TRAE 后合并安装 hook | 只读提醒 | ➖ 未适配 |
-| WorkBuddy | hook、transcript 与用量字段 | 仅在检测到 WorkBuddy 后合并安装 hook | 只读提醒 | ⚠️ 代码就绪，未实测 |
+| WorkBuddy | hook、transcript 与用量字段 | 仅在检测到 WorkBuddy 后合并安装 hook | 只读提醒 | ✅ 状态 + 用量已实测 |
 | opencode | 官方插件机制、事件与用量文件 | 安装/卸载一个独立插件文件 | 只读提醒 | ➖ 未适配 |
 
 首次启动只接入当前用户已经使用过的工具，不会为未检测到的 Agent 凭空创建配置目录。Codex 始终只读，不安装 hook。
@@ -153,17 +153,11 @@ Codex App Server ───────> 托盘右键菜单（5h / 7d）+ 临界�
 
 ## 项目来源与许可证
 
-本仓库是**三层衍生**关系，逐层署明：
-
-```
-myunwang/LLMPET          原始项目
-  └─ vista-zhangg/WorkMeow    重构为多 Agent 监控 + Windows 桌面交互
-       └─ BinbinGood/MyWorkMeow   ← 本仓库：macOS 移植
-```
+本仓库基于 [LLMPET](https://github.com/myunwang/LLMPET) 二次开发（经 [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) 重构），是**三层衍生**关系，逐层署明：
 
 - **原始项目**：[LLMPET](https://github.com/myunwang/LLMPET)
-- **直接上游**：[vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) v1.7.6 —— 在 LLMPET 基础上扩展了多 Agent 接入、用量统计、Windows 桌面交互与工程结构。本仓库的绝大部分代码来自这里。
-- **本仓库的改动**：macOS 移植（hook 命令生成、进程链解析、Dock/图标、弹窗样式修复），范围限定为 Claude Code + WorkBuddy 的状态监控。详见初始提交说明。
+- **直接上游**：[vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) v1.7.6 —— 在原始项目基础上扩展了多 Agent 接入、用量统计、Windows 桌面交互与工程结构。本仓库的绝大部分代码来自这里。
+- **本仓库的改动**：macOS 移植（hook 命令生成、进程链解析、Dock/图标、弹窗样式修复、Electron 启动环境自愈、沙箱下的原子写降级），范围限定为 Claude Code + WorkBuddy 的状态监控与用量统计，并补上 WorkBuddy 用量行的识别修复。详见初始提交说明与后续提交。
 
 上游仓库保留为 `upstream` 远端，可随时对比或拉取更新：
 
