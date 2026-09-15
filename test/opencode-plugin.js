@@ -47,8 +47,14 @@ async function main() {
   const token = 'a'.repeat(64);
 
   // ── plugin under test (imported after USERPROFILE redirect) ─────────────
+  // Windows redirects the home directory through USERPROFILE, POSIX through
+  // HOME — both must point at the temp home. Setting only USERPROFILE silently
+  // left os.homedir() at the real user home on macOS, so the plugin never found
+  // the temp runtime.json and never sent a single /state POST.
   const oldProfile = process.env.USERPROFILE;
+  const oldHome = process.env.HOME;
   process.env.USERPROFILE = home;
+  process.env.HOME = home;
   fs.writeFileSync(path.join(home, '.workmeow', 'runtime.json'),
     JSON.stringify({ app: 'workmeow', port, token }));
   const tmpPlugin = path.join(root, 'opencode-plugin.mjs');
@@ -172,6 +178,7 @@ async function main() {
   // ── installer (fresh require with another redirected home) ───────────────
   const home2 = path.join(root, 'home2');
   process.env.USERPROFILE = home2;
+  process.env.HOME = home2;
   const installer = require('../backend/opencode-install');
   let res = installer.registerHooks();
   assert.strictEqual(res.added, 1);
@@ -189,6 +196,9 @@ async function main() {
   assert.strictEqual(installer.unregisterHooks({ backup: true }).removed, 0, 'second uninstall is a no-op');
 
   if (oldProfile !== undefined) process.env.USERPROFILE = oldProfile;
+  else delete process.env.USERPROFILE;
+  if (oldHome !== undefined) process.env.HOME = oldHome;
+  else delete process.env.HOME;
   fs.rmSync(root, { recursive: true, force: true });
   console.log('opencode plugin checks passed');
 }

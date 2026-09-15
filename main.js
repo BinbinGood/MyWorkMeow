@@ -11,6 +11,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { fileURLToPath, pathToFileURL } = require('url');
+
+// 必须早于 require('electron')：被 ELECTRON_RUN_AS_NODE 降级的进程里，
+// require('electron') 返回的是可执行文件路径字符串而不是 API 对象。
+const electronBootstrap = require('./backend/electron-bootstrap');
+if (electronBootstrap.bootstrap().relaunched) process.exit(0);
+
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, dialog, shell, protocol, net } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const BRAND = require('./shared/brand');
@@ -931,13 +937,21 @@ function bootBackend() {
       return;
     }
     const port = server.getPort();
-    if (port) {
-      hooks.install(port, server.getToken());
+    if (!port) return;
+    // hook 装失败（受限沙箱、状态目录只读、某工具配置被占用）只该降级成
+    // 「状态不跟随」，不该让桌宠崩在启动路径上 —— 所以这里整段兜底。
+    try {
+      const installed = hooks.install(port, server.getToken());
+      if (installed && installed.runtimeError) {
+        console.warn('[workmeow] hook runtime staging failed:', installed.runtimeError);
+      }
       stopWatcher = hooks.startWatcher(() => ({ port: server.getPort(), token: server.getToken() }));
       if (config.get().onboardingVersion < 1) {
         config.save({ onboardingVersion: 1 });
         showIntegrationStatus();
       }
+    } catch (err) {
+      console.warn('[workmeow] hook install failed:', err && err.message ? err.message : err);
     }
   }, 400);
 

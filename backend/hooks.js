@@ -67,12 +67,20 @@ function integrationStatus(port, token) {
 
 function install(port, token) {
   config.save({ hooksEnabled: true });
-  const runtime = hookRuntime.stageHookRuntime();
+  // 受限沙箱里状态目录可能整体不可写，stageHookRuntime 会抛。装不上 hook 只
+  // 影响状态跟随，不该把整个桌宠拖崩 —— 记下原因，继续尝试各工具的安装。
+  let runtime = null;
+  let runtimeError = null;
+  try {
+    runtime = hookRuntime.stageHookRuntime();
+  } catch (err) {
+    runtimeError = err && err.message ? err.message : String(err);
+  }
   const results = [];
   for (const mod of INSTALLERS) {
     results.push(isDetected(mod) ? installOne(mod, port, token) : null);
   }
-  return { runtime, results, integrations: integrationStatus(port, token) };
+  return { runtime, runtimeError, results, integrations: integrationStatus(port, token) };
 }
 
 function uninstall() {

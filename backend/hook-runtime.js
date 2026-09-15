@@ -55,12 +55,39 @@ function sameFile(source, target) {
   }
 }
 
+// tmp → 目标 的替换。
+//
+// rename 是唯一真正原子的做法，但有些执行环境会直接拒绝它：进程如果继承了一个
+// 受限的沙箱 profile（macOS/Windows sandbox、容器、企业管控），而状态目录不在
+// 其可写集合里，rename 就会抛 EPERM。此时降级成「覆盖写」，用丢掉的原子性换
+// 启动不崩 —— 这份载荷很小，且下次启动会整体重写，半写状态不会累积。
+//
+// 注意不要在 shell 里用 `mv` 手测来否定这个坑：手测走的是交互式授权通道，
+// 而 GUI 进程继承的是受限 profile，两者结论可以完全相反。
+function replaceFile(tmp, target) {
+  try {
+    fs.renameSync(tmp, target);
+    return;
+  } catch (err) {
+    const code = err && err.code;
+    if (code !== 'EPERM' && code !== 'EACCES') throw err;
+  }
+  try {
+    fs.copyFileSync(tmp, target);
+    fs.unlinkSync(tmp);
+  } catch {
+    // 连覆盖写都被拒（只读挂载等）：清掉 tmp 再抛，让调用方决定是否致命。
+    try { fs.unlinkSync(tmp); } catch {}
+    throw new Error(`hook runtime is not writable: cannot replace ${target}`);
+  }
+}
+
 function copyAtomic(source, target) {
   if (sameFile(source, target)) return false;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
   fs.copyFileSync(source, tmp);
-  fs.renameSync(tmp, target);
+  replaceFile(tmp, target);
   return true;
 }
 
@@ -72,7 +99,7 @@ function writeJsonAtomic(target, value) {
   } catch {}
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
   fs.writeFileSync(tmp, text, 'utf8');
-  fs.renameSync(tmp, target);
+  replaceFile(tmp, target);
   return true;
 }
 

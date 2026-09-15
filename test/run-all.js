@@ -23,6 +23,7 @@ const TESTS = Object.freeze([
   'workmeow-migration.js',
   'config-external-write.js',
   'portable-runtime.js',
+  'electron-bootstrap.js',
   'integration-detection.js',
   'pidwalk-posix.js',
   'ipc-contract.js',

@@ -16,9 +16,16 @@ const path = require('path');
 const electron = require('electron');
 const appDir = path.join(__dirname);
 
+// ELECTRON_RUN_AS_NODE 会从调用方继承过来（WorkBuddy / Claude Code 的 CLI 自己
+// 就是「Electron 内核当 Node 跑」），必须显式摘掉：带着它启动会让 GUI 进程降级
+// 成纯 Node 模式，require('electron') 拿不到 app 而当场崩溃。
+const childEnv = { ...process.env };
+delete childEnv.ELECTRON_RUN_AS_NODE;
+
 const child = spawn(electron, [appDir], {
   detached: true,
   stdio: 'ignore',
+  env: childEnv,
   windowsHide: false,
 });
 

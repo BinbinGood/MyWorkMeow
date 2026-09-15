@@ -92,6 +92,39 @@ try {
   });
   assert.deepStrictEqual(unchanged.copied, [], 'unchanged hook payload should not be rewritten');
 
+  // 受限沙箱会让 rename 直接抛 EPERM（GUI 进程继承沙箱 profile 时实测就是这样，
+  // 用户看到的启动崩溃即出自这里）。降级路径必须仍把载荷写进去。
+  const denyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'workmeow-denyrename-'));
+  const eioHome = fs.mkdtempSync(path.join(os.tmpdir(), 'workmeow-eio-'));
+  const realRename = fs.renameSync;
+  const deny = (code) => () => { const e = new Error(`${code}: operation not permitted`); e.code = code; throw e; };
+  try {
+    fs.renameSync = deny('EPERM');
+    const degraded = runtime.stageHookRuntime({
+      sourceRoot: root, homeDir: denyHome, executable: electron, runAsNode: true,
+    });
+    assert.strictEqual(degraded.copied.length, runtime.RUNTIME_FILES.length,
+      'rename-denied staging still writes every payload file');
+    for (const relative of runtime.RUNTIME_FILES) {
+      assert(fs.existsSync(path.join(degraded.root, ...relative.split('/'))), `degraded staged ${relative}`);
+    }
+    const denieManifest = runtime.readHookRuntime(denyHome);
+    assert(denieManifest && denieManifest.executable === path.resolve(electron),
+      'runtime manifest survives a denied rename');
+    const leftovers = fs.readdirSync(path.join(degraded.root, 'hook')).filter((n) => n.endsWith('.tmp'));
+    assert.deepStrictEqual(leftovers, [], 'degraded staging leaves no .tmp litter behind');
+
+    // 只有 EPERM/EACCES 才降级：其它错误码必须照旧抛出，不能被掩盖。
+    fs.renameSync = deny('EIO');
+    assert.throws(() => runtime.stageHookRuntime({
+      sourceRoot: root, homeDir: eioHome, executable: electron, runAsNode: true,
+    }), /EIO/, 'non-permission rename errors still propagate');
+  } finally {
+    fs.renameSync = realRename;
+    fs.rmSync(denyHome, { recursive: true, force: true });
+    fs.rmSync(eioHome, { recursive: true, force: true });
+  }
+
   assert.strictEqual(runtime.removeHookRuntime(home), true);
   assert.strictEqual(fs.existsSync(runtime.runtimeDir(home)), false);
 } finally {
