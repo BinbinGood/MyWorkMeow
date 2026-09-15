@@ -37,11 +37,12 @@ Switching between several agent windows just to check progress is distracting. W
 - **Custom expressions** — browse every state GIF, add rotating variants, replace or remove a selected item, or restore defaults.
 - **Native permission cards** — allow, deny, or permanently allow supported Claude Code requests from the pet.
 - **Unified usage view** — tokens, cache reads and writes, context windows, models, daily trends, and API-price estimates.
-- **Check Codex quota without opening Codex** — startup automatically discovers the native Codex Desktop CLI. The tray always keeps the salary-cat avatar; right-click the WorkMeow tray icon to see the masked current account, 5h / 7d remaining quota, reset times, and the last update. Missing windows stay `--`, with no manual setup required.
+- **Check Codex quota without opening Codex** — when Codex is installed, startup automatically discovers the native Codex Desktop CLI. Missing windows stay `--`, with no manual setup required.
+- **The tray shows the agents you actually use, not Codex by default** — the top of the menu lists only agents detected on this machine that have produced usage (up to three, ordered by today's tokens), each with today's tokens / rounds and API-equivalent cost; WorkBuddy additionally reports **credits** and the **current session's context water level**. The Codex quota block appears only when Codex is present and its quota is available; with nothing connected the menu shows a single hint line.
 - **Integration health and repair** — verify all five agents, then repair or remove WorkMeow-managed integrations from Settings.
 - **One-click privacy mode** — right-click the cat to toggle the compact ON/OFF control, or use Settings, while keeping essential state and usage visible.
 - **Local-first operation** — conversations and usage stay on the machine; models.dev supplies public pricing while Codex authenticates and reads its own subscription quota.
-- **Desktop-friendly controls** — drag, edge snapping, work peek, action center, system tray, auto-start, and scheduled break animations.
+- **Desktop-friendly controls** — drag, edge snapping, work peek, action center, system tray, auto-start (Windows / macOS), and scheduled break animations.
 
 ## Real state examples
 
@@ -81,7 +82,7 @@ WorkMeow stores only a processed copy under `~/.workmeow/pet-assets` for the cur
 | Claude Code | Lifecycle hooks, transcript, and process data | Merge-safe WorkMeow hook install/uninstall | Supported | ✅ Verified |
 | Codex | Incremental local rollout JSONL reader; official App Server quota notifications | Does not modify Codex configuration or read credential files | Read-only alerts | ➖ Not ported |
 | TRAE | Local IDE logs and process data | Installs a merge-safe hook only when TRAE is detected | Read-only alerts | ➖ Not ported |
-| WorkBuddy | Hooks, transcripts, and usage fields | Installs a merge-safe hook only when WorkBuddy is detected | Read-only alerts | ✅ Status + usage verified |
+| WorkBuddy | Hooks, transcripts, usage and credit fields, read-only `workbuddy.db` | Installs a merge-safe hook only when WorkBuddy is detected | Read-only alerts | ✅ Status + usage + credits verified |
 | opencode | Official plugin mechanism, events, and usage file | Installs/removes one standalone plugin file | Read-only alerts | ➖ Not ported |
 
 On first launch, WorkMeow only integrates with tools already used by the current account. It does not create configuration folders for undetected agents. Codex is always read-only and requires no hook.
@@ -103,12 +104,30 @@ npm start          # detaches from the terminal — the pet survives closing it
 
 Once running, open Settings and hit the integration self-check / repair to install the hook into `~/.claude/settings.json` and `~/.workbuddy/settings.json` (**merged in — your existing hooks are left alone**).
 
+#### Launch at login (macOS)
+
+The Settings → Startup toggle uses one of two paths, chosen automatically:
+
+- **Packaged `.app`** — Electron's native login item, so the entry shows up under System Settings → General → Login Items where you can see and toggle it yourself.
+- **From source (development)** — a LaunchAgent written to `~/Library/LaunchAgents/io.github.vista-zhangg.workmeow.plist`, with `[Electron executable, project path]` written explicitly into `ProgramArguments`.
+
+Development has to use the second path because `app.setLoginItemSettings` ignores `path` / `args` on macOS (Electron's type definitions mark them win32-only). Registering through the native API in dev would launch a bare Electron with no arguments — the switch would look enabled while doing nothing, which is worse than being greyed out.
+
+Worth knowing:
+
+- A LaunchAgent does **not** appear in the Login Items list. That is expected and harmless; check that the plist exists instead.
+- Changes take effect at the next login, and enabling never launches the app immediately.
+- If the project moves or `node_modules` is reinstalled, the recorded path goes stale and Settings says so — toggle it off and on again.
+- Disabling simply deletes the plist. Nothing outside `~/Library/LaunchAgents/` is touched and no `sudo` is needed.
+- On macOS 13+ the packaged path may report "requires approval", which Settings surfaces explicitly.
+
 ### Verified on macOS (2026-09-15)
 
 | Path | Status | Evidence |
 | --- | --- | --- |
 | Status tracking | ✅ works | WorkBuddy's hook engine lives in the agent kernel (`app.asar.unpacked/cli/dist/codebuddy.js`), not in the Electron shell. All 15 events this fork subscribes to are supported, and every payload field (`session_id`, `transcript_path`, `cwd`, `tool_name`, `prompt`, `notification_type`, `stop_hook_active`) matches. Driven offline with a stub server and real payloads: 5/5 events delivered, state mapping correct. |
 | Token usage | ✅ works | WorkBuddy transcript rows are `type:"function_call"` / `type:"message"` — there is **no** `role:"assistant"` row. Usage lives in `providerData.usage` (`inputTokens`, `outputTokens`, `totalTokens`, `inputTokensDetails.cached_tokens`, `outputTokensDetails.reasoning_tokens`). After fixing row detection: 248M tokens / 2563 rounds across 27 sessions on this machine. |
+| Credits | ✅ works | The "credits" shown in the WorkBuddy client are `usage.cost.amount`, accumulated per request id into `session_usage.credit_json` (per the kernel's `sqlite-conversation-usage-port.ts`). Transcripts carry the same number as `providerData.rawUsage.credit`, which also has a timestamp — so credits can be bucketed per local day. Machine-checked against the database: 1728.7 vs 1692.5 lifetime, the gap being soft-deleted sessions. |
 
 Two macOS environment traps that look like broken code (both handled in code here):
 
