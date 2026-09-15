@@ -79,10 +79,15 @@ assert(/Token/.test(text), 'the token unit reads Token, not 令牌');
 assert(!/令牌/.test(text), 'the old 令牌 wording is gone');
 assert(!/轮/.test(text) && !/427/.test(text), 'rounds are gone from the row (and msgs is ignored)');
 assert(text.includes('$1.25'), 'estimated cost is back, shown when positive');
+// Token 与费用必须在**同一行** —— 用户要求合并，分成两行就回归了。
+const usageRow = labels(rows).find((l) => /Token/.test(l));
+assert(/\$1\.25/.test(usageRow), `cost shares the Token row (got ${usageRow})`);
+assert(/费用/.test(usageRow), 'the row says 费用, not 等价费用');
+assert(!/等价费用/.test(text), 'the old 等价费用 wording is gone');
 assert(text.includes('63.8') && text.includes('1512'), 'credit shows today + remaining');
 assert(!/累计/.test(text) && !/1734/.test(text), 'the lifetime credit is no longer printed');
 assert(!/上下文/.test(text), 'no context water level row — removed by request');
-assert(labels(rows).length === 4, `a group is header + tokens + cost + credit (got ${labels(rows).length} rows)`);
+assert(labels(rows).length === 3, `a group is header + usage + credit (got ${labels(rows).length} rows)`);
 assert(!/Codex/.test(text), 'no Codex row when Codex is not ready — this is the bug being fixed');
 assert(rows.every((row) => row.type === 'separator' || row.enabled === false),
   'all status rows are non-clickable info rows');
@@ -164,14 +169,39 @@ assert(tray.isReportable({ detected: true, lifetimeCredit: 5 }) === true,
 assert(tray.isReportable({ detected: false, lifetimeTokens: 10 }) === false,
   'an undetected source is never reportable');
 
+// ── 额度槽位归谁 ──────────────────────────────────────────────────────────────
+// 正靶：早先要求 Codex 的额度「已经就绪」才归它，于是额度拉取中/失败的那段时间
+// 槽位会落到别的 Agent 上 —— 设置页那一项就写成别的名字，用户看到的是
+// 「我用的是 Codex，选项怎么没了」。
+const wbSource = { id: 'workbuddy', label: 'WorkBuddy' };
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+assert(same(tray.slotOwner({ codexDetected: true, codexReady: true, creditSource: wbSource }),
+  { kind: 'codex', id: 'codex', label: 'Codex', ready: true }),
+'an installed Codex owns the slot');
+assert(same(tray.slotOwner({ codexDetected: true, codexReady: false, creditSource: wbSource }),
+  { kind: 'codex', id: 'codex', label: 'Codex', ready: false }),
+'Codex keeps the slot BEFORE its quota arrives — this is the reported bug');
+assert(same(tray.slotOwner({ codexDetected: true, codexReady: false }),
+  { kind: 'codex', id: 'codex', label: 'Codex', ready: false }),
+'Codex owns the slot even with no credit source to fall back to');
+assert(same(tray.slotOwner({ codexDetected: false, codexReady: true, creditSource: wbSource }),
+  { kind: 'credit', id: 'workbuddy', label: 'WorkBuddy', ready: true }),
+'with no Codex installed the credit source takes the slot');
+assert(same(tray.slotOwner({ codexDetected: false }),
+  { kind: 'none', id: null, label: null, ready: false }),
+'nothing detected → the slot is empty, not someone else\'s shell');
+assert(tray.slotOwner({ creditSource: { label: 'no id' } }).kind === 'none',
+  'a credit source without an id cannot own the slot');
+assert(tray.slotOwner().kind === 'none', 'slotOwner tolerates no input');
+
 // 每个新文案键都必须真的存在于词典里
-for (const key of ['tray.sourceTitle', 'tray.sourceTokens', 'tray.sourceCost',
+for (const key of ['tray.sourceTitle', 'tray.sourceTokens', 'tray.sourceUsage',
   'tray.sourceCredit', 'tray.sourceCreditUsed', 'tray.sourceCreditLeft', 'tray.noSources']) {
   assert(typeof t(key) === 'string' && t(key) !== key, `i18n has ${key}`);
 }
 
 // 上一轮删掉的键不能悄悄复活
-for (const gone of ['tray.sourceContext']) {
+for (const gone of ['tray.sourceContext', 'tray.sourceCost']) {
   assert(t(gone) === gone, `${gone} is gone from the dictionary`);
 }
 
@@ -183,6 +213,9 @@ const noCredit = tray.buildStatusRows({
 });
 assert(labels(noCredit).length === 2 && !/积分/.test(flat(noCredit)),
   'no credit and no quota drops the credit row entirely');
-assert(/\$/.test(flat(noCredit)) === false, 'a zero cost drops the cost row too');
+// 费用为 0 时那一行退化成纯 Token —— 既不能出现 $0.00，也不要留个「费用 --」
+const usageOnly = labels(noCredit).find((l) => /Token/.test(l));
+assert(!/\$/.test(usageOnly) && !/费用/.test(usageOnly),
+  `a zero cost leaves the row as bare Token (got ${usageOnly})`);
 
 console.log('\nTRAY STATUS TESTS PASSED');

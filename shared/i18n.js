@@ -40,7 +40,9 @@
     // 整段「剩余」不出现（而不是显示一个会被读成「用完了」的 0）。
     'tray.sourceTitle': '{name}　今日',
     'tray.sourceTokens': 'Token　{tokens}',
-    'tray.sourceCost': '等价费用　{cost}',
+    // Token 与费用合在一行显示（托盘是速览位，省一行是一行）。费用为 0 时
+    // 退化成上面那条纯 Token 文案，不会打印 $0.00。
+    'tray.sourceUsage': 'Token　{tokens}　·　费用 {cost}',
     'tray.sourceCredit': '积分　{credit}　·　剩余 {left}',
     'tray.sourceCreditUsed': '积分　{credit}',
     'tray.sourceCreditLeft': '积分　剩余 {left}',
@@ -290,6 +292,7 @@
     'quota.dismissHint': '鼠标移开后自动收起，也可按 Esc 关闭',
     // 额度槽位切到「积分」形态时（接 WorkBuddy 这类）用的文案。上面的
     // quota.title / quota.open / quota.estimate 都是 Codex 专属，不能复用。
+    'quota.creditBadgeLabel': '剩余积分',
     'quota.creditTitle': '{name} 积分',
     'quota.creditOpen': '查看积分消耗与剩余',
     'quota.creditToday': '今日消耗',

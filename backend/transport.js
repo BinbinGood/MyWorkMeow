@@ -85,10 +85,17 @@ function getPortCandidates() {
   return out;
 }
 
-function buildPermissionUrl(port, token) {
+// agent 参数只用来告诉主进程「这条阻塞请求是哪个工具发来的」：决策协议两家共用
+// （hookSpecificOutput.decision.behavior），但「始终允许」这类附带能力并非人人都有
+// —— Claude Code 的 decision 支持 updatedPermissions，WorkBuddy 只认 behavior 与
+// updatedInput。没有这个参数就分不出是谁，只能一律按 Claude Code 处理。
+function buildPermissionUrl(port, token, agent) {
   const base = `http://127.0.0.1:${inRange(port) || BASE_PORT}${PERMISSION_PATH}`;
+  const params = [];
   const t = validToken(token);
-  return t ? `${base}?token=${encodeURIComponent(t)}` : base;
+  if (t) params.push(`token=${encodeURIComponent(t)}`);
+  if (typeof agent === 'string' && /^[a-z][a-z0-9-]{0,15}$/.test(agent)) params.push(`agent=${agent}`);
+  return params.length ? `${base}?${params.join('&')}` : base;
 }
 
 function headerIsOurs(res) {

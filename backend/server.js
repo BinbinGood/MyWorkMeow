@@ -164,6 +164,20 @@ function createServer(deps) {
     }
   }
 
+  // 谁在问。安装器把 integrationId 写在 URL 上（见 transport.buildPermissionUrl），
+  // 因为两家的请求体里都没有 agent 字段 —— 只有 Claude Code 的 payload 里带着
+  // 我们自己的 hook 脚本，WorkBuddy 的 PermissionRequest 是 CLI 内部直接发的。
+  // 缺失/非法一律按 Claude Code 处理：那是这条通道最早、也是能力最全的使用方。
+  function permissionAgentId(req) {
+    try {
+      const url = new URL(req.url, `http://127.0.0.1:${activePort || BASE_PORT}`);
+      const agent = url.searchParams.get('agent');
+      return isKnownAgentId(agent) ? agent : 'claude-code';
+    } catch {
+      return 'claude-code';
+    }
+  }
+
   function handleStatePost(req, res) {
     readBody(req, MAX_STATE_BODY_BYTES, (body) => {
       if (body === null) { res.writeHead(413); res.end('state payload too large'); return; }
@@ -236,7 +250,7 @@ function createServer(deps) {
     });
   }
 
-  function handlePermissionPost(req, res) {
+  function handlePermissionPost(req, res, agentId) {
     readBody(req, MAX_PERMISSION_BODY_BYTES, (body) => {
       if (body === null) {
         // Too large → auto-deny so CC doesn't hang.
@@ -298,7 +312,7 @@ function createServer(deps) {
         requestId: typeof data.tool_use_id === 'string' ? data.tool_use_id : '',
         suggestions: Array.isArray(data.permission_suggestions) ? data.permission_suggestions : [],
         sessionId,
-        agentId: 'claude-code',
+        agentId: isKnownAgentId(agentId) ? agentId : 'claude-code',
         headless: data.headless === true,
       };
       // permission module parks `res` and writes the decision later.
@@ -333,7 +347,7 @@ function createServer(deps) {
       if (!stateAuthorized(req)) { res.writeHead(403, serverHeaders()); res.end('forbidden'); return; }
       return handleStatePost(req, res);
     }
-    if (req.method === 'POST' && permissionAuthorized(req)) return handlePermissionPost(req, res);
+    if (req.method === 'POST' && permissionAuthorized(req)) return handlePermissionPost(req, res, permissionAgentId(req));
     if (req.method === 'POST' && String(req.url || '').startsWith('/permission')) {
       res.writeHead(403, serverHeaders()); res.end('forbidden'); return;
     }

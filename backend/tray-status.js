@@ -11,11 +11,13 @@
 // 检测到 Codex 且额度可用时才出现。这里保持纯函数，方便回归测试直接断言行内容。
 //
 // 2026-09-15 二次调整：用户定了每行口径 ——
-//   标题 / Token / 等价费用 / 积分（今日消耗 · 剩余）
+//   标题 / Token·费用 / 积分（今日消耗 · 剩余）
 // 「令牌」改回行业通用的 Token；「N 轮」去掉（托盘是速览位，轮次没人看）；
-// 等价费用加回来（原先去掉是因为 hy3 无价目恒为 0，现在只会出现在真的是正数的
-// 情况下，见 money() 的注释）；积分不再显示「累计消耗」，改为「今日 + 剩余」，
-// 剩余由用户手填的每期总量减去本机已用得出（backend/credit-cycle.js）。
+// 积分不再显示「累计消耗」，改为「今日 + 剩余」，剩余由用户手填的每期总量减去
+// 本机已用得出（backend/credit-cycle.js）。
+//
+// 2026-09-15 三次调整：Token 与费用并成一行，且「等价费用」简化为「费用」。
+// 费用仍然只在真的是正数时出现在那一行里（见 money() 的注释）。
 
 const MAX_SOURCES = 3;
 
@@ -77,9 +79,14 @@ function isReportable(source) {
 
 function sourceRows(source, t) {
   const rows = [];
-  rows.push(t('tray.sourceTokens', { tokens: compact(source.tokens) }));
+  const tokens = compact(source.tokens);
   const cost = money(source.cost);
-  if (cost) rows.push(t('tray.sourceCost', { cost }));
+  // Token 与费用合并成一行：托盘是速览位，两行压一行少占一个菜单位。
+  // 费用为 0 时（hy3 这类没有公开价目的模型恒为 0）整行退化成纯 Token，
+  // 而不是打印一个会被读成「不要钱」的 $0.00。
+  rows.push(cost
+    ? t('tray.sourceUsage', { tokens, cost })
+    : t('tray.sourceTokens', { tokens }));
   // 积分行：今日消耗与剩余额度各自独立，谁有值就带谁。
   // creditRemaining === null 表示用户还没填每期额度（不是 0）——那种情况下
   // 只显示今日消耗，整段「剩余」不出现。
@@ -120,6 +127,25 @@ function buildStatusRows(input = {}) {
   return rows;
 }
 
+// 额度槽位归谁。设置页「喵底部展示栏」那一项和底部展示栏的额度徽标共用这一个
+// 判断，抽成纯函数是因为「谁占这一格」很容易写错，而且错了要隔一层才看得出来：
+// 早先的版本要求 Codex 的额度**已经就绪**才归它（status === 'ready'），于是额度
+// 拉取中 / 拉取失败的那段时间槽位会落到别的 Agent 上 —— 用户接的明明是 Codex，
+// 设置页那一项却写成别的名字、还多出一张「积分额度」手填卡片，看起来就像
+// 「Codex 的选项没了」。归属只看「装没装」，有没有数字是另一回事。
+//
+//   codexDetected → Codex（额度没到时 ready:false，徽标先显示 --）
+//   否则 creditSource → 那个积分型数据源
+//   都没有 → none（槽位置灰，而不是继续显示某个 Agent 的空壳）
+function slotOwner(input = {}) {
+  if (input.codexDetected === true) {
+    return { kind: 'codex', id: 'codex', label: 'Codex', ready: input.codexReady === true };
+  }
+  const row = input.creditSource;
+  if (!row || !row.id) return { kind: 'none', id: null, label: null, ready: false };
+  return { kind: 'credit', id: row.id, label: row.label, ready: true };
+}
+
 module.exports = {
   MAX_SOURCES,
   compact,
@@ -127,5 +153,6 @@ module.exports = {
   creditText,
   quotaText,
   isReportable,
+  slotOwner,
   buildStatusRows,
 };

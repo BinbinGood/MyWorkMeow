@@ -65,6 +65,11 @@ function makeElement(tag, id) {
   el.removeEventListener = () => {};
   el.dispatch = (ev, arg) => { for (const fn of el._listeners[ev] || []) fn(arg || { stopPropagation() {}, preventDefault() {} }); };
   el.appendChild = (c) => { c.parentNode = el; el.children.push(c); return c; };
+  // pet.js 的积分弹层用 replaceChildren 清空重画（Codex 那支用 innerHTML=''）。
+  el.replaceChildren = (...nodes) => {
+    el.children = [];
+    for (const n of nodes) el.appendChild(n);
+  };
   el.remove = () => { if (el.parentNode) el.parentNode.children = el.parentNode.children.filter((c) => c !== el); };
   // Auto-vivify per-selector children used by the renderer.
   el._selCache = {};

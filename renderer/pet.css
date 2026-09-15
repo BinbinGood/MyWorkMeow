@@ -575,6 +575,11 @@ html, body {
 .quota-badge[data-level="red"] { --quota-accent: #ffaba3; background: rgba(255,90,82,.12); }
 .quota-badge[data-level="unknown"] { --quota-accent: #c9beb8; }
 .quota-badge[data-level="unknown"]::after { opacity: .3; }
+/* 积分型徽标：标签是一个词（「剩余积分」）而不是 5h/7d 那种两字符记号。
+   固定 62px 装不下四个中文字加数值，overflow:hidden 会把数字裁掉，
+   所以按内容自适应宽度，并补一个冒号把标签和数值分开。 */
+.quota-badge[data-kind="credit"] { width: auto; min-width: 62px; gap: 4px; }
+.quota-badge[data-kind="credit"]::before { content: attr(data-period) ':'; }
 .chip-context {
   /* The situation label is the primary signal. The frame grows with the
      capsule, so it no longer needs to yield to a fixed viewport width. */

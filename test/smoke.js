@@ -31,9 +31,14 @@ function postAbortable(pathName, body, options = {}) {
   const settled = new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
     const authenticated = options.auth !== false;
-    const requestPath = authenticated && pathName === '/permission'
-      ? `${pathName}?token=${encodeURIComponent(server.getToken())}`
-      : pathName;
+    const query = [];
+    if (authenticated && pathName === '/permission') {
+      query.push(`token=${encodeURIComponent(server.getToken())}`);
+      // 安装器会把 integrationId 写进 URL（transport.buildPermissionUrl），
+      // Claude Code 是 agent=claude、WorkBuddy 是 agent=workbuddy。
+      if (options.agent) query.push(`agent=${encodeURIComponent(options.agent)}`);
+    }
+    const requestPath = query.length ? `${pathName}?${query.join('&')}` : pathName;
     const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) };
     if (authenticated && pathName === '/state') headers[TOKEN_HEADER] = server.getToken();
     req = http.request(
@@ -591,6 +596,166 @@ async function main() {
   core.cleanStaleSessions();
   check('重试成功后自动恢复 working', () => assert.strictEqual(core.getSession(netSid).state, 'working'));
   fs.rmSync(netDir, { recursive: true, force: true });
+
+  console.log('\n[19] WorkBuddy 走同一条 PermissionRequest 通道（agent=workbuddy）');
+  // 背景：workbuddy-hookinstall.js 原先是 withPermission:false，注释还断言
+  // 「WorkBuddy 不用阻塞式 PermissionRequest hook」。实测核对 cli/dist/codebuddy.js
+  // 后发现是错的 —— 它既有 PERMISSION_REQUEST 事件、http hook 的响应体也会被解析
+  // 成 hookSpecificOutput。这一节把那句话变成可回归的断言。
+  const wbSid = 'workbuddy-perm-session-uuuu';
+  const wbPayload = {
+    session_id: wbSid,
+    // WorkBuddy 的 PermissionRequest 请求体字段（hook_event_name / call_id /
+    // tool_use_id / permission_suggestions），与 Claude Code 的 shape 一致。
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'rm -rf dist' },
+    tool_use_id: 'call_wb_0001',
+    permission_suggestions: [{ rules: [{ toolName: 'Bash', ruleContent: 'rm -rf dist' }] }],
+    transcript_path: '/tmp/workbuddy-perm.jsonl',
+    cwd: '/Users/me/proj-wb',
+  };
+  const wbP = post('/permission', wbPayload, { agent: 'workbuddy' });
+  await sleep(80);
+  const wbPending = permissions.getPending().find((p) => p.sessionId === wbSid);
+  check('WorkBuddy 的授权请求被挂起（说明 withPermission 通道通）', () => assert(wbPending));
+  check('来源 Agent 被记录成 workbuddy，不是写死的 claude-code', () => {
+    assert.strictEqual(wbPending.agentId, 'workbuddy');
+  });
+  check('WorkBuddy 的 tool_use_id 被当成请求身份（重发可去重）', () => {
+    assert.strictEqual(wbPending.toolInput.command, 'rm -rf dist');
+  });
+  permissions.decide(wbPending.id, 'allow');
+  const wbResp = await wbP;
+  // 这条断言就是「WorkBuddy 能不能读懂」的全部契约：它的
+  // executePermissionRequestHooks() 读 hookSpecificOutput.decision.behavior。
+  check('返回体逐字节符合 WorkBuddy 的 decision 协议', () => {
+    assert.strictEqual(wbResp.status, 200);
+    assert.deepStrictEqual(JSON.parse(wbResp.body), {
+      hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } },
+    });
+  });
+
+  // 不带 agent 参数的旧 URL（升级前装好的 hook）必须继续按 Claude Code 处理
+  const legacySid = 'legacy-perm-session-vvvv';
+  const legacyP = post('/permission', { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: legacySid });
+  await sleep(60);
+  const legacyPending = permissions.getPending().find((p) => p.sessionId === legacySid);
+  check('旧 URL（无 agent 参数）回落成 claude-code，不会被误判成别的工具', () => {
+    assert(legacyPending);
+    assert.strictEqual(legacyPending.agentId, 'claude-code');
+  });
+  permissions.decide(legacyPending.id, 'allow');
+  await legacyP;
+
+  // AskUserQuestion：WorkBuddy 的「让用户选」就走这条。它同样从
+  // decision.updatedInput 取答案（CLI 侧 cachePreToolUseResult({modifiedInput})），
+  // 所以喵的选择卡在 WorkBuddy 上一样能落回宿主。
+  const askSid = 'workbuddy-ask-session-wwww';
+  const askP = post('/permission', {
+    session_id: askSid,
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'AskUserQuestion',
+    tool_use_id: 'call_wb_0002',
+    tool_input: {
+      questions: [{
+        header: '方案',
+        question: '用哪种口径统计？',
+        options: [{ label: '按自然日', description: '本地自然日' }, { label: '滚动 24h' }],
+        multiSelect: false,
+      }],
+    },
+  }, { agent: 'workbuddy' });
+  await sleep(80);
+  const askPending = permissions.getPending().find((p) => p.sessionId === askSid);
+  check('WorkBuddy 的 AskUserQuestion 也走这条路且识别为选择题', () => {
+    assert(askPending);
+    assert.strictEqual(askPending.isElicitation, true);
+    assert.strictEqual(askPending.questions.length, 1);
+    assert.strictEqual(askPending.questions[0].options[0].label, '按自然日');
+  });
+  permissions.decide(askPending.id, { type: 'elicitation-submit', answers: { '用哪种口径统计？': '按自然日' } });
+  const askResp = await askP;
+  check('选择题的答案通过 decision.updatedInput 回传', () => {
+    const decision = JSON.parse(askResp.body).hookSpecificOutput.decision;
+    assert.strictEqual(decision.behavior, 'allow');
+    assert.deepStrictEqual(decision.updatedInput.answers, { '用哪种口径统计？': '按自然日' });
+  });
+
+  // 安装器写进 settings.json 的 URL 必须带上来源，否则主进程分不出是谁在问。
+  check('buildPermissionUrl 带上 agent，且拒绝非法值（不留注入面）', () => {
+    const { buildPermissionUrl } = require('../backend/transport');
+    const token = 'a'.repeat(64);
+    assert.strictEqual(buildPermissionUrl(41330, token, 'workbuddy'),
+      `http://127.0.0.1:41330/permission?token=${token}&agent=workbuddy`);
+    assert.strictEqual(buildPermissionUrl(41330, token, 'claude'),
+      `http://127.0.0.1:41330/permission?token=${token}&agent=claude`);
+    assert.strictEqual(buildPermissionUrl(41330, token, 'bad value&x=1'),
+      `http://127.0.0.1:41330/permission?token=${token}`);
+    assert.strictEqual(buildPermissionUrl(41330, token),
+      `http://127.0.0.1:41330/permission?token=${token}`, '省略 agent 时保持旧形状');
+  });
+
+  // 「始终允许」按钮：Claude Code 的 decision 支持 updatedPermissions 落盘规则，
+  // WorkBuddy 不支持 —— 那就别把按钮画出来（点了不生效比没有更糟）。
+  // 这里连 stats 快照那条路一起验：实时推送（onAdded）和快照（getPending）是
+  // 两个消费方，只改一边会出现「实时卡片没按钮、刷新后又冒出来」。
+  const sugSid = 'workbuddy-sug-session-xxxx';
+  const sugP = post('/permission', {
+    session_id: sugSid,
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'npm test' },
+    permission_suggestions: [{ rules: [{ toolName: 'Bash', ruleContent: 'npm test' }] }],
+  }, { agent: 'workbuddy' });
+  await sleep(70);
+  const sugPending = permissions.getPending().find((p) => p.sessionId === sugSid);
+  check('WorkBuddy 的卡片不带「始终允许」建议', () => {
+    assert(sugPending);
+    assert.deepStrictEqual(sugPending.suggestions, []);
+  });
+  check('stats 快照里的 WorkBuddy 卡片同样只有「允许 / 拒绝」两个按钮', () => {
+    const snap = adapter.buildPetStats(core.buildSnapshot(), permissions.getPending(), null);
+    const act = snap.actions.find((a) => a.sessionId === sugSid);
+    assert(act);
+    assert.deepStrictEqual(act.choice.options.map((o) => o.key), ['allow', 'deny']);
+  });
+  permissions.decide(sugPending.id, 'allow');
+  await sugP;
+
+  const claudeSugSid = 'claude-sug-session-yyyy';
+  const claudeSugP = post('/permission', {
+    session_id: claudeSugSid,
+    tool_name: 'Bash',
+    tool_input: { command: 'npm test' },
+    permission_suggestions: [{ rules: [{ toolName: 'Bash', ruleContent: 'npm test' }] }],
+  }, { agent: 'claude' });
+  await sleep(70);
+  const claudeSug = permissions.getPending().find((p) => p.sessionId === claudeSugSid);
+  check('Claude Code 的「始终允许」建议原样保留（别把功能一起删掉）', () => {
+    assert(claudeSug);
+    assert.strictEqual(claudeSug.suggestions.length, 1);
+  });
+  check('stats 快照里的 Claude Code 卡片多出「始终允许」按钮', () => {
+    const snap = adapter.buildPetStats(core.buildSnapshot(), permissions.getPending(), null);
+    const act = snap.actions.find((a) => a.sessionId === claudeSugSid);
+    assert(act);
+    assert.deepStrictEqual(act.choice.options.map((o) => o.key), ['allow', 'suggestion:0', 'deny']);
+  });
+  permissions.decide(claudeSug.id, 'allow');
+  await claudeSugP;
+
+  // 免鉴权 / 无 agent 参数都不该绕过注册表：未知 agent 一律回落 claude-code
+  const bogusSid = 'bogus-agent-session-zzzz';
+  const bogusP = post('/permission', { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: bogusSid }, { agent: 'not-an-agent' });
+  await sleep(70);
+  const bogus = permissions.getPending().find((p) => p.sessionId === bogusSid);
+  check('未知 agent 回落 claude-code 而不是被当成新工具', () => {
+    assert(bogus);
+    assert.strictEqual(bogus.agentId, 'claude-code');
+  });
+  permissions.decide(bogus.id, 'allow');
+  await bogusP;
 
   server.stop();
   console.log(`\n${failures === 0 ? '✅ ALL PASS' : '❌ ' + failures + ' FAILURE(S)'} — events captured: ${events.length}, dirty fires: ${dirtyCount}`);

@@ -1946,15 +1946,21 @@ function isCreditSlot(s) {
 
 function creditRemainingPercent(slot) {
   const monthly = Number(slot && slot.monthly);
-  const remaining = Number(slot && slot.remaining);
-  if (!Number.isFinite(monthly) || monthly <= 0 || !Number.isFinite(remaining)) return null;
-  return Math.max(0, Math.min(100, (remaining / monthly) * 100));
+  const remaining = slot ? slot.remaining : null;
+  // remaining 先做 null 判断再转数字：Number(null) === 0，直接把 null 喂进
+  // Number() 会让「还没填额度」算成 0% —— 徽标被涂成红色，看起来像额度已耗尽。
+  if (remaining === null || remaining === undefined || remaining === '') return null;
+  const left = Number(remaining);
+  if (!Number.isFinite(monthly) || monthly <= 0 || !Number.isFinite(left)) return null;
+  return Math.max(0, Math.min(100, (left / monthly) * 100));
 }
 
 // 没填每期总量时显示 '--'，不是 0 —— 「没配」和「用完了」是两回事，
-// 显示 0 会让人以为额度已经耗尽。
+// 显示 0 会让人以为额度已经耗尽。同样是 Number(null) === 0 的坑。
 function creditBadgeText(slot) {
-  const remaining = Number(slot && slot.remaining);
+  const raw = slot ? slot.remaining : null;
+  if (raw === null || raw === undefined || raw === '') return '--';
+  const remaining = Number(raw);
   return Number.isFinite(remaining) ? compactTokens(remaining) : '--';
 }
 
@@ -1964,7 +1970,12 @@ function createCreditBadge(slot) {
   const badge = document.createElement('span');
   badge.className = 'quota-badge';
   badge.dataset.level = quotaLevel(percent);
-  badge.dataset.period = 'credit';
+  // 徽标左侧的标签由 CSS 用 attr(data-period) 渲染。Codex 那边是「5h / 7d」这种
+  // 两字符记号，直接当标签很自然；积分这边得说清楚是「剩余」而不是「已用」，所以
+  // 换成词。data-kind 让 CSS 认出这是词标签 —— 固定 62px 宽 + overflow:hidden 会
+  // 把「剩余积分 1.8K」裁掉，见 pet.css 里对应的那条规则。
+  badge.dataset.kind = 'credit';
+  badge.dataset.period = t('quota.creditBadgeLabel');
   badge.textContent = creditBadgeText(slot);
   badge.style.setProperty('--quota-remaining', `${percent === null ? 0 : percent}%`);
   badge.setAttribute('aria-label', percent === null

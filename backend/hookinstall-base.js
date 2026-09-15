@@ -28,7 +28,7 @@ function createInstaller(cfg) {
   const HOOK_SCRIPT = cfg.hookScript;
   const MARKER = cfg.marker;
   const COMMAND_EVENTS = cfg.events;
-  const WITH_PERMISSION = cfg.withPermission !== false; // Claude only, by default
+  const WITH_PERMISSION = cfg.withPermission !== false; // Claude Code + WorkBuddy
   const INTEGRATION_ID = cfg.integrationId || MARKER;
   const INTEGRATION_LABEL = cfg.integrationLabel || INTEGRATION_ID;
   const DETECT_PATH = cfg.detectPath || path.dirname(SETTINGS_PATH);
@@ -144,7 +144,7 @@ function createInstaller(cfg) {
       result[r]++;
     }
     if (WITH_PERMISSION) {
-      const httpDesired = { type: 'http', url: buildPermissionUrl(port || BASE_PORT, token), timeout: PERMISSION_TIMEOUT_S };
+      const httpDesired = { type: 'http', url: buildPermissionUrl(port || BASE_PORT, token, INTEGRATION_ID), timeout: PERMISSION_TIMEOUT_S };
       const r = syncEvent(settings.hooks, 'PermissionRequest', httpDesired, isOurHttp);
       result[r]++;
     }
@@ -203,7 +203,7 @@ function createInstaller(cfg) {
         hooks[event].some((group) => Array.isArray(group && group.hooks) && group.hooks.some(isOurCommand)));
       if (!commandsOk) return false;
       if (!WITH_PERMISSION) return true;
-      const desiredUrl = buildPermissionUrl(port || BASE_PORT, token);
+      const desiredUrl = buildPermissionUrl(port || BASE_PORT, token, INTEGRATION_ID);
       return Array.isArray(hooks.PermissionRequest) &&
         hooks.PermissionRequest.some((group) => Array.isArray(group && group.hooks) &&
           group.hooks.some((hook) => isOurHttp(hook) && hook.url === desiredUrl));

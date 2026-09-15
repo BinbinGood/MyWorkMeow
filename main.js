@@ -39,7 +39,7 @@ const config = require('./backend/config');
 const { createCore } = require('./backend/core');
 const { createMetering } = require('./backend/metering');
 const { createPricingSync } = require('./backend/pricing-sync');
-const { createPermissions } = require('./backend/permission');
+const { createPermissions, visibleSuggestions } = require('./backend/permission');
 const { createServer } = require('./backend/server');
 const adapter = require('./backend/adapter');
 const hooks = require('./backend/hooks');
@@ -63,6 +63,7 @@ const transport = require('./backend/transport');
 const env = require('./backend/env');
 const { migrateLegacyState } = require('./backend/paths');
 const i18n = require('./shared/i18n');
+const { shortKey } = require('./shared/agents');
 const { createUpdateService } = require('./backend/updater');
 const privacy = require('./backend/privacy');
 
@@ -916,7 +917,11 @@ function bootBackend() {
             sessionId: entry.sessionId,
             toolName: entry.toolName,
             toolInput: entry.toolInput,
-            suggestions: entry.suggestions,
+            // 「始终允许」那一排按钮会把规则写进 settings.json，而这条能力只有
+            // Claude Code 有（WorkBuddy 的 decision 只认 behavior / updatedInput，
+            // 规则会被静默丢掉）。判断集中在 backend/permission.js，实时卡片和
+            // stats 快照共用同一个口径。
+            suggestions: visibleSuggestions(entry),
           },
           lite,
         );
@@ -926,7 +931,7 @@ function bootBackend() {
       // was hidden) the ask panel would render into an invisible window and CC
       // would hang until the park times out — so surface the pet window first.
       try { const w = firstAlivePetWin(); if (w && !w.isVisible()) w.show(); } catch {}
-      sendPetEvent({ kind, project: choice.project, reason, sessionId: entry.sessionId, choice, agent: 'claude', ts: Date.now() });
+      sendPetEvent({ kind, project: choice.project, reason, sessionId: entry.sessionId, choice, agent: shortKey(entry.agentId), ts: Date.now() });
       scheduleEmit();
     },
     onChange: scheduleEmit,
@@ -1537,27 +1542,25 @@ function traySourceRows() {
 }
 
 // 「额度槽位」的归属 —— 设置页那一项和底部展示栏的额度徽标都跟着它走，
-// 不再写死 Codex。优先级：
-//   ① 装了 Codex 且额度可用 → 用 Codex 自己的 5h/7d（真实数据，且无需用户填）
-//   ② 否则找「需要手填额度、且已接入且真跑过」的数据源 → 用它的积分
-//   ③ 都没有 → none，槽位置灰（而不是继续显示 Codex 的空壳）
+// 不再写死 Codex。归属规则本身在 backend/tray-status.js 的 slotOwner()（纯函数，
+// 有回归测试），这里只负责把积分型的数字补齐。
 function quotaSlot() {
-  if (codexDetected() && codexQuotaState.status === 'ready') {
-    return { kind: 'codex', id: 'codex', label: 'Codex' };
-  }
-  const row = traySourceRows().find((item) => item.detected && supportsCreditQuota(item.id)
-    && (Number(item.tokens) > 0 || Number(item.credit) > 0 || Number(item.lifetimeTokens) > 0));
-  if (!row) return { kind: 'none', id: null, label: null };
+  const creditSource = traySourceRows().find((item) => item.detected && supportsCreditQuota(item.id)
+    && (Number(item.tokens) > 0 || Number(item.credit) > 0 || Number(item.lifetimeTokens) > 0)) || null;
+  const owner = trayStatus.slotOwner({
+    codexDetected: codexDetected(),
+    codexReady: codexQuotaState.status === 'ready',
+    creditSource,
+  });
+  if (owner.kind !== 'credit' || !creditSource) return owner;
   return {
-    kind: 'credit',
-    id: row.id,
-    label: row.label,
-    today: Number(row.credit) || 0,
-    cycleUsed: row.creditUsed,
-    remaining: row.creditRemaining,
-    monthly: row.creditMonthly,
-    resetDay: row.creditResetDay,
-    cycleStart: row.creditCycleStart,
+    ...owner,
+    today: Number(creditSource.credit) || 0,
+    cycleUsed: creditSource.creditUsed,
+    remaining: creditSource.creditRemaining,
+    monthly: creditSource.creditMonthly,
+    resetDay: creditSource.creditResetDay,
+    cycleStart: creditSource.creditCycleStart,
   };
 }
 
@@ -1583,6 +1586,9 @@ function refreshTrayMenu() {
   const baseTooltip = t(privacyMode ? 'tray.tooltipPrivate' : 'tray.tooltip');
   tray.setToolTip(baseTooltip);
   const petVisible = !!(mergedWin && !mergedWin.isDestroyed() && mergedWin.isVisible());
+  // 托盘里的 Codex 块要求额度**已经就绪**：这一块是「信息」，没有数字就是几行
+  // 占位的 -- ，比不显示更吵。额度槽位（quotaSlot）的判定条件不一样 —— 它是
+  // 「归属」，只要装了 Codex 就得归它、不能中途飘到别的 Agent 上。
   const codexReady = codexDetected() && codexQuotaState.status === 'ready';
   const statusRows = trayStatus.buildStatusRows({
     sources: traySourceRows(),

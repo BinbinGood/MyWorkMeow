@@ -14,6 +14,24 @@
 
 const crypto = require('crypto');
 const { serverHeaders } = require('./transport');
+const { shortKey } = require('../shared/agents');
+
+// 「始终允许」那一排建议按钮会把规则写回宿主的 settings.json。这条能力不是每家
+// 都有：Claude Code 的 PermissionRequest decision 支持 updatedPermissions；
+// WorkBuddy 的 decision 只认 behavior 与 updatedInput，规则会被**静默丢掉**。
+// 点了不生效比不画这个按钮更糟，所以对不支持的工具一律不透出建议。
+//
+// 判断只写在这里：这条通道有两个消费方 —— main.js 的实时推送（onAdded 拿到原始
+// entry）和 adapter 的 stats 快照（从 getPending() 拿）。放到这里两边自动一致，
+// 否则很容易只改一处，出现「实时卡片没有按钮、刷新后又冒出来」。
+function permissionRulesSupported(agentId) {
+  return shortKey(agentId) === 'claude';
+}
+
+function visibleSuggestions(entry) {
+  if (!entry || !permissionRulesSupported(entry.agentId)) return [];
+  return Array.isArray(entry.suggestions) ? entry.suggestions : [];
+}
 
 // Tools Claude Code may ask permission for but which are pure orchestration —
 // auto-allow so the pet never blocks them.
@@ -289,9 +307,10 @@ function createPermissions(options = {}) {
     return [...pending.values()].map((e) => ({
       id: e.id,
       sessionId: e.sessionId,
+      agentId: e.agentId,
       toolName: e.toolName,
       toolInput: e.toolInput,
-      suggestions: e.suggestions,
+      suggestions: visibleSuggestions(e),
       isElicitation: !!e.isElicitation,
       questions: e.questions || null,
       createdAt: e.createdAt,
@@ -312,4 +331,10 @@ function createPermissions(options = {}) {
   };
 }
 
-module.exports = { createPermissions, sendPermissionResponse, PASSTHROUGH_TOOLS };
+module.exports = {
+  createPermissions,
+  sendPermissionResponse,
+  PASSTHROUGH_TOOLS,
+  permissionRulesSupported,
+  visibleSuggestions,
+};
