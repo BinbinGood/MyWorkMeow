@@ -10,15 +10,23 @@
   </p>
 
   <p>
-    <a href="https://github.com/vista-zhangg/WorkMeow/actions/workflows/ci.yml"><img src="https://github.com/vista-zhangg/WorkMeow/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-    <img src="https://img.shields.io/badge/platform-Windows%20x64-0078D4?logo=windows" alt="Windows x64 only">
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20x64-555" alt="macOS and Windows x64">
     <img src="https://img.shields.io/badge/version-1.7.6-F6A04A" alt="Version 1.7.6">
     <a href="LICENSE"><img src="https://img.shields.io/badge/code%20license-MIT-2EA44F" alt="MIT License"></a>
   </p>
 </div>
 
 > [!IMPORTANT]
-> WorkMeow 当前**仅支持 Windows x64**，不支持 macOS、Linux 或 Windows on ARM。Windows 安装包尚未进行商业代码签名，首次运行时可能出现 SmartScreen 提示。
+> **这是 [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) 的 macOS 移植分支，在本仓库独立维护。**
+>
+> 上游原项目仅支持 Windows x64。本分支让它能在 macOS 上运行，范围限定为 **Claude Code 与 WorkBuddy 的状态监控**：
+>
+> - ✅ macOS 上跑源码即可监控 Claude Code（EPT CLI、VS Code 扩展、cc-connect 等客户端都走同一份 `~/.claude/settings.json`，装一次 hook 全覆盖）
+> - ⚠️ WorkBuddy 的改动走同一套安装通路、单测已覆盖，但本机无 `~/.workbuddy/`，**未做端到端实测**
+> - ➖ Codex / TRAE / opencode 未做 mac 适配，代码保持上游原样
+> - ➖ 打包发版、自动更新、SSH 远程监控均未做；mac 上请用源码启动
+>
+> Windows 侧的行为保持与上游一致（命令生成按平台分派，未改动 Windows 分支）。
 
 产品名称和所有对外发布物统一使用 **打工喵（WorkMeow）**。
 
@@ -70,29 +78,40 @@ WorkMeow 只把处理后的副本保存在当前用户的 `~/.workmeow/pet-asset
 
 ## 支持矩阵
 
-| Agent | 接入方式 | 是否修改外部配置 | 桌宠内授权 |
-| --- | --- | --- | --- |
-| Claude Code | `hook/workmeow-hook.js` 生命周期 hook、transcript、进程信息 | 合并安装/卸载 WorkMeow hook，不覆盖已有 hook | 支持 |
-| Codex | 增量读取本机 rollout JSONL；官方 App Server 订阅额度通知 | 不修改 Codex 配置、不读取凭据文件 | 只读提醒 |
-| TRAE | 读取本机 IDE 日志与进程信息 | 仅在检测到 TRAE 后合并安装 hook | 只读提醒 |
-| WorkBuddy | hook、transcript 与用量字段 | 仅在检测到 WorkBuddy 后合并安装 hook | 只读提醒 |
-| opencode | 官方插件机制、事件与用量文件 | 安装/卸载一个独立插件文件 | 只读提醒 |
+| Agent | 接入方式 | 是否修改外部配置 | 桌宠内授权 | macOS |
+| --- | --- | --- | --- | --- |
+| Claude Code | `hook/workmeow-hook.js` 生命周期 hook、transcript、进程信息 | 合并安装/卸载 WorkMeow hook，不覆盖已有 hook | 支持 | ✅ 已实测 |
+| Codex | 增量读取本机 rollout JSONL；官方 App Server 订阅额度通知 | 不修改 Codex 配置、不读取凭据文件 | 只读提醒 | ➖ 未适配 |
+| TRAE | 读取本机 IDE 日志与进程信息 | 仅在检测到 TRAE 后合并安装 hook | 只读提醒 | ➖ 未适配 |
+| WorkBuddy | hook、transcript 与用量字段 | 仅在检测到 WorkBuddy 后合并安装 hook | 只读提醒 | ⚠️ 代码就绪，未实测 |
+| opencode | 官方插件机制、事件与用量文件 | 安装/卸载一个独立插件文件 | 只读提醒 | ➖ 未适配 |
 
-首次启动只接入当前 Windows 用户已经使用过的工具，不会为未检测到的 Agent 凭空创建配置目录。Codex 始终只读，不安装 hook。
+首次启动只接入当前用户已经使用过的工具，不会为未检测到的 Agent 凭空创建配置目录。Codex 始终只读，不安装 hook。
 
 ## 安装与运行
 
-### 使用发行版
+### macOS（本分支）
 
-正式版本发布后，可从 [GitHub Releases](https://github.com/vista-zhangg/WorkMeow/releases) 下载：
+本分支未做打包，请用源码启动：
 
-- `WorkMeow-<version>-Windows-x64.exe`：唯一支持的 Windows x64 NSIS 安装包。
+```bash
+git clone https://github.com/BinbinGood/MyWorkMeow.git
+cd MyWorkMeow
+npm install
+npm start          # 脱离终端启动，关掉终端后桌宠继续运行
+```
 
-1.7.0 起，Release 不再提供源码/npm 部署入口或 ZIP 便携包；请安装 EXE 后使用，不要从压缩包或源码目录直接运行。
+`npm start` 会立刻返回。想停掉桌宠：点菜单栏的猫图标退出，或 `pkill -f "MyWorkMeow/node_modules/electron"`。
+
+启动后在设置里点「接入自检 / 修复」即可把 hook 装进 `~/.claude/settings.json`（**合并写入，不会动你已有的 hook**）。之后在任意 Claude Code 客户端里干活，猫就会跟着变状态。
+
+### Windows
+
+Windows 侧行为与上游一致，安装包请到[上游 Releases](https://github.com/vista-zhangg/WorkMeow/releases) 下载 `WorkMeow-<version>-Windows-x64.exe`。本分支不发布 Windows 安装包。
 
 ### 开发与贡献
 
-源码启动、测试和本地打包命令仅供开发者与贡献者使用，不属于 Release 安装方式；请参阅[本地开发与打包手册](docs/LOCAL_DEPLOYMENT.md)。
+源码启动、测试和本地打包命令请参阅[本地开发与打包手册](docs/LOCAL_DEPLOYMENT.md)。
 
 ## 开发者命令
 
@@ -134,19 +153,39 @@ Codex App Server ───────> 托盘右键菜单（5h / 7d）+ 临界�
 
 ## 项目来源与许可证
 
-WorkMeow 基于 [LLMPET](https://github.com/myunwang/LLMPET) 二次开发，并在 Windows 桌面交互、多 Agent 接入、用量统计、设置与工程结构方面进行了扩展和重构。
+本仓库是**三层衍生**关系，逐层署明：
+
+```
+myunwang/LLMPET          原始项目
+  └─ vista-zhangg/WorkMeow    重构为多 Agent 监控 + Windows 桌面交互
+       └─ BinbinGood/MyWorkMeow   ← 本仓库：macOS 移植
+```
+
+- **原始项目**：[LLMPET](https://github.com/myunwang/LLMPET)
+- **直接上游**：[vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) v1.7.6 —— 在 LLMPET 基础上扩展了多 Agent 接入、用量统计、Windows 桌面交互与工程结构。本仓库的绝大部分代码来自这里。
+- **本仓库的改动**：macOS 移植（hook 命令生成、进程链解析、Dock/图标、弹窗样式修复），范围限定为 Claude Code + WorkBuddy 的状态监控。详见初始提交说明。
+
+上游仓库保留为 `upstream` 远端，可随时对比或拉取更新：
+
+```bash
+git remote -v                        # origin = 本仓库，upstream = vista-zhangg/WorkMeow
+git fetch upstream                   # 拉取上游更新
+git log upstream/main --oneline      # 查看上游进展
+```
+
+### 许可证
 
 - 源代码依照 [MIT License](LICENSE) 发布；
-- 根目录许可证保留上游 `Copyright (c) 2026 myunwang`；
-- WorkMeow 的修改部分版权归相应贡献者所有；
-- 月薪喵 GIF 及其静态衍生头像的原角色版权归抖音博主 **@月薪喵** 所有，不适用本项目的 MIT License。
+- 根目录许可证保留最初的 `Copyright (c) 2026 myunwang`；
+- 上游 WorkMeow 与本仓库的修改部分，版权归各自贡献者所有；
+- **月薪喵 GIF 及其静态衍生头像的原角色版权归抖音博主 [@月薪喵](https://www.douyin.com/) 所有，不适用本项目的 MIT License** —— 二次分发时请注意这一点。
 
 ## 参与贡献
 
-欢迎提交缺陷报告、Windows 兼容性改进和新 Agent 适配。提交前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
+本仓库以自用维护为主。macOS 相关问题欢迎提 issue；如果是与平台无关的通用功能或缺陷，建议直接提到[上游仓库](https://github.com/vista-zhangg/WorkMeow)，受益面更大。
 
 ---
 
 <div align="center">
-  <sub>Windows x64 only · Local-first · One cat, all your agents.</sub>
+  <sub>macOS port · Local-first · One cat, all your agents.</sub>
 </div>

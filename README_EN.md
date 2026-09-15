@@ -10,15 +10,23 @@
   </p>
 
   <p>
-    <a href="https://github.com/vista-zhangg/WorkMeow/actions/workflows/ci.yml"><img src="https://github.com/vista-zhangg/WorkMeow/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-    <img src="https://img.shields.io/badge/platform-Windows%20x64-0078D4?logo=windows" alt="Windows x64 only">
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20x64-555" alt="macOS and Windows x64">
     <img src="https://img.shields.io/badge/version-1.7.6-F6A04A" alt="Version 1.7.6">
     <a href="LICENSE"><img src="https://img.shields.io/badge/code%20license-MIT-2EA44F" alt="MIT License"></a>
   </p>
 </div>
 
 > [!IMPORTANT]
-> WorkMeow currently supports **Windows x64 only**. macOS, Linux, and Windows on ARM are not supported. Documentation is available in Chinese and English; the application UI is currently Simplified Chinese. The Windows binaries are not commercially code-signed yet, so SmartScreen may display a warning on first launch.
+> **This is a macOS port of [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow), maintained independently in this repository.**
+>
+> The upstream project supports Windows x64 only. This fork makes it run on macOS, scoped to **status monitoring for Claude Code and WorkBuddy**:
+>
+> - ✅ Claude Code monitoring works on macOS from source (EPT CLI, the VS Code extension, cc-connect and friends all read the same `~/.claude/settings.json`, so one hook install covers every client)
+> - ⚠️ WorkBuddy goes through the same installer path and is covered by unit tests, but `~/.workbuddy/` does not exist on this machine, so it is **not verified end to end**
+> - ➖ Codex / TRAE / opencode are untouched — no macOS adaptation
+> - ➖ No packaging, auto-update, or SSH remote monitoring; run from source on macOS
+>
+> Windows behavior is unchanged from upstream (command generation branches per platform; the Windows branch was not modified). The application UI is Simplified Chinese.
 
 ## What it does
 
@@ -68,25 +76,36 @@ WorkMeow stores only a processed copy under `~/.workmeow/pet-assets` for the cur
 
 ## Support matrix
 
-| Agent | Integration | External configuration | In-pet approval |
-| --- | --- | --- | --- |
-| Claude Code | Lifecycle hooks, transcript, and process data | Merge-safe WorkMeow hook install/uninstall | Supported |
-| Codex | Incremental local rollout JSONL reader; official App Server quota notifications | Does not modify Codex configuration or read credential files | Read-only alerts |
-| TRAE | Local IDE logs and process data | Installs a merge-safe hook only when TRAE is detected | Read-only alerts |
-| WorkBuddy | Hooks, transcripts, and usage fields | Installs a merge-safe hook only when WorkBuddy is detected | Read-only alerts |
-| opencode | Official plugin mechanism, events, and usage file | Installs/removes one standalone plugin file | Read-only alerts |
+| Agent | Integration | External configuration | In-pet approval | macOS |
+| --- | --- | --- | --- | --- |
+| Claude Code | Lifecycle hooks, transcript, and process data | Merge-safe WorkMeow hook install/uninstall | Supported | ✅ Verified |
+| Codex | Incremental local rollout JSONL reader; official App Server quota notifications | Does not modify Codex configuration or read credential files | Read-only alerts | ➖ Not ported |
+| TRAE | Local IDE logs and process data | Installs a merge-safe hook only when TRAE is detected | Read-only alerts | ➖ Not ported |
+| WorkBuddy | Hooks, transcripts, and usage fields | Installs a merge-safe hook only when WorkBuddy is detected | Read-only alerts | ⚠️ Code ready, unverified |
+| opencode | Official plugin mechanism, events, and usage file | Installs/removes one standalone plugin file | Read-only alerts | ➖ Not ported |
 
-On first launch, WorkMeow only integrates with tools already used by the current Windows account. It does not create configuration folders for undetected agents. Codex is always read-only and requires no hook.
+On first launch, WorkMeow only integrates with tools already used by the current account. It does not create configuration folders for undetected agents. Codex is always read-only and requires no hook.
 
 ## Install and run
 
-### Release builds
+### macOS (this fork)
 
-Once a version is published, download it from [GitHub Releases](https://github.com/vista-zhangg/WorkMeow/releases):
+No packaged build; run from source:
 
-- `WorkMeow-<version>-Windows-x64.exe` — the only supported Windows x64 NSIS installer.
+```bash
+git clone https://github.com/BinbinGood/MyWorkMeow.git
+cd MyWorkMeow
+npm install
+npm start          # detaches from the terminal — the pet survives closing it
+```
 
-Starting with 1.7.0, releases do not offer source/npm deployment or a portable ZIP. Install the EXE before use; do not run the app directly from an archive or source checkout.
+`npm start` returns immediately. To stop the pet: quit from the menu-bar cat icon, or `pkill -f "MyWorkMeow/node_modules/electron"`.
+
+Once running, open Settings and hit the integration self-check / repair to install the hook into `~/.claude/settings.json` (**merged in — your existing hooks are left alone**).
+
+### Windows
+
+Windows behavior matches upstream. Download `WorkMeow-<version>-Windows-x64.exe` from [upstream Releases](https://github.com/vista-zhangg/WorkMeow/releases); this fork does not publish Windows installers.
 
 ### Development and contribution
 
@@ -132,19 +151,39 @@ The main process owns watcher lifecycles, the tray, and windows. The backend sta
 
 ## Origin and licensing
 
-WorkMeow is derived from [LLMPET](https://github.com/myunwang/LLMPET), with substantial work on Windows desktop behavior, multi-agent integrations, unified usage reporting, settings, and project structure.
+This repository is a **three-layer derivative**, credited in full:
+
+```
+myunwang/LLMPET               original project
+  └─ vista-zhangg/WorkMeow       reworked into multi-agent monitoring + Windows desktop UX
+       └─ BinbinGood/MyWorkMeow     ← this repository: macOS port
+```
+
+- **Original project**: [LLMPET](https://github.com/myunwang/LLMPET)
+- **Direct upstream**: [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) v1.7.6 — built on LLMPET with multi-agent integrations, unified usage reporting, Windows desktop behavior, and project structure. The vast majority of the code here comes from upstream.
+- **What this fork adds**: the macOS port (hook command generation, process-chain resolution, Dock/icon handling, ask-dialog style fixes), scoped to Claude Code + WorkBuddy status monitoring. See the initial commit message for details.
+
+Upstream is kept as the `upstream` remote, so you can diff or pull at any time:
+
+```bash
+git remote -v                        # origin = this fork, upstream = vista-zhangg/WorkMeow
+git fetch upstream
+git log upstream/main --oneline
+```
+
+### License
 
 - Source code is released under the [MIT License](LICENSE).
-- The root license retains the upstream `Copyright (c) 2026 myunwang` notice.
-- WorkMeow modifications remain copyright of their respective contributors.
-- The 月薪喵 GIFs and static derivative avatar retain the original character copyright of Douyin creator **@月薪喵** and are not covered by the project’s MIT License.
+- The root license retains the original `Copyright (c) 2026 myunwang` notice.
+- Modifications by upstream WorkMeow and by this fork remain copyright of their respective contributors.
+- **The 月薪喵 GIFs and static derivative avatar retain the original character copyright of Douyin creator @月薪喵 and are NOT covered by the project's MIT License** — keep this in mind when redistributing.
 
 ## Contributing
 
-Bug reports, Windows compatibility improvements, and new agent integrations are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+This fork is maintained primarily for personal use. macOS-specific issues are welcome here; platform-independent features and bugs are better filed [upstream](https://github.com/vista-zhangg/WorkMeow), where they benefit more people.
 
 ---
 
 <div align="center">
-  <sub>Windows x64 only · Local-first · One cat, all your agents.</sub>
+  <sub>macOS port · Local-first · One cat, all your agents.</sub>
 </div>
