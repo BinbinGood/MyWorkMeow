@@ -39,7 +39,7 @@
 - **表情自由定制**：集中查看每个状态的全部 GIF，可新增轮换、替换或移出选中项，也可一键恢复默认。
 - **原生权限卡**：Claude Code 请求授权时，可直接在桌宠上允许、拒绝或永久允许。
 - **统一用量面板**：聚合 token、缓存读写、上下文窗口、模型、每日趋势与 API 公价折算。
-- **托盘按接入的 Agent 展示，不再预设 Codex**：菜单顶部只列**本机实际接入且用过**的 Agent（最多三个，按今日用量排序），每行给出今日 token / 轮次、API 等价费用，WorkBuddy 还额外给出**积分**与**当前会话上下文水位**。Codex 额度块只在检测到 Codex 且额度可用时才出现；一个都没接入时显示一行提示。
+- **托盘按接入的 Agent 展示，不再预设 Codex**：菜单顶部只列**本机实际接入且用过**的 Agent（最多三个，按今日用量排序），每行给出今日 token / 轮次，WorkBuddy 还额外给出**积分**（今日 + 累计）。托盘只看总览，不展示等价费用与上下文水位。Codex 额度块只在检测到 Codex 且额度可用时才出现；一个都没接入时显示一行提示。
 - **无需打开 Codex 即可查额度**：装了 Codex 时自动发现桌面 Codex 自带的 CLI；缺失窗口明确显示 `--`，无需手动配置。
 - **接入自检与修复**：在设置中核对五个 Agent 的 Hook、插件或只读监听状态，可一键修复或卸载 WorkMeow 接入。
 - **一键隐私模式**：右键打工喵通过 ON/OFF 快速切换，也可在设置中控制；隐藏敏感明细但保留必要状态和用量。
@@ -84,7 +84,7 @@ WorkMeow 只把处理后的副本保存在当前用户的 `~/.workmeow/pet-asset
 | Claude Code | `hook/workmeow-hook.js` 生命周期 hook、transcript、进程信息 | 合并安装/卸载 WorkMeow hook，不覆盖已有 hook | 支持 | ✅ 已实测 |
 | Codex | 增量读取本机 rollout JSONL；官方 App Server 订阅额度通知 | 不修改 Codex 配置、不读取凭据文件 | 只读提醒 | ➖ 未适配 |
 | TRAE | 读取本机 IDE 日志与进程信息 | 仅在检测到 TRAE 后合并安装 hook | 只读提醒 | ➖ 未适配 |
-| WorkBuddy | hook、transcript、用量与 credit 字段、`workbuddy.db` 只读 | 仅在检测到 WorkBuddy 后合并安装 hook | 只读提醒 | ✅ 状态 + 用量 + 积分已实测 |
+| WorkBuddy | hook、transcript、用量与 credit 字段 | 仅在检测到 WorkBuddy 后合并安装 hook | 只读提醒 | ✅ 状态 + 用量 + 积分已实测 |
 | opencode | 官方插件机制、事件与用量文件 | 安装/卸载一个独立插件文件 | 只读提醒 | ➖ 未适配 |
 
 首次启动只接入当前用户已经使用过的工具，不会为未检测到的 Agent 凭空创建配置目录。Codex 始终只读，不安装 hook。

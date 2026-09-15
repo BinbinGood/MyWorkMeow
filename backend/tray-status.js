@@ -9,6 +9,11 @@
 //
 // 现在改成按「实际接入、且确实产生过用量」的数据源生成分组行，Codex 额度块只在
 // 检测到 Codex 且额度可用时才出现。这里保持纯函数，方便回归测试直接断言行内容。
+//
+// 2026-09-15 收窄：每个分组只保留**总览**口径 —— 今日令牌 + 轮次，以及有正数时
+// 才出现的今日积分/累计积分。原先还带「等价费用」和「当前会话上下文水位」两行，
+// 都已按用户要求去掉：前者对 hy3 这类无公开价目的模型恒为 0（看着像「不要钱」），
+// 后者跟着当前会话实时跳，在托盘这种速览位反而分散注意力。
 
 const MAX_SOURCES = 3;
 
@@ -32,27 +37,12 @@ function trim(value) {
   return String(rounded);
 }
 
-// 金额只在真的是正数时返回文本：WorkBuddy 的默认模型 hy3 没有公开价目，
-// cost 恒为 0，显示「$0.00」会被误读成「不要钱」。
-function money(value) {
-  const n = num(value);
-  if (n <= 0) return null;
-  return n >= 100 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`;
-}
-
+// 积分（credit）只在真的是正数时返回文本。WorkBuddy 的默认模型 hy3 既没有公开
+// 价目也不计积分，恒为 0，显示「0」会被误读成「额度已经用完」。
 function creditText(value) {
   const n = num(value);
   if (n <= 0) return null;
   return n >= 1000 ? String(Math.round(n)) : String(Math.round(n * 10) / 10);
-}
-
-function contextText(context) {
-  if (!context || typeof context !== 'object') return null;
-  const used = num(context.used);
-  const size = num(context.size);
-  if (used <= 0 || size <= 0) return null;
-  const percent = Math.max(0, Math.min(100, Math.round((used / size) * 100)));
-  return { used: compact(used), size: compact(size), percent: String(percent) };
 }
 
 // 只有「被检测到」且「历史上真的跑过」的数据源才占一行。后者避免装完还没用过的
@@ -68,8 +58,6 @@ function sourceRows(source, t) {
     tokens: compact(source.tokens),
     rounds: String(Math.round(num(source.msgs))),
   }));
-  const cost = money(source.cost);
-  if (cost) rows.push(t('tray.sourceCost', { cost }));
   const today = creditText(source.credit);
   if (today) {
     rows.push(t('tray.sourceCredit', {
@@ -77,8 +65,6 @@ function sourceRows(source, t) {
       total: creditText(source.lifetimeCredit) || '0',
     }));
   }
-  const context = contextText(source.context);
-  if (context) rows.push(t('tray.sourceContext', context));
   return rows;
 }
 
@@ -114,9 +100,7 @@ function buildStatusRows(input = {}) {
 module.exports = {
   MAX_SOURCES,
   compact,
-  money,
   creditText,
-  contextText,
   isReportable,
   buildStatusRows,
 };

@@ -38,7 +38,7 @@ Switching between several agent windows just to check progress is distracting. W
 - **Native permission cards** — allow, deny, or permanently allow supported Claude Code requests from the pet.
 - **Unified usage view** — tokens, cache reads and writes, context windows, models, daily trends, and API-price estimates.
 - **Check Codex quota without opening Codex** — when Codex is installed, startup automatically discovers the native Codex Desktop CLI. Missing windows stay `--`, with no manual setup required.
-- **The tray shows the agents you actually use, not Codex by default** — the top of the menu lists only agents detected on this machine that have produced usage (up to three, ordered by today's tokens), each with today's tokens / rounds and API-equivalent cost; WorkBuddy additionally reports **credits** and the **current session's context water level**. The Codex quota block appears only when Codex is present and its quota is available; with nothing connected the menu shows a single hint line.
+- **The tray shows the agents you actually use, not Codex by default** — the top of the menu lists only agents detected on this machine that have produced usage (up to three, ordered by today's tokens), each with today's tokens / rounds; WorkBuddy additionally reports **credits** (today + lifetime). The tray is an overview only — no estimated cost and no context water level. The Codex quota block appears only when Codex is present and its quota is available; with nothing connected the menu shows a single hint line.
 - **Integration health and repair** — verify all five agents, then repair or remove WorkMeow-managed integrations from Settings.
 - **One-click privacy mode** — right-click the cat to toggle the compact ON/OFF control, or use Settings, while keeping essential state and usage visible.
 - **Local-first operation** — conversations and usage stay on the machine; models.dev supplies public pricing while Codex authenticates and reads its own subscription quota.
@@ -82,7 +82,7 @@ WorkMeow stores only a processed copy under `~/.workmeow/pet-assets` for the cur
 | Claude Code | Lifecycle hooks, transcript, and process data | Merge-safe WorkMeow hook install/uninstall | Supported | ✅ Verified |
 | Codex | Incremental local rollout JSONL reader; official App Server quota notifications | Does not modify Codex configuration or read credential files | Read-only alerts | ➖ Not ported |
 | TRAE | Local IDE logs and process data | Installs a merge-safe hook only when TRAE is detected | Read-only alerts | ➖ Not ported |
-| WorkBuddy | Hooks, transcripts, usage and credit fields, read-only `workbuddy.db` | Installs a merge-safe hook only when WorkBuddy is detected | Read-only alerts | ✅ Status + usage + credits verified |
+| WorkBuddy | Hooks, transcripts, usage and credit fields | Installs a merge-safe hook only when WorkBuddy is detected | Read-only alerts | ✅ Status + usage + credits verified |
 | opencode | Official plugin mechanism, events, and usage file | Installs/removes one standalone plugin file | Read-only alerts | ➖ Not ported |
 
 On first launch, WorkMeow only integrates with tools already used by the current account. It does not create configuration folders for undetected agents. Codex is always read-only and requires no hook.

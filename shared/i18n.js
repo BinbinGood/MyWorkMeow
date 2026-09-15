@@ -34,11 +34,10 @@
     'tray.quotaStatusChatgptRequired': '当前账户没有订阅额度',
     'tray.quotaStatusUnavailable': '暂时不可用，正在自动重试',
     // 按数据源分组的状态行。只对「已接入且用过」的工具生成，不再写死某一个。
+    // 只放总览口径：今日令牌 / 轮次 + 今日与累计积分。等价费用与上下文水位已移除。
     'tray.sourceTitle': '{name}　今日',
     'tray.sourceTokens': '令牌　{tokens}　·　{rounds} 轮',
-    'tray.sourceCost': '等价费用　{cost}',
     'tray.sourceCredit': '积分　{credit}　·　累计 {total}',
-    'tray.sourceContext': '上下文　{used} / {size}　({percent}%)',
     'tray.noSources': '尚未接入任何 AI 工具',
     'tray.settings': '设置',
     'tray.quit': '退出',

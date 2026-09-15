@@ -51,7 +51,6 @@ const { createCodexRateLimits, unavailableState: unavailableCodexQuota } = requi
 const { estimateWeeklyQuota } = require('./backend/codex-quota-estimate');
 const codexQuotaTray = require('./backend/codex-quota-tray');
 const { createWorkbuddyMetering } = require('./backend/workbuddy-metering');
-const { readWorkbuddySession } = require('./backend/workbuddy-session');
 const macLoginItem = require('./backend/mac-login-item');
 const trayStatus = require('./backend/tray-status');
 const { createTraeMetering } = require('./backend/trae-metering');
@@ -1468,10 +1467,12 @@ function detectedSourceIds() {
 
 // 每个数据源一行分组。只有「已接入且真跑过」的才会出现在托盘里（过滤逻辑在
 // backend/tray-status.js），Codex 额度块也只在检测到 Codex 时附加。
+//
+// 每行只喂「总览」字段：今日 token / 轮次 + 今日与累计积分。等价费用与上下文水位
+// 已按用户要求从托盘移除（托盘是速览位，不看这两项）。
 function traySourceRows() {
   const meters = meterStats();
   const detected = detectedSourceIds();
-  const session = readWorkbuddySession();
   return withSourceValues(meters).map(({ id, label, value }) => {
     const today = (value && value.today) || {};
     const lifetime = (value && value.lifetime) || {};
@@ -1481,12 +1482,9 @@ function traySourceRows() {
       detected: detected.has(id),
       tokens: today.tokens,
       msgs: today.msgs ?? today.messages,
-      cost: today.cost,
       credit: today.credit,
       lifetimeTokens: lifetime.tokens,
       lifetimeCredit: lifetime.credit,
-      // 上下文水位只有 WorkBuddy 有独立数据源（只读 db，缺表/锁库时返回 null）。
-      context: id === 'workbuddy' ? session : null,
     };
   });
 }

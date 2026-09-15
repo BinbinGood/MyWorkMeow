@@ -39,17 +39,9 @@ assert(tray.compact(1000) === '1K', 'compact uses K');
 assert(tray.compact(1_234_567) === '1.2M', 'compact uses M with one decimal below 100');
 assert(tray.compact(55_060_264) === '55.1M', 'compact handles real token counts');
 assert(tray.compact(123_000_000) === '123M', 'compact drops the decimal at 100+');
-assert(tray.money(0) === null, 'money hides a zero cost (hy3 has no public price)');
-assert(tray.money(1.016709612) === '$1.02', 'money formats to cents');
-assert(tray.money(150.4) === '$150', 'money drops cents above 100');
 assert(tray.creditText(0) === null, 'creditText hides a zero credit');
 assert(tray.creditText(63.82) === '63.8', 'creditText keeps one decimal');
 assert(tray.creditText(1734.43) === '1734', 'creditText drops the decimal above 1000');
-assert(tray.contextText(null) === null, 'contextText tolerates null');
-assert(tray.contextText({ used: 0, size: 300000 }) === null, 'contextText needs a positive used');
-assert(JSON.stringify(tray.contextText({ used: 219254, size: 300000 }))
-  === JSON.stringify({ used: '219K', size: '300K', percent: '73' }), 'contextText renders used/size/percent');
-assert(tray.contextText({ used: 400000, size: 300000 }).percent === '100', 'contextText clamps the percent');
 
 // ── 行生成 ────────────────────────────────────────────────────────────────────
 const workbuddy = {
@@ -58,11 +50,9 @@ const workbuddy = {
   detected: true,
   tokens: 55_060_264,
   msgs: 427,
-  cost: 1.2521,
   credit: 63.82,
   lifetimeTokens: 282_013_281,
   lifetimeCredit: 1734.43,
-  context: { used: 219254, size: 300000 },
 };
 
 const rows = tray.buildStatusRows({ sources: [workbuddy], codexRows: [], codexReady: false, t });
@@ -71,9 +61,10 @@ assert(rows.every((row) => row.type !== 'separator'), 'a single source needs no 
 assertTranslated(rows, 'source group renders');
 const text = flat(rows);
 assert(text.includes('55.1M') && text.includes('427 轮'), 'today tokens + rounds are shown');
-assert(text.includes('$1.25'), 'estimated cost is shown when positive');
 assert(text.includes('63.8') && text.includes('1734'), 'credit shows today + lifetime');
-assert(text.includes('219K / 300K') && text.includes('73%'), 'context water level is shown');
+assert(!/\$/.test(text), 'no estimated cost row — removed by request');
+assert(!/上下文/.test(text), 'no context water level row — removed by request');
+assert(labels(rows).length === 3, `a group is exactly header + tokens + credit (got ${labels(rows).length} rows)`);
 assert(!/Codex/.test(text), 'no Codex row when Codex is not ready — this is the bug being fixed');
 assert(rows.every((row) => row.type === 'separator' || row.enabled === false),
   'all status rows are non-clickable info rows');
@@ -137,9 +128,22 @@ assert(tray.isReportable({ detected: false, lifetimeTokens: 10 }) === false,
   'an undetected source is never reportable');
 
 // 每个新文案键都必须真的存在于词典里
-for (const key of ['tray.sourceTitle', 'tray.sourceTokens', 'tray.sourceCost',
-  'tray.sourceCredit', 'tray.sourceContext', 'tray.noSources']) {
+for (const key of ['tray.sourceTitle', 'tray.sourceTokens', 'tray.sourceCredit', 'tray.noSources']) {
   assert(typeof t(key) === 'string' && t(key) !== key, `i18n has ${key}`);
 }
+
+// 已经删掉的键不能留在词典里，否则将来会有人以为它们还在用
+for (const gone of ['tray.sourceCost', 'tray.sourceContext']) {
+  assert(t(gone) === gone, `${gone} is gone from the dictionary`);
+}
+
+// 积分为 0 的数据源（WorkBuddy 的默认模型 hy3 就是这种）不该出现积分行
+const noCredit = tray.buildStatusRows({
+  sources: [{ id: 'a', label: 'A', detected: true, tokens: 1000, msgs: 2, lifetimeTokens: 1000 }],
+  codexReady: false,
+  t,
+});
+assert(labels(noCredit).length === 2 && !/积分/.test(flat(noCredit)),
+  'a zero credit drops the credit row instead of printing 0');
 
 console.log('\nTRAY STATUS TESTS PASSED');
