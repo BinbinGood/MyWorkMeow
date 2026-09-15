@@ -43,7 +43,10 @@ const BUSY_STATES = new Set(States.BUSY_STATES);
 // 要清掉上一轮的完成徽标；Claude 路径永远不会发这个事件名。
 // ElicitationResult: WorkBuddy 的「用户答完了 AskUserQuestion」——同样是新工作
 // 开始，且必须立刻解除 Elicitation 留下的 notification 态。
-const WORK_START_EVENTS = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'TaskStarted', 'ElicitationResult']);
+// PreCompact/PostCompact 也是「一段新工作」：压缩上下文期间必须把上一轮的
+// 完成徽标清掉，否则 sweeping 的 oneshot 一衰减，徽标立刻退回「刚完成」，
+// 看起来像压缩已经结束了（2026-09-15 实测）。
+const WORK_START_EVENTS = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'TaskStarted', 'ElicitationResult', 'PreCompact', 'PostCompact']);
 
 // Stale-cleanup thresholds (ms). An idle session whose terminal process is still
 // ALIVE stays visible (never auto-slept or removed) — so every open Claude
@@ -183,6 +186,9 @@ function createCore(options = {}) {
     setField(s, 'model', f.model);
     if (typeof f.headless === 'boolean') s.headless = f.headless;
     if (f.sessionTitle != null) s.sessionTitle = f.sessionTitle;
+    // 每轮 prompt 只能当**兜底**名字：一旦会话有了名字，后到的 prompt 不再改名
+    // （否则列表里的任务名一轮一变，认不出是哪个任务）。
+    else if (f.promptTitle && !s.sessionTitle) s.sessionTitle = f.promptTitle;
     if (f.contextUsage) s.contextUsage = f.contextUsage;
     if (f.errorType) s.errorType = f.errorType; // last API/server error kind
     // Pending emotion (per-event, one-shot). Adapter consumes it when it ships
@@ -272,6 +278,10 @@ function createCore(options = {}) {
     }
 
     s.state = resolvedState;
+    // oneshot 状态的存活时长：默认取状态表的 TTL（sweeping 是给 /clear 量的 20s），
+    // 长操作（PreCompact 压缩上下文）由 hook 自己报一个更长的值，直到 PostCompact
+    // 把它换掉。非 oneshot 状态一律清零，免得旧值被下一个 sweeping 借用。
+    s.stateTtlMs = ONESHOT_STATES.has(resolvedState) ? (Number(f.stateTtlMs) || 0) : 0;
     // Which flavour of Notification parked us in 「等你回复」(permission_prompt /
     // elicitation_dialog / …). Kept so a future false positive can be traced to
     // its exact source via /debug instead of guessed at; cleared on the way out.
@@ -514,9 +524,12 @@ function createCore(options = {}) {
       const alive = s.sourcePid ? pidAlive(s.sourcePid) : null;
       // Oneshot decay backstop: error/attention/sweeping/carrying settle to idle
       // after their TTL if no further event arrives (StopFailure / /clear paths).
-      const ttl = ONESHOT_TTL_MS[s.state];
+      // 长操作（PreCompact）会把 TTL 报得更长（见 hook-common），所以压缩中的
+      // sweeping 不会被 20s 的默认值提前放掉。
+      const ttl = s.stateTtlMs || ONESHOT_TTL_MS[s.state];
       if (ttl && idle > ttl) {
         s.state = s.backgroundActive ? 'working' : 'idle';
+        s.stateTtlMs = 0;
         changed = true;
       }
       if (s.requiresCompletionAck && now - Number(s.completionAt || 0) > RESULT_BADGE_TTL_MS) {

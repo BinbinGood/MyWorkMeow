@@ -7,7 +7,7 @@
 
 const http = require('http');
 const assert = require('assert');
-const { createCore } = require('../backend/core');
+const { createCore, deriveBadge } = require('../backend/core');
 const { createPermissions } = require('../backend/permission');
 const { createServer } = require('../backend/server');
 const { SERVER_ID, SERVER_HEADER, TOKEN_HEADER } = require('../backend/transport');
@@ -756,6 +756,93 @@ async function main() {
   });
   permissions.decide(bogus.id, 'allow');
   await bogusP;
+
+  console.log('\n[20] 压缩上下文：sweeping 不再被 20s 默认 TTL 顶回「刚完成」');
+  // 用户实测：模型压缩上下文时喵显示的还是「已完成」。根因是两条叠加：
+  //   1) oneshot 的 sweeping TTL 是 20s（那个值是给 /clear 量的），压缩一超时
+  //      状态就落回 idle；
+  //   2) 上一轮 Stop 留下的 requiresCompletionAck 还在 → 徽标立刻 derive 回 done。
+  // 修法：PreCompact 由 hook 报一个更长的 state_ttl_ms（压缩期间一直挂着 sweeping），
+  // 并把 PreCompact/PostCompact 归入 WORK_START_EVENTS（新工作开始时清完成徽标）。
+  const { buildBody: buildHookBody } = require('../backend/hook-common');
+  const cmpSid = 'compact-session-1111';
+  const preBody = buildHookBody('PreCompact', {
+    session_id: cmpSid, cwd: '/Users/me/proj-cmp', hook_event_name: 'PreCompact', trigger: 'auto',
+  }, 'workbuddy');
+  const postBody = buildHookBody('PostCompact', {
+    session_id: cmpSid, cwd: '/Users/me/proj-cmp', hook_event_name: 'PostCompact', trigger: 'auto',
+  }, 'workbuddy');
+
+  check('hook 给 PreCompact 带上更长的 state_ttl_ms', () => {
+    assert(preBody && preBody.state === 'sweeping');
+    assert(preBody.state_ttl_ms > 20 * 1000, 'TTL 必须比 sweeping 默认的 20s 长');
+  });
+  check('PostCompact 不带 TTL（回到状态表默认值）', () => {
+    assert(postBody && postBody.state === 'thinking');
+    assert.strictEqual(postBody.state_ttl_ms, undefined);
+  });
+
+  await post('/state', { state: 'thinking', event: 'UserPromptSubmit', session_id: cmpSid, cwd: '/Users/me/proj-cmp' });
+  await post('/state', { state: 'attention', event: 'Stop', session_id: cmpSid, stop_hook_active: false });
+  check('回合结束后徽标是「刚完成」', () => {
+    assert.strictEqual(deriveBadge(core.getSession(cmpSid)), 'done');
+  });
+
+  await post('/state', preBody);
+  check('PreCompact 立刻进入 sweeping（徽标不再是完成）', () => {
+    assert.strictEqual(core.getSession(cmpSid).state, 'sweeping');
+    assert.strictEqual(deriveBadge(core.getSession(cmpSid)), 'running');
+  });
+  check('PreCompact 清掉上一轮的完成标志（衰减后也不会变回 done）', () => {
+    assert.strictEqual(core.getSession(cmpSid).requiresCompletionAck, false);
+    assert.strictEqual(core.getSession(cmpSid).completionAt, 0);
+  });
+  core.sessions.get(cmpSid).updatedAt = Date.now() - 30 * 1000; // 越过 sweeping 默认的 20s
+  core.cleanStaleSessions();
+  check('压缩跑了 30s 仍然挂着 sweeping（原来就是这里丢的状态）', () => {
+    assert.strictEqual(core.getSession(cmpSid).state, 'sweeping');
+    assert.notStrictEqual(deriveBadge(core.getSession(cmpSid)), 'done');
+  });
+
+  await post('/state', postBody);
+  check('PostCompact 回到干活态并清掉长 TTL', () => {
+    const s = core.getSession(cmpSid);
+    assert.strictEqual(s.state, 'thinking');
+    assert.strictEqual(s.stateTtlMs, 0);
+  });
+  // 长 TTL 只属于「这一次压缩」：紧接着来一发 /clear 的 sweeping，必须仍按
+  // 状态表默认的 20s 衰减（绝不能把 5 分钟借给别的场景）。
+  await post('/state', { state: 'sweeping', event: 'SessionEnd', session_id: cmpSid, cwd: '/Users/me/proj-cmp' });
+  core.sessions.get(cmpSid).updatedAt = Date.now() - 21 * 1000;
+  core.cleanStaleSessions();
+  check('长 TTL 不外泄：/clear 的 sweeping 仍按默认 20s 衰减', () => {
+    assert.strictEqual(core.getSession(cmpSid).state, 'idle');
+  });
+
+  console.log('\n[21] 会话名跟着任务名走（每轮 prompt 只做兜底）');
+  const titleSid = 'title-session-2222';
+  const first = buildHookBody('UserPromptSubmit', {
+    session_id: titleSid, cwd: '/Users/me/proj-t', hook_event_name: 'UserPromptSubmit', prompt: '帮我改一下登录接口\n第二行不该进标题',
+  }, 'workbuddy');
+  const second = buildHookBody('UserPromptSubmit', {
+    session_id: titleSid, cwd: '/Users/me/proj-t', hook_event_name: 'UserPromptSubmit', prompt: '顺便把测试补了',
+  }, 'workbuddy');
+  check('prompt 首行走 prompt_title 而不是权威标题', () => {
+    assert.strictEqual(first.prompt_title, '帮我改一下登录接口');
+    assert.strictEqual(first.session_title, undefined);
+  });
+  await post('/state', first);
+  check('还没有名字时用 prompt 首行兜底', () => {
+    assert.strictEqual(core.getSession(titleSid).sessionTitle, '帮我改一下登录接口');
+  });
+  await post('/state', second);
+  check('下一轮不再改名（原来一轮一变，列表里认不出是哪个任务）', () => {
+    assert.strictEqual(core.getSession(titleSid).sessionTitle, '帮我改一下登录接口');
+  });
+  await post('/state', { ...first, session_title: '自定义任务名' });
+  check('权威标题（自定义 / WorkBuddy 任务库）仍然可以改名', () => {
+    assert.strictEqual(core.getSession(titleSid).sessionTitle, '自定义任务名');
+  });
 
   server.stop();
   console.log(`\n${failures === 0 ? '✅ ALL PASS' : '❌ ' + failures + ' FAILURE(S)'} — events captured: ${events.length}, dirty fires: ${dirtyCount}`);

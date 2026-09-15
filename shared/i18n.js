@@ -27,6 +27,7 @@
     'tray.quotaWindow': '{label}　剩余 {remaining}　{reset} 刷新',
     'tray.quotaUpdated': '更新于 {time}',
     'tray.quotaStatus': '状态　{status}',
+    'tray.quotaPending': 'Codex 额度　{status}',
     'tray.quotaStatusReady': '实时同步中',
     'tray.quotaStatusConnecting': '正在同步当前账户…',
     'tray.quotaStatusCodexMissing': '未找到 Codex，正在自动重试',

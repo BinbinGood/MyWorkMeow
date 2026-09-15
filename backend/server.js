@@ -210,6 +210,11 @@ function createServer(deps) {
         transcriptPath: normTranscriptPath(data.transcript_path),
         model: typeof data.model === 'string' && data.model.trim() ? data.model.trim() : null,
         sessionTitle: typeof data.session_title === 'string' && data.session_title.trim() ? data.session_title.trim() : null,
+        // 兜底标题：只在会话还没有名字时才用（见 core）。每轮的 prompt 首行不是
+        // 稳定的任务名，不能覆盖已有的。
+        promptTitle: typeof data.prompt_title === 'string' && data.prompt_title.trim() ? data.prompt_title.trim() : null,
+        // 本次 oneshot 状态的存活时长（PreCompact 这类长操作自己报，缺省用状态表）。
+        stateTtlMs: Number.isFinite(data.state_ttl_ms) && data.state_ttl_ms > 0 ? data.state_ttl_ms : null,
         sessionSource: typeof data.session_source === 'string' && /^[a-z]{1,16}$/.test(data.session_source) ? data.session_source : null,
         // Which flavour of Notification this was (permission_prompt / idle_prompt
         // / …). The hook already classified it; we only keep the label so a false

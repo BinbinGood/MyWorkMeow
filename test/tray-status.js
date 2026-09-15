@@ -133,6 +133,45 @@ assert(labels(withCodex)[0] === 'WorkBuddy　今日',
   'codexRows are appended after the source groups, not pinned to the top');
 assert(withCodex.some((row) => row.type === 'separator'), 'blocks are separated from each other');
 
+// 装了 Codex 但额度还没到手：整块 5h/7d 不画（没数字的占位是噪音），但必须留**一行**
+// 说明额度归它 —— 否则设置页那一项写着「Codex 订阅额度」、托盘却只有 WorkBuddy 的
+// 今日用量，用户看到的是「两处对不上」（2026-09-15 反馈）。
+const codexPending = tray.buildStatusRows({
+  sources: [workbuddy],
+  codexReady: false,
+  codexPending: true,
+  codexPendingRows: [{ label: t('tray.quotaPending', { status: t('tray.quotaStatusUnavailable') }), enabled: false }],
+  t,
+});
+assert(/Codex/.test(flat(codexPending)), 'a detected-but-unready Codex still gets one line in the tray');
+assert(labels(codexPending).length === 4,
+  `header + usage + credit + the one Codex line (got ${labels(codexPending).length})`);
+assert(codexPending.some((row) => row.type === 'separator'),
+  'the pending Codex line is its own block, separated from the sources');
+assertTranslated(codexPending, 'the pending Codex line renders');
+
+// 额度到手后只画整块，不能两行同时出现
+const readyWins = tray.buildStatusRows({
+  sources: [workbuddy],
+  codexReady: true,
+  codexPending: true,
+  codexRows: [{ label: 'Codex　账户 a***@example.com · Plus' }],
+  codexPendingRows: [{ label: 'Codex　额度暂不可用' }],
+  t,
+});
+assert(/账户/.test(flat(readyWins)) && !/暂不可用/.test(flat(readyWins)),
+  'the ready quota block replaces the pending line');
+
+// 没接 Codex：pending 行给了也不许出现（防止「插一行就冒一行」）
+const noCodexPending = tray.buildStatusRows({
+  sources: [workbuddy],
+  codexReady: false,
+  codexPending: false,
+  codexPendingRows: [{ label: 'Codex　额度暂不可用' }],
+  t,
+});
+assert(!/Codex/.test(flat(noCodexPending)), 'pending rows need the explicit codexPending flag');
+
 // 装过但从未产生用量 → 不占位
 const neverUsed = tray.buildStatusRows({
   sources: [{ id: 'trae', label: 'TRAE', detected: true, tokens: 0, lifetimeTokens: 0 }],
@@ -196,7 +235,8 @@ assert(tray.slotOwner().kind === 'none', 'slotOwner tolerates no input');
 
 // 每个新文案键都必须真的存在于词典里
 for (const key of ['tray.sourceTitle', 'tray.sourceTokens', 'tray.sourceUsage',
-  'tray.sourceCredit', 'tray.sourceCreditUsed', 'tray.sourceCreditLeft', 'tray.noSources']) {
+  'tray.sourceCredit', 'tray.sourceCreditUsed', 'tray.sourceCreditLeft', 'tray.noSources',
+  'tray.quotaPending']) {
   assert(typeof t(key) === 'string' && t(key) !== key, `i18n has ${key}`);
 }
 

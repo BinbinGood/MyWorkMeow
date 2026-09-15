@@ -110,13 +110,19 @@ function buildStatusRows(input = {}) {
     .sort((a, b) => num(b.tokens) - num(a.tokens))
     .slice(0, MAX_SOURCES);
   const codexRows = Array.isArray(input.codexRows) ? input.codexRows : [];
+  const pendingRows = Array.isArray(input.codexPendingRows) ? input.codexPendingRows : [];
   const showCodex = input.codexReady === true && codexRows.length > 0;
+  // 接了 Codex 但额度还没拿到手：整块 5h/7d 不画（没有数字的占位行更吵），但留
+  // **一行**说明额度归它。否则设置页那一项写着「Codex 订阅额度」、托盘却只有
+  // WorkBuddy 的今日用量，两处口径看起来互相矛盾（用户 2026-09-15 反馈）。
+  const showCodexPending = !showCodex && input.codexPending === true && pendingRows.length > 0;
 
   const blocks = sources.map((source) => [
     { label: t('tray.sourceTitle', { name: source.label }), enabled: false },
     ...sourceRows(source, t).map((label) => ({ label, enabled: false })),
   ]);
   if (showCodex) blocks.push(codexRows.slice());
+  else if (showCodexPending) blocks.push(pendingRows.slice());
   if (!blocks.length) return [{ label: t('tray.noSources'), enabled: false }];
 
   const rows = [];

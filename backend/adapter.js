@@ -420,10 +420,14 @@ function buildPetStats(snapshot, pendingPermissions, metering, opts) {
     reasoningOutput: lifetime.reasoningOutput || 0,
   };
 
-  // Header wants a short project label, not the full cwd path.
+  // Header wants a short project label, not the full cwd path. 口径与下面的会话行
+  // 完全一致（projectName）——否则头写着目录名、列表写着任务名，同一只喵两处对
+  // 不上：WorkBuddy 每个任务一个按时间命名的目录，看目录名根本认不出是哪个任务。
   let activeOut = snapshot.active;
   if (activeOut && activeOut.project) {
-    activeOut = { ...activeOut, project: path.basename(activeOut.project) || activeOut.project };
+    const row = (snapshot.sessions || []).find((e) => e && e.id === activeOut.sessionId);
+    const label = row ? projectName(row) : path.basename(activeOut.project);
+    activeOut = { ...activeOut, project: label || activeOut.project };
   }
 
   return {

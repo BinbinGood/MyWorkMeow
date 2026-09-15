@@ -44,6 +44,9 @@ const EVENT_STATE = {
 };
 const FOCUS_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'PreToolUse']);
 
+// 「压缩上下文」这类长操作的 oneshot 存活时间。压缩真的失败/PostCompact 丢了也有它兜底。
+const PRE_COMPACT_TTL_MS = 5 * 60 * 1000;
+
 function readStdin() {
   return new Promise((resolve) => {
     const chunks = [];
@@ -117,6 +120,12 @@ function buildBody(event, p, agentId) {
     if (typeof t === 'string' && t) body.api_error_type = t;
   }
   body.background_tasks_count = count(p.background_tasks);
+  // PreCompact 是一次**长操作**：压缩长上下文经常几十秒到几分钟（实测本机一次
+  // 自动压缩 >20s）。而 oneshot 状态的默认衰减是 20s（那个值是给 /clear 这种瞬时
+  // 场景量的）—— 一超时 sweeping 就落回 idle，上一轮的完成标志还在，桌宠立刻变回
+  // 「刚完成」，看起来像已经压完了（2026-09-15 用户实测反馈）。所以把本次的 TTL
+  // 一起带过去，让 core 挂着 sweeping 直到 PostCompact 到来。
+  if (event === 'PreCompact') body.state_ttl_ms = PRE_COMPACT_TTL_MS;
   body.session_crons_count = count(p.session_crons);
 
   // Transcript-derived enrichment (read the tail once). Best-effort: a tool whose
@@ -148,8 +157,11 @@ function buildBody(event, p, agentId) {
     }
   }
   if (!body.session_title && event === 'UserPromptSubmit') {
+    // 只当**兜底**标题，不覆盖已有会话名：每轮提交都把当前 prompt 的第一行当
+    // 标题，会让桌宠上的任务名一轮一变（列表里根本认不出是哪个任务）。
+    // core 收到 prompt_title 后仅在会话还没有名字时才落库。
     const pt = transcript.promptTitle(p.prompt);
-    if (pt) body.session_title = pt;
+    if (pt) body.prompt_title = pt;
   }
 
   if (event === 'UserPromptSubmit' && typeof p.prompt === 'string') {

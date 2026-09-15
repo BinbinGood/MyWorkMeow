@@ -51,6 +51,7 @@ const { createCodexRateLimits, unavailableState: unavailableCodexQuota } = requi
 const { estimateWeeklyQuota } = require('./backend/codex-quota-estimate');
 const codexQuotaTray = require('./backend/codex-quota-tray');
 const { createWorkbuddyMetering } = require('./backend/workbuddy-metering');
+const { createTitles: createWorkbuddyTitles } = require('./backend/workbuddy-titles');
 const macLoginItem = require('./backend/mac-login-item');
 const trayStatus = require('./backend/tray-status');
 const creditCycle = require('./backend/credit-cycle');
@@ -69,6 +70,9 @@ const privacy = require('./backend/privacy');
 
 const t = i18n.t;
 const petAssetStore = new PetAssetStore();
+// WorkBuddy 的任务名只有它自己的会话库里有（hook payload 不带标题）——只读取标题，
+// 读不到就静默回落，见 backend/workbuddy-titles.js。
+const workbuddyTitles = createWorkbuddyTitles({ workbuddyDir: env.value('WORKBUDDY_DIR') || undefined });
 
 // Windows 下由 `npm start` 的 detached 启动器（start-detached.js）
 // 让 GUI 进程脱离启动它的控制台，关闭终端后桌宠仍继续运行。
@@ -672,6 +676,9 @@ function emptyMeter() {
 // agent 参数保留仅为兼容旧调用，取值不影响结果。
 function buildStats(agent = 'all', snapshot = null, cachedMeter = null) {
   const snap = snapshot || core.buildSnapshot();
+  // 会话标签跟着 WorkBuddy 里显示的任务名走（拿不到就不动，回落链见
+  // adapter.projectName）。放在这里是因为所有出口（桌宠 / 面板 / 设置）都经过它。
+  workbuddyTitles.attach(snap.sessions);
   // 使用缓存的 metering 数据避免重复调用 getStats()
   const sourceRows = withSourceValues(cachedMeter || meterStats()).map(({ id, value }) => [id, value]);
   const usageBySource = Object.fromEntries(sourceRows);
@@ -1590,10 +1597,17 @@ function refreshTrayMenu() {
   // 占位的 -- ，比不显示更吵。额度槽位（quotaSlot）的判定条件不一样 —— 它是
   // 「归属」，只要装了 Codex 就得归它、不能中途飘到别的 Agent 上。
   const codexReady = codexDetected() && codexQuotaState.status === 'ready';
+  // 装了 Codex 但额度还没到手：托盘留一行状态（见 tray-status 的说明），
+  // 让「额度归谁」在三处（设置页 / 徽标 / 托盘）口径一致。
+  const codexPending = codexDetected() && !codexReady;
   const statusRows = trayStatus.buildStatusRows({
     sources: traySourceRows(),
     codexRows: codexReady ? codexQuotaRows(codexQuotaTray.displayRows(codexQuotaState)) : [],
     codexReady,
+    codexPendingRows: codexPending
+      ? [{ label: t('tray.quotaPending', { status: quotaStatusLabel(codexQuotaState) }), enabled: false }]
+      : [],
+    codexPending,
     t,
   });
   const items = [

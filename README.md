@@ -38,6 +38,8 @@
 - **状态一眼可见**：工作、思考、并行、清理、等待授权、等待回复、完成、出错、摸鱼与睡眠；后台任务或定时唤醒未结束时保持运行，不提前报完成。
 - **表情自由定制**：集中查看每个状态的全部 GIF，可新增轮换、替换或移出选中项，也可一键恢复默认。
 - **原生权限卡（Claude Code 与 WorkBuddy）**：请求授权或需要你选择（AskUserQuestion）时，直接在桌宠上允许 / 拒绝 / 作答，不必切回终端或 WorkBuddy 窗口。两家共用同一条阻塞式 `PermissionRequest` 通道；「永久允许」只会出现在真能落盘规则的一方（Claude Code）身上。
+- **会话名就是你在 WorkBuddy 里看到的任务名**：WorkBuddy 的 hook 载荷不带标题，桌面端会**只读**打开它的会话库（`~/.workbuddy/workbuddy.db` 的 `sessions.title / custom_title`）取任务名，所以列表里显示的是「少样本底盘检测项目」而不是按时间命名的目录名；库读不到时照旧回落到 transcript 标题 / 目录名。
+- **压缩上下文时不会误报完成**：`PreCompact` 会自己带一个更长的存活时长并清掉上一轮的完成徽标（`PostCompact` 收尾），所以压缩几十秒以上时喵仍显示「整理记忆」，不会中途变回「刚完成」。
 - **统一用量面板**：聚合 token、缓存读写、上下文窗口、模型、每日趋势与 API 公价折算。
 - **托盘按接入的 Agent 展示，不再预设 Codex**：菜单顶部只列**本机实际接入且用过**的 Agent（最多三个，按今日用量排序），每行给出今日 Token · 费用，WorkBuddy 还额外给出**积分**（今日消耗 · 剩余）。Codex 额度块只在检测到 Codex 且额度可用时才出现；一个都没接入时显示一行提示。
 - **无需打开 Codex 即可查额度**：装了 Codex 时自动发现桌面 Codex 自带的 CLI；缺失窗口明确显示 `--`，无需手动配置。
@@ -84,7 +86,7 @@ WorkMeow 只把处理后的副本保存在当前用户的 `~/.workmeow/pet-asset
 | Claude Code | `hook/workmeow-hook.js` 生命周期 hook、transcript、进程信息 | 合并安装/卸载 WorkMeow hook，不覆盖已有 hook | 支持 | ✅ 已实测 |
 | Codex | 增量读取本机 rollout JSONL；官方 App Server 订阅额度通知 | 不修改 Codex 配置、不读取凭据文件 | 只读提醒 | ➖ 未适配 |
 | TRAE | 读取本机 IDE 日志与进程信息 | 仅在检测到 TRAE 后合并安装 hook | 只读提醒 | ➖ 未适配 |
-| WorkBuddy | hook、transcript、用量与 credit 字段 | 仅在检测到 WorkBuddy 后合并安装 hook（含阻塞式 `PermissionRequest`） | 支持（授权 + 选择题） | ✅ 状态 + 用量 + 积分已实测；授权通道桌宠侧已实测 |
+| WorkBuddy | hook、transcript、用量与 credit 字段、只读会话标题库（`workbuddy.db`） | 仅在检测到 WorkBuddy 后合并安装 hook（含阻塞式 `PermissionRequest`） | 支持（授权 + 选择题） | ✅ 状态 + 用量 + 积分 + 任务名已实测；授权通道桌宠侧已实测 |
 | opencode | 官方插件机制、事件与用量文件 | 安装/卸载一个独立插件文件 | 只读提醒 | ➖ 未适配 |
 
 首次启动只接入当前用户已经使用过的工具，不会为未检测到的 Agent 凭空创建配置目录。Codex 始终只读，不安装 hook。
