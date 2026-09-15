@@ -29,6 +29,104 @@ async function initializeChipDisplay() {
 }
 initializeChipDisplay();
 
+// ── 额度槽位 + 手填积分额度 ──────────────────────────────────────────────────
+// 额度那一项以前写死成「Codex 订阅额度」，描述里也写死 5h/7d。但本项目支持五种
+// Agent，这一项必须跟着**实际接入**的那个走：接 Codex 就是它的 5h/7d，接
+// WorkBuddy 就是它的积分（归属由主进程 quotaSlot() 判定，渲染端只负责画）。
+const quotaSlotTitle = $('quota-slot-title');
+const quotaSlotDescription = $('quota-slot-description');
+const creditQuotaSection = $('credit-quota-section');
+const creditQuotaDescription = $('credit-quota-description');
+const creditQuotaMonthly = $('credit-quota-monthly');
+const creditQuotaResetDay = $('credit-quota-reset-day');
+const creditQuotaStatus = $('credit-quota-status');
+const creditQuotaSave = $('credit-quota-save');
+const creditQuotaClear = $('credit-quota-clear');
+const quotaToggle = $('showQuota-toggle');
+let quotaSlotState = { kind: 'none' };
+let creditQuotaBusy = false;
+
+function renderCreditQuotaStatus(messageKey = null, kind = '') {
+  creditQuotaStatus.className = `setting-status${kind ? ` ${kind}` : ''}`;
+  if (messageKey) {
+    creditQuotaStatus.textContent = t(messageKey);
+    return;
+  }
+  const monthly = Number(quotaSlotState && quotaSlotState.monthly);
+  creditQuotaStatus.textContent = Number.isFinite(monthly) && monthly > 0
+    ? t('settings.creditQuotaOn', { monthly, day: quotaSlotState.resetDay })
+    : '';
+}
+
+function renderQuotaSlot(slot) {
+  quotaSlotState = slot && typeof slot === 'object' ? slot : { kind: 'none' };
+  const name = quotaSlotState.label || '';
+  if (quotaSlotState.kind === 'codex') {
+    quotaSlotTitle.textContent = t('settings.quotaSlotCodex');
+    quotaSlotDescription.textContent = t('settings.quotaSlotCodexDescription');
+  } else if (quotaSlotState.kind === 'credit') {
+    quotaSlotTitle.textContent = t('settings.quotaSlotCredit', { name });
+    quotaSlotDescription.textContent = t('settings.quotaSlotCreditDescription');
+  } else {
+    quotaSlotTitle.textContent = t('settings.quotaSlotNone');
+    quotaSlotDescription.textContent = t('settings.quotaSlotNoneDescription');
+  }
+  quotaToggle.setAttribute('aria-label', quotaSlotTitle.textContent);
+
+  // 「积分额度」那张手填卡片只在槽位确实归属某个积分型数据源时才出现 ——
+  // 接的是 Codex 时它的额度来自官方接口，没有要手填的东西。
+  const showCredit = quotaSlotState.kind === 'credit';
+  creditQuotaSection.hidden = !showCredit;
+  if (!showCredit) return;
+  creditQuotaDescription.textContent = t('settings.creditQuotaDescription', { name });
+  const monthly = Number(quotaSlotState.monthly);
+  creditQuotaMonthly.value = Number.isFinite(monthly) && monthly > 0 ? String(monthly) : '';
+  const resetDay = Number(quotaSlotState.resetDay);
+  creditQuotaResetDay.value = Number.isFinite(resetDay) && resetDay > 0 ? String(resetDay) : '1';
+  renderCreditQuotaStatus();
+}
+
+async function loadQuotaSlot() {
+  try {
+    const result = await window.pet.getQuotaSlot();
+    renderQuotaSlot(result && result.slot ? result.slot : null);
+  } catch { renderQuotaSlot(null); }
+}
+
+// clear=true 时传 monthly=0：主进程会把这一项删掉，托盘随之不再显示「剩余」，
+// 而不是显示一个会被读成「额度用完了」的 0。
+async function saveCreditQuota(clear = false) {
+  if (creditQuotaBusy || quotaSlotState.kind !== 'credit') return;
+  const monthly = clear ? 0 : Number(creditQuotaMonthly.value);
+  if (!clear && (!Number.isFinite(monthly) || monthly <= 0)) {
+    renderCreditQuotaStatus('settings.creditQuotaInvalid', 'error');
+    return;
+  }
+  creditQuotaBusy = true;
+  creditQuotaSave.disabled = true;
+  creditQuotaClear.disabled = true;
+  renderCreditQuotaStatus('settings.creditQuotaSaving');
+  try {
+    const result = await window.pet.setCreditQuota({
+      sourceId: quotaSlotState.id,
+      monthly,
+      resetDay: Number(creditQuotaResetDay.value),
+    });
+    if (!result || !result.ok || !result.slot) throw new Error('save failed');
+    renderQuotaSlot(result.slot);
+    renderCreditQuotaStatus(clear ? 'settings.creditQuotaCleared' : 'settings.creditQuotaSaved');
+  } catch { renderCreditQuotaStatus('settings.creditQuotaFailed', 'error'); }
+  finally {
+    creditQuotaBusy = false;
+    creditQuotaSave.disabled = false;
+    creditQuotaClear.disabled = false;
+  }
+}
+
+creditQuotaSave.addEventListener('click', () => saveCreditQuota(false));
+creditQuotaClear.addEventListener('click', () => saveCreditQuota(true));
+loadQuotaSlot();
+
 const toggle = $('auto-launch-toggle');
 const statusEl = $('setting-status');
 const privacyToggle = $('privacy-toggle');

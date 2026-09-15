@@ -53,11 +53,12 @@ const codexQuotaTray = require('./backend/codex-quota-tray');
 const { createWorkbuddyMetering } = require('./backend/workbuddy-metering');
 const macLoginItem = require('./backend/mac-login-item');
 const trayStatus = require('./backend/tray-status');
+const creditCycle = require('./backend/credit-cycle');
 const { createTraeMetering } = require('./backend/trae-metering');
 const { createOpenCodeMetering } = require('./backend/opencode-metering');
 const { emptyUsage, normalizeSourceRow, mergeUsageRows, mergeDaily } = require('./backend/usage-stats');
 const { buildIntegrationHealth } = require('./backend/integration-health');
-const { withValues: withSourceValues } = require('./backend/source-registry');
+const { withValues: withSourceValues, supportsCreditQuota } = require('./backend/source-registry');
 const transport = require('./backend/transport');
 const env = require('./backend/env');
 const { migrateLegacyState } = require('./backend/paths');
@@ -731,6 +732,9 @@ function buildStats(agent = 'all', snapshot = null, cachedMeter = null) {
     usageProvider: 'all',
   });
   stats.chipDisplay = getChipDisplay();
+  // 底部展示栏的「额度」槽位挂谁身上 —— 接 Codex 就是 Codex 的 5h/7d，
+  // 接 WorkBuddy 就是它的积分。渲染端据此决定画哪种徽标（见 renderer/pet.js）。
+  stats.quotaSlot = quotaSlot();
   const quotaWindows = codexQuotaState.windows || {};
   const quotaAccount = codexQuotaState.account && typeof codexQuotaState.account === 'object'
     ? {
@@ -1061,6 +1065,15 @@ function registerIpc() {
     return { ok: true, ...getChipDisplay() };
   });
   ipcMain.handle(IPC.SET_AUTO_LAUNCH, (_e, enabled) => setAutoLaunch(enabled));
+  // 额度槽位与手填额度：设置页那一项要跟着实际接入的 agent 变，不能写死 Codex，
+  // 所以取值统一走 quotaSlot()。写入只接受设置窗口来的请求（和前面几个一致）。
+  ipcMain.handle(IPC.GET_QUOTA_SLOT, () => ({ ok: true, slot: quotaSlot() }));
+  ipcMain.handle(IPC.SET_CREDIT_QUOTA, (e, payload) => {
+    if (!settingsWin || settingsWin.isDestroyed() || e.sender !== settingsWin.webContents) {
+      return { ok: false, error: 'forbidden' };
+    }
+    return setCreditQuota(payload);
+  });
   ipcMain.handle(IPC.GET_PRIVACY_MODE, (e) => {
     const fromSettings = settingsWin && !settingsWin.isDestroyed() && e.sender === settingsWin.webContents;
     if (!fromSettings && !stateOfSender(e.sender)) return { ok: false, error: 'forbidden' };
@@ -1436,6 +1449,27 @@ function getChipDisplay() {
   return { showCat, showStatus, showQuota, showTokens, showCost };
 }
 
+// 手填「每期积分总量」并落盘。monthly 传成非正数/空 = 清掉这一项 —— 清掉之后
+// 托盘与展示栏都不显示「剩余」，而不是显示一个 0（0 会被读成「额度用完了」）。
+//
+// 刻意按数据源**合并**而不是整表覆盖：将来多个 agent 都要手填时，改其中一个
+// 不会把另一个的额度抹掉。
+function setCreditQuota(payload) {
+  const id = payload && typeof payload.sourceId === 'string' ? payload.sourceId : '';
+  if (!supportsCreditQuota(id)) return { ok: false, error: 'unknown-source' };
+  const quota = { ...(config.get().creditQuota || {}) };
+  const monthly = Number(payload && payload.monthly);
+  if (Number.isFinite(monthly) && monthly > 0) {
+    quota[id] = { monthly, resetDay: creditCycle.clampResetDay(payload && payload.resetDay) };
+  } else {
+    delete quota[id];
+  }
+  config.save({ creditQuota: Object.keys(quota).length ? quota : null });
+  refreshTrayMenu();
+  emitStats();
+  return { ok: true, slot: quotaSlot() };
+}
+
 function quotaStatusLabel(quota) {
   if (quota.status === 'ready') return t('tray.quotaStatusReady');
   if (quota.status === 'connecting') return t('tray.quotaStatusConnecting');
@@ -1468,25 +1502,63 @@ function detectedSourceIds() {
 // 每个数据源一行分组。只有「已接入且真跑过」的才会出现在托盘里（过滤逻辑在
 // backend/tray-status.js），Codex 额度块也只在检测到 Codex 时附加。
 //
-// 每行只喂「总览」字段：今日 token / 轮次 + 今日与累计积分。等价费用与上下文水位
-// 已按用户要求从托盘移除（托盘是速览位，不看这两项）。
+// 每行喂「总览」字段：今日 Token / 今日等价费用 / 今日积分 + 剩余额度。
+// 剩余额度由用户手填的每期总量减去本机已用得出 —— WorkBuddy 的余额只在服务端，
+// 本机拿不到（详见交接报告「第四轮」），所以只能这样反推。
 function traySourceRows() {
   const meters = meterStats();
   const detected = detectedSourceIds();
+  const quota = config.get().creditQuota || {};
   return withSourceValues(meters).map(({ id, label, value }) => {
     const today = (value && value.today) || {};
     const lifetime = (value && value.lifetime) || {};
+    const configured = quota[id];
+    // 本期已用从计量台账的按日分桶求和（本地自然日，保留 95 天，见
+    // backend/credit-cycle.js）。没填额度时整段为 null，托盘不会显示「剩余」。
+    const cycle = configured
+      ? creditCycle.sumCycleCredit(value && value.daily, Date.now(), configured.resetDay)
+      : null;
     return {
       id,
       label,
       detected: detected.has(id),
       tokens: today.tokens,
-      msgs: today.msgs ?? today.messages,
+      cost: today.cost,
       credit: today.credit,
+      creditRemaining: cycle ? creditCycle.remainingQuota(configured.monthly, cycle.used) : null,
+      creditUsed: cycle ? cycle.used : null,
+      creditMonthly: configured ? configured.monthly : null,
+      creditResetDay: configured ? configured.resetDay : null,
+      creditCycleStart: cycle ? cycle.startKey : null,
       lifetimeTokens: lifetime.tokens,
       lifetimeCredit: lifetime.credit,
     };
   });
+}
+
+// 「额度槽位」的归属 —— 设置页那一项和底部展示栏的额度徽标都跟着它走，
+// 不再写死 Codex。优先级：
+//   ① 装了 Codex 且额度可用 → 用 Codex 自己的 5h/7d（真实数据，且无需用户填）
+//   ② 否则找「需要手填额度、且已接入且真跑过」的数据源 → 用它的积分
+//   ③ 都没有 → none，槽位置灰（而不是继续显示 Codex 的空壳）
+function quotaSlot() {
+  if (codexDetected() && codexQuotaState.status === 'ready') {
+    return { kind: 'codex', id: 'codex', label: 'Codex' };
+  }
+  const row = traySourceRows().find((item) => item.detected && supportsCreditQuota(item.id)
+    && (Number(item.tokens) > 0 || Number(item.credit) > 0 || Number(item.lifetimeTokens) > 0));
+  if (!row) return { kind: 'none', id: null, label: null };
+  return {
+    kind: 'credit',
+    id: row.id,
+    label: row.label,
+    today: Number(row.credit) || 0,
+    cycleUsed: row.creditUsed,
+    remaining: row.creditRemaining,
+    monthly: row.creditMonthly,
+    resetDay: row.creditResetDay,
+    cycleStart: row.creditCycleStart,
+  };
 }
 
 // Codex 额度块。以前它是托盘菜单的固定开头，现在只在「机器上确实装了 Codex

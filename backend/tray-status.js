@@ -10,10 +10,12 @@
 // 现在改成按「实际接入、且确实产生过用量」的数据源生成分组行，Codex 额度块只在
 // 检测到 Codex 且额度可用时才出现。这里保持纯函数，方便回归测试直接断言行内容。
 //
-// 2026-09-15 收窄：每个分组只保留**总览**口径 —— 今日令牌 + 轮次，以及有正数时
-// 才出现的今日积分/累计积分。原先还带「等价费用」和「当前会话上下文水位」两行，
-// 都已按用户要求去掉：前者对 hy3 这类无公开价目的模型恒为 0（看着像「不要钱」），
-// 后者跟着当前会话实时跳，在托盘这种速览位反而分散注意力。
+// 2026-09-15 二次调整：用户定了每行口径 ——
+//   标题 / Token / 等价费用 / 积分（今日消耗 · 剩余）
+// 「令牌」改回行业通用的 Token；「N 轮」去掉（托盘是速览位，轮次没人看）；
+// 等价费用加回来（原先去掉是因为 hy3 无价目恒为 0，现在只会出现在真的是正数的
+// 情况下，见 money() 的注释）；积分不再显示「累计消耗」，改为「今日 + 剩余」，
+// 剩余由用户手填的每期总量减去本机已用得出（backend/credit-cycle.js）。
 
 const MAX_SOURCES = 3;
 
@@ -37,12 +39,33 @@ function trim(value) {
   return String(rounded);
 }
 
-// 积分（credit）只在真的是正数时返回文本。WorkBuddy 的默认模型 hy3 既没有公开
-// 价目也不计积分，恒为 0，显示「0」会被误读成「额度已经用完」。
-function creditText(value) {
+// API 等价费用只在真的是正数时返回。WorkBuddy 的默认模型 hy3 没有公开价目，
+// 它的 cost 恒为 0；显示「$0.00」会被读成「不要钱」，而实情是「这个模型的价钱
+// 我们查不到」。多模型混用时这个数也只覆盖有价目的那些，是个**下限**。
+function money(value) {
   const n = num(value);
   if (n <= 0) return null;
+  return n >= 100 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`;
+}
+
+function fmtCredit(n) {
   return n >= 1000 ? String(Math.round(n)) : String(Math.round(n * 10) / 10);
+}
+
+// 今日消耗的积分：0 不显示。hy3 恒为 0，显示「积分 0」会被误读成额度用完了。
+function creditText(value) {
+  const n = num(value);
+  return n <= 0 ? null : fmtCredit(n);
+}
+
+// 剩余额度：这里 **0 是有效值**（额度确实用尽了，应当显示），只有「没配额度」
+// 才返回 null。注意必须先用 === null/undefined 判断，不能直接 Number()——
+// Number(null) === 0 会把「没配」误判成「用尽」。
+function quotaText(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return fmtCredit(n);
 }
 
 // 只有「被检测到」且「历史上真的跑过」的数据源才占一行。后者避免装完还没用过的
@@ -54,17 +77,17 @@ function isReportable(source) {
 
 function sourceRows(source, t) {
   const rows = [];
-  rows.push(t('tray.sourceTokens', {
-    tokens: compact(source.tokens),
-    rounds: String(Math.round(num(source.msgs))),
-  }));
-  const today = creditText(source.credit);
-  if (today) {
-    rows.push(t('tray.sourceCredit', {
-      credit: today,
-      total: creditText(source.lifetimeCredit) || '0',
-    }));
-  }
+  rows.push(t('tray.sourceTokens', { tokens: compact(source.tokens) }));
+  const cost = money(source.cost);
+  if (cost) rows.push(t('tray.sourceCost', { cost }));
+  // 积分行：今日消耗与剩余额度各自独立，谁有值就带谁。
+  // creditRemaining === null 表示用户还没填每期额度（不是 0）——那种情况下
+  // 只显示今日消耗，整段「剩余」不出现。
+  const used = creditText(source.credit);
+  const left = quotaText(source.creditRemaining);
+  if (used && left !== null) rows.push(t('tray.sourceCredit', { credit: used, left }));
+  else if (used) rows.push(t('tray.sourceCreditUsed', { credit: used }));
+  else if (left !== null) rows.push(t('tray.sourceCreditLeft', { left }));
   return rows;
 }
 
@@ -100,7 +123,9 @@ function buildStatusRows(input = {}) {
 module.exports = {
   MAX_SOURCES,
   compact,
+  money,
   creditText,
+  quotaText,
   isReportable,
   buildStatusRows,
 };

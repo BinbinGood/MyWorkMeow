@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { STATE_DIR } = require('./paths');
+const { clampResetDay } = require('./credit-cycle');
 
 const CONFIG_DIR = STATE_DIR;
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -27,6 +28,10 @@ const DEFAULTS = Object.freeze({
   showTokens: false,
   showCost: true,
   xiabanTimes: DEFAULT_XIABAN_TIMES,
+  // 按数据源手填的「每期积分总量」，用于反推剩余额度：
+  //   { workbuddy: { monthly: 3600, resetDay: 1 } }
+  // null 表示一个都没填 —— 此时托盘不显示「剩余」那一段（不是显示 0）。
+  creditQuota: null,
 });
 
 let cache = null;
@@ -49,6 +54,18 @@ function sanitize(raw) {
   if (typeof raw.privacyMode === 'boolean') out.privacyMode = raw.privacyMode;
   for (const key of ['showCat', 'showStatus', 'showQuota', 'showTokens', 'showCost']) {
     if (typeof raw[key] === 'boolean') out[key] = raw[key];
+  }
+  if (raw.creditQuota && typeof raw.creditQuota === 'object' && !Array.isArray(raw.creditQuota)) {
+    const quota = {};
+    for (const [id, row] of Object.entries(raw.creditQuota)) {
+      if (!id || !row || typeof row !== 'object') continue;
+      // monthly 必须是正有限数；写 0 或负数等同于「没配」，直接丢掉这一项，
+      // 好过留下一个会让托盘显示「剩余 0」的假额度。清空额度走 save(null)。
+      const monthly = Number(row.monthly);
+      if (!Number.isFinite(monthly) || monthly <= 0) continue;
+      quota[id] = { monthly, resetDay: clampResetDay(row.resetDay) };
+    }
+    out.creditQuota = Object.keys(quota).length ? quota : null;
   }
   if (raw.xiabanTimes && isClockTime(raw.xiabanTimes.lunch) && isClockTime(raw.xiabanTimes.evening)) {
     out.xiabanTimes = {

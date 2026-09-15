@@ -1936,6 +1936,43 @@ function quotaLevel(remaining) {
   return remaining === null ? 'unknown' : remaining <= 5 ? 'red' : remaining <= 20 ? 'amber' : 'normal';
 }
 
+// ── 积分型额度槽位 ────────────────────────────────────────────────────────────
+// 接 WorkBuddy 这类「余额只在服务端」的 Agent 时，额度槽位换成积分形态：
+// 一个徽标显示剩余积分，点开看今日消耗 / 本期已用 / 每期总量。
+// 归属由主进程 quotaSlot() 决定，这里只负责画。
+function isCreditSlot(s) {
+  return !!(s && s.quotaSlot && s.quotaSlot.kind === 'credit');
+}
+
+function creditRemainingPercent(slot) {
+  const monthly = Number(slot && slot.monthly);
+  const remaining = Number(slot && slot.remaining);
+  if (!Number.isFinite(monthly) || monthly <= 0 || !Number.isFinite(remaining)) return null;
+  return Math.max(0, Math.min(100, (remaining / monthly) * 100));
+}
+
+// 没填每期总量时显示 '--'，不是 0 —— 「没配」和「用完了」是两回事，
+// 显示 0 会让人以为额度已经耗尽。
+function creditBadgeText(slot) {
+  const remaining = Number(slot && slot.remaining);
+  return Number.isFinite(remaining) ? compactTokens(remaining) : '--';
+}
+
+function createCreditBadge(slot) {
+  const percent = creditRemainingPercent(slot);
+  const name = slot.label || '积分';
+  const badge = document.createElement('span');
+  badge.className = 'quota-badge';
+  badge.dataset.level = quotaLevel(percent);
+  badge.dataset.period = 'credit';
+  badge.textContent = creditBadgeText(slot);
+  badge.style.setProperty('--quota-remaining', `${percent === null ? 0 : percent}%`);
+  badge.setAttribute('aria-label', percent === null
+    ? t('quota.creditAriaUnset', { name })
+    : t('quota.creditAria', { name, value: badge.textContent }));
+  return badge;
+}
+
 function quotaDurationText(ms) {
   const minutes = Math.max(1, Math.ceil(Math.max(0, ms) / 60000));
   if (minutes < 60) return t('quota.durationMinutes', { count: minutes });
@@ -2031,8 +2068,62 @@ function renderQuotaEstimate(quota) {
   quotaPopoverInsight.hidden = false;
 }
 
+// 弹层里的一行。bar 只在需要显示百分比的场合给，没有就不塞第三个格子。
+function createQuotaPopRow(label, value, percent = null) {
+  const row = document.createElement('div');
+  row.className = 'quota-pop-row';
+  row.dataset.level = quotaLevel(percent);
+  const period = document.createElement('div');
+  period.className = 'quota-pop-period';
+  period.textContent = label;
+  const main = document.createElement('div');
+  main.className = 'quota-pop-main';
+  const valueEl = document.createElement('div');
+  valueEl.className = 'quota-pop-value';
+  valueEl.textContent = value;
+  main.appendChild(valueEl);
+  row.appendChild(period);
+  row.appendChild(main);
+  if (percent !== null) {
+    const bar = document.createElement('div');
+    bar.className = 'quota-pop-bar';
+    const fill = document.createElement('div');
+    fill.className = 'quota-pop-bar-fill';
+    fill.style.setProperty('--quota-remaining', `${percent}%`);
+    bar.appendChild(fill);
+    row.appendChild(bar);
+  }
+  return row;
+}
+
+// 积分形态的弹层。原先只有 Codex 一套，切到积分后若还渲染 5h/7d 就是错的。
+function renderCreditPopover(slot) {
+  const name = slot.label || '积分';
+  quotaPopoverTitle.textContent = t('quota.creditTitle', { name });
+  quotaPopoverStatus.textContent = Number.isFinite(Number(slot.monthly)) && Number(slot.monthly) > 0
+    ? t('quota.creditReset', { day: slot.resetDay, start: slot.cycleStart || '--' })
+    : t('quota.creditUnset');
+  quotaPopoverRows.replaceChildren();
+  const percent = creditRemainingPercent(slot);
+  const rows = [
+    [t('quota.creditToday'), compactTokens(Number(slot.today) || 0), null],
+    [t('quota.creditUsed'), Number.isFinite(Number(slot.cycleUsed)) ? compactTokens(slot.cycleUsed) : '--', null],
+    [t('quota.creditRemaining'), creditBadgeText(slot), percent],
+  ];
+  if (Number.isFinite(Number(slot.monthly)) && Number(slot.monthly) > 0) {
+    rows.push([t('quota.creditMonthly'), compactTokens(slot.monthly), null]);
+  }
+  for (const [label, value, host] of rows) quotaPopoverRows.appendChild(createQuotaPopRow(label, value, host));
+  quotaPopoverUpdated.textContent = t('quota.creditSource', { name });
+  quotaPopoverHint.textContent = t('quota.dismissHint');
+}
+
 function renderQuotaPopover(s) {
   if (!quotaPopoverRows || !quotaPopoverStatus || !s) return;
+  if (isCreditSlot(s)) {
+    renderCreditPopover(s.quotaSlot);
+    return;
+  }
   const quota = s.codexQuota || {};
   quotaPopoverTitle.textContent = t('quota.title');
   quotaPopoverStatus.textContent = quota.status === 'ready'
@@ -2173,20 +2264,24 @@ function renderContextCapsule(s) {
   document.getElementById('chip-cost-sep').hidden = !showCost || !(showStatus || showQuota || showTokens);
   const quota = s.codexQuota || {};
   quotaEl.innerHTML = '';
-  for (const [key, labelKey] of quotaWindowEntries(quota)) {
-    const label = labelKey === 'quota.fiveHour' ? '5h' : '7d';
-    const w = quota.windows && quota.windows[key];
-    const remaining = quotaRemainingPercent(w);
-    const badge = document.createElement('span');
-    badge.className = 'quota-badge';
-    badge.dataset.level = quotaLevel(remaining);
-    badge.dataset.period = label;
-    badge.textContent = remaining === null ? '--' : Math.round(remaining) + '%';
-    badge.style.setProperty('--quota-remaining', `${remaining === null ? 0 : remaining}%`);
-    badge.setAttribute('aria-label', `${label} 剩余 ${badge.textContent}`);
-    quotaEl.appendChild(badge);
+  if (isCreditSlot(s)) {
+    quotaEl.appendChild(createCreditBadge(s.quotaSlot));
+  } else {
+    for (const [key, labelKey] of quotaWindowEntries(quota)) {
+      const label = labelKey === 'quota.fiveHour' ? '5h' : '7d';
+      const w = quota.windows && quota.windows[key];
+      const remaining = quotaRemainingPercent(w);
+      const badge = document.createElement('span');
+      badge.className = 'quota-badge';
+      badge.dataset.level = quotaLevel(remaining);
+      badge.dataset.period = label;
+      badge.textContent = remaining === null ? '--' : Math.round(remaining) + '%';
+      badge.style.setProperty('--quota-remaining', `${remaining === null ? 0 : remaining}%`);
+      badge.setAttribute('aria-label', `${label} 剩余 ${badge.textContent}`);
+      quotaEl.appendChild(badge);
+    }
   }
-  quotaEl.setAttribute('aria-label', t('quota.open'));
+  quotaEl.setAttribute('aria-label', isCreditSlot(s) ? t('quota.creditOpen') : t('quota.open'));
   chip.removeAttribute('title');
   if (quotaPopoverOpen) {
     renderQuotaPopover(s);

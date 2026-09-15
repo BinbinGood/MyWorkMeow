@@ -29,6 +29,8 @@ const IPC = Object.freeze({
   GET_PRIVACY_MODE: 'privacy:get',
   GET_CHIP_DISPLAY: 'chip:get-display',
   SET_CHIP_DISPLAY: 'chip:set-display',
+  GET_QUOTA_SLOT: 'quota:get-slot',
+  SET_CREDIT_QUOTA: 'quota:set-credit',
   SET_PRIVACY_MODE: 'privacy:set',
   GET_INTEGRATION_HEALTH: 'integrations:get-health',
   REPAIR_INTEGRATIONS: 'integrations:repair',
@@ -56,6 +58,7 @@ const PUSH_CHANNELS = Object.freeze([
 ]);
 const INVOKE_CHANNELS = Object.freeze([
   'GET_CHIP_DISPLAY', 'SET_CHIP_DISPLAY',
+  'GET_QUOTA_SLOT', 'SET_CREDIT_QUOTA',
   'GET_STATS', 'GET_WIN_POS', 'GET_WINDOW_METRICS', 'GET_AUTO_LAUNCH',
   'SET_AUTO_LAUNCH', 'GET_PRIVACY_MODE', 'SET_PRIVACY_MODE',
   'GET_INTEGRATION_HEALTH', 'REPAIR_INTEGRATIONS', 'UNINSTALL_INTEGRATIONS',

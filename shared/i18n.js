@@ -34,10 +34,16 @@
     'tray.quotaStatusChatgptRequired': '当前账户没有订阅额度',
     'tray.quotaStatusUnavailable': '暂时不可用，正在自动重试',
     // 按数据源分组的状态行。只对「已接入且用过」的工具生成，不再写死某一个。
-    // 只放总览口径：今日令牌 / 轮次 + 今日与累计积分。等价费用与上下文水位已移除。
+    // 每行口径：今日 Token / 今日等价费用 / 今日积分 + 剩余额度。
+    // 单位用行业通用的 Token（不再叫「令牌」），轮次已按用户要求去掉。
+    // 「剩余」= 用户手填的每期总量 − 本期已用；没填额度时用 *Used 那一条，
+    // 整段「剩余」不出现（而不是显示一个会被读成「用完了」的 0）。
     'tray.sourceTitle': '{name}　今日',
-    'tray.sourceTokens': '令牌　{tokens}　·　{rounds} 轮',
-    'tray.sourceCredit': '积分　{credit}　·　累计 {total}',
+    'tray.sourceTokens': 'Token　{tokens}',
+    'tray.sourceCost': '等价费用　{cost}',
+    'tray.sourceCredit': '积分　{credit}　·　剩余 {left}',
+    'tray.sourceCreditUsed': '积分　{credit}',
+    'tray.sourceCreditLeft': '积分　剩余 {left}',
     'tray.noSources': '尚未接入任何 AI 工具',
     'tray.settings': '设置',
     'tray.quit': '退出',
@@ -81,6 +87,42 @@
     'settings.privacySaving': '正在切换隐私模式…',
     'settings.privacyFailed': '切换失败，请重试',
     'settings.privacyHint': '也可以右键打工喵，通过 ON/OFF 快速切换。',
+
+    // 喵底部展示栏。原先这一整段是写死的中文，且额度那一项写死成「Codex 订阅额度」——
+    // 但本项目支持五种 Agent，额度槽位必须跟着**实际接入**的那个走（见 main.js
+    // quotaSlot()）：接 Codex 显示它的 5h/7d，接 WorkBuddy 显示它的积分。
+    'settings.chipSection': '喵底部展示栏',
+    'settings.chipShowCat': '显示喵喵',
+    'settings.chipShowCatDescription': '隐藏喵喵本体，状态小点会移动到胶囊左侧；胶囊可直接拖动',
+    'settings.chipShowStatus': '任务状态',
+    'settings.chipShowStatusDescription': '显示“待命、休息中、干活中、刚刚完成”等当前状态',
+    'settings.chipShowTokens': '今日 Tokens',
+    'settings.chipShowTokensDescription': '显示全部工具今日累计 Token 消耗',
+    'settings.chipShowCost': '今日 API 等价费用',
+    'settings.chipShowCostDescription': '按 API 价格估算，不代表订阅实际扣费',
+    'settings.chipHint': '修改立即生效并自动保存；完整用量仍可在统计面板查看。',
+    'settings.quotaSlotCodex': 'Codex 订阅额度',
+    'settings.quotaSlotCodexDescription': '显示 5h、7d 剩余百分比，与托盘同步更新；点击额度查看刷新时间',
+    'settings.quotaSlotCredit': '{name} 积分',
+    'settings.quotaSlotCreditDescription': '显示剩余积分，与托盘同步；点击查看今日消耗与本机已用',
+    'settings.quotaSlotNone': '订阅额度',
+    'settings.quotaSlotNoneDescription': '当前没有接入提供额度数据的 Agent，这一项暂时不显示内容',
+
+    // 积分额度（手填）。WorkBuddy 的余额只在服务端、本机无副本，所以由用户填每期
+    // 总量、本机用已用反推剩余。见 backend/credit-cycle.js。
+    'settings.creditQuotaSection': '积分额度',
+    'settings.creditQuotaDescription': '填「{name}」套餐每期的积分总量，打工喵会用本机统计的消耗反推剩余；留空则不显示剩余。',
+    'settings.creditQuotaMonthly': '每期积分总量',
+    'settings.creditQuotaResetDay': '每月重置日',
+    'settings.creditQuotaSave': '保存额度',
+    'settings.creditQuotaClear': '清除',
+    'settings.creditQuotaHint': '剩余 = 每期总量 − 本期已用（本机统计，按本地自然日）；「本期」从重置日算起。',
+    'settings.creditQuotaSaving': '保存中…',
+    'settings.creditQuotaSaved': '额度已保存，托盘已更新',
+    'settings.creditQuotaCleared': '额度已清除，托盘不再显示「剩余」',
+    'settings.creditQuotaFailed': '保存失败，请重试',
+    'settings.creditQuotaInvalid': '请填一个大于 0 的积分总量',
+    'settings.creditQuotaOn': '当前每期 {monthly}（每月 {day} 日重置）',
     'settings.integrationsSection': 'Agent 接入',
     'settings.integrationsTitle': '接入健康检查',
     'settings.integrationsDescription': '核对各工具的 Hook、插件或只读监听器是否正常',
@@ -246,6 +288,19 @@
     'quota.estimatePending': '本周期已记录 {used} tokens（API 价 {cost}），已用 {percent}％；数据积累后可估算总量',
     'quota.updatedAt': '上次更新 {time}',
     'quota.dismissHint': '鼠标移开后自动收起，也可按 Esc 关闭',
+    // 额度槽位切到「积分」形态时（接 WorkBuddy 这类）用的文案。上面的
+    // quota.title / quota.open / quota.estimate 都是 Codex 专属，不能复用。
+    'quota.creditTitle': '{name} 积分',
+    'quota.creditOpen': '查看积分消耗与剩余',
+    'quota.creditToday': '今日消耗',
+    'quota.creditUsed': '本期已用',
+    'quota.creditRemaining': '剩余',
+    'quota.creditMonthly': '每期总量',
+    'quota.creditReset': '每月 {day} 日重置（本期自 {start} 起）',
+    'quota.creditUnset': '还没填每期积分总量 —— 在「设置 → 积分额度」里填一次，这里就会显示剩余。',
+    'quota.creditSource': '{name} 的积分由本机计量台账统计，不含其它 Agent。',
+    'quota.creditAria': '{name} 积分剩余 {value}',
+    'quota.creditAriaUnset': '{name} 积分：还没填每期总量',
 
     // ── permission / ask cards ──────────────────────────────────────────────
     'perm.runCommand': '运行命令：',

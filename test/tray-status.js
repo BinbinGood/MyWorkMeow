@@ -42,6 +42,18 @@ assert(tray.compact(123_000_000) === '123M', 'compact drops the decimal at 100+'
 assert(tray.creditText(0) === null, 'creditText hides a zero credit');
 assert(tray.creditText(63.82) === '63.8', 'creditText keeps one decimal');
 assert(tray.creditText(1734.43) === '1734', 'creditText drops the decimal above 1000');
+assert(tray.money(0) === null, 'money hides a zero cost (hy3 has no public price)');
+assert(tray.money(1.016709612) === '$1.02', 'money formats to cents');
+assert(tray.money(150.4) === '$150', 'money drops cents above 100');
+// 剩余额度与「今日消耗」的关键差别：0 是**有效值**（额度确实用尽），必须显示出来。
+// 而 null 表示「用户还没填每期额度」，必须隐藏。这俩不能混 —— 注意
+// Number(null) === 0，所以 quotaText 必须先做 null 判断再转数字。
+assert(tray.quotaText(null) === null, 'quotaText hides an unset quota');
+assert(tray.quotaText(undefined) === null, 'quotaText hides an undefined quota');
+assert(tray.quotaText('') === null, 'quotaText hides an empty quota');
+assert(tray.quotaText(0) === '0', 'quotaText KEEPS a real zero — the quota is genuinely exhausted');
+assert(tray.quotaText(1512.4) === '1512', 'quotaText formats a large remainder');
+assert(tray.quotaText(-5) === null, 'quotaText rejects a negative quota');
 
 // ── 行生成 ────────────────────────────────────────────────────────────────────
 const workbuddy = {
@@ -49,8 +61,10 @@ const workbuddy = {
   label: 'WorkBuddy',
   detected: true,
   tokens: 55_060_264,
-  msgs: 427,
+  msgs: 427,             // 仍然喂进来，但应当被忽略（轮次已从口径里去掉）
+  cost: 1.2521,
   credit: 63.82,
+  creditRemaining: 1512.4,
   lifetimeTokens: 282_013_281,
   lifetimeCredit: 1734.43,
 };
@@ -60,14 +74,37 @@ assert(rows[0].label === 'WorkBuddy　今日', `no leading separator, the group 
 assert(rows.every((row) => row.type !== 'separator'), 'a single source needs no separator at all');
 assertTranslated(rows, 'source group renders');
 const text = flat(rows);
-assert(text.includes('55.1M') && text.includes('427 轮'), 'today tokens + rounds are shown');
-assert(text.includes('63.8') && text.includes('1734'), 'credit shows today + lifetime');
-assert(!/\$/.test(text), 'no estimated cost row — removed by request');
+assert(text.includes('55.1M'), 'today tokens are shown');
+assert(/Token/.test(text), 'the token unit reads Token, not 令牌');
+assert(!/令牌/.test(text), 'the old 令牌 wording is gone');
+assert(!/轮/.test(text) && !/427/.test(text), 'rounds are gone from the row (and msgs is ignored)');
+assert(text.includes('$1.25'), 'estimated cost is back, shown when positive');
+assert(text.includes('63.8') && text.includes('1512'), 'credit shows today + remaining');
+assert(!/累计/.test(text) && !/1734/.test(text), 'the lifetime credit is no longer printed');
 assert(!/上下文/.test(text), 'no context water level row — removed by request');
-assert(labels(rows).length === 3, `a group is exactly header + tokens + credit (got ${labels(rows).length} rows)`);
+assert(labels(rows).length === 4, `a group is header + tokens + cost + credit (got ${labels(rows).length} rows)`);
 assert(!/Codex/.test(text), 'no Codex row when Codex is not ready — this is the bug being fixed');
 assert(rows.every((row) => row.type === 'separator' || row.enabled === false),
   'all status rows are non-clickable info rows');
+
+// 没填每期额度时（creditRemaining === null），「剩余」那一段整体不出现，
+// 只留今日消耗 —— 而不是显示一个会被读成「额度用完了」的 0。
+const noQuota = tray.buildStatusRows({
+  sources: [{ id: 'w', label: 'W', detected: true, tokens: 1000, credit: 12.5, lifetimeTokens: 1000 }],
+  codexReady: false,
+  t,
+});
+assert(/积分　12.5/.test(flat(noQuota)) && !/剩余/.test(flat(noQuota)),
+  'an unset quota drops the 剩余 segment instead of printing 0');
+
+// 反过来：今日积分为 0（hy3）但填了额度时，只显示剩余。
+const leftOnly = tray.buildStatusRows({
+  sources: [{ id: 'w', label: 'W', detected: true, tokens: 1000, credit: 0, creditRemaining: 1400, lifetimeTokens: 1000 }],
+  codexReady: false,
+  t,
+});
+assert(/积分　剩余 1400/.test(flat(leftOnly)) && !/积分　0/.test(flat(leftOnly)),
+  'a zero today-credit still shows the remaining quota, without printing 积分 0');
 
 // 未接入的来源绝不出现
 const withCodexOff = tray.buildStatusRows({
@@ -128,22 +165,24 @@ assert(tray.isReportable({ detected: false, lifetimeTokens: 10 }) === false,
   'an undetected source is never reportable');
 
 // 每个新文案键都必须真的存在于词典里
-for (const key of ['tray.sourceTitle', 'tray.sourceTokens', 'tray.sourceCredit', 'tray.noSources']) {
+for (const key of ['tray.sourceTitle', 'tray.sourceTokens', 'tray.sourceCost',
+  'tray.sourceCredit', 'tray.sourceCreditUsed', 'tray.sourceCreditLeft', 'tray.noSources']) {
   assert(typeof t(key) === 'string' && t(key) !== key, `i18n has ${key}`);
 }
 
-// 已经删掉的键不能留在词典里，否则将来会有人以为它们还在用
-for (const gone of ['tray.sourceCost', 'tray.sourceContext']) {
+// 上一轮删掉的键不能悄悄复活
+for (const gone of ['tray.sourceContext']) {
   assert(t(gone) === gone, `${gone} is gone from the dictionary`);
 }
 
-// 积分为 0 的数据源（WorkBuddy 的默认模型 hy3 就是这种）不该出现积分行
+// 积分为 0 且没填额度的数据源（WorkBuddy 的默认模型 hy3 就是这种）不该出现积分行
 const noCredit = tray.buildStatusRows({
   sources: [{ id: 'a', label: 'A', detected: true, tokens: 1000, msgs: 2, lifetimeTokens: 1000 }],
   codexReady: false,
   t,
 });
 assert(labels(noCredit).length === 2 && !/积分/.test(flat(noCredit)),
-  'a zero credit drops the credit row instead of printing 0');
+  'no credit and no quota drops the credit row entirely');
+assert(/\$/.test(flat(noCredit)) === false, 'a zero cost drops the cost row too');
 
 console.log('\nTRAY STATUS TESTS PASSED');
