@@ -4,16 +4,20 @@
 //
 // WorkBuddy writes one JSONL transcript per session under
 //   ~/.workbuddy/projects/<encoded-cwd>/<session-id>.jsonl
-// Each assistant turn (role:"assistant" OR type:"assistant") carries its token
-// usage inside `providerData.usage` (OpenAI-style camelCase):
-//   { inputTokens, outputTokens, totalTokens,
+//
+// 行形状与 Claude Code **不同**（2026-09 本机实测：27 个 session / 9964 行）：
+// 一次模型请求落成 type:"function_call"（要工具）或 type:"message"（文本回复），
+// 转录里**不存在** type/role === "assistant" 的行。usage 挂在行的
+// `providerData.usage` 上（OpenAI 形状，2266 + 285 条，messageId 全部唯一）：
+//   { requests, inputTokens, outputTokens, totalTokens,
 //     inputTokensDetails:  [{ cached_tokens }],
 //     outputTokensDetails: [{ reasoning_tokens }] }
-// The model id lives in `providerData.model` (e.g. "hy3"); a stable per-message
-// dedup key is `providerData.messageId`.
+// 同一行通常还带一份数值等价的 `message.usage`（Anthropic 形状），二者总是成对
+// 出现，所以取其一即可 —— 相加会双计。模型 id 在 `providerData.model`（如
+// "hy4-preview"），去重键是 `providerData.messageId`。
 //
-// Only SOME assistant lines carry usage (the text responses, not the tool_use
-// blocks), so we count exactly the lines that have `providerData.usage`.
+// 因此这里按「字段是否存在」识别用量行，而不是按 role/type 判断：旧实现要求
+// role/type === "assistant"，在 WorkBuddy 上永远匹配不到，用量恒为 0。
 //
 // Pricing policy (per product decision): use the EXACT prices found in the
 // models.dev price source — if a model has a price there, use it; if not, do NOT
@@ -326,8 +330,9 @@ function createWorkbuddyMetering(options = {}) {
   }
 
   function processObject(fileState, file, o) {
-    if (!o || (o.role !== 'assistant' && o.type !== 'assistant')) return;
+    if (!o || typeof o !== 'object') return;
     const pd = o.providerData && typeof o.providerData === 'object' ? o.providerData : {};
+    // 认字段不认行类型：WorkBuddy 的用量行没有 role/type === 'assistant'。
     // Prefer providerData.usage (richer: carries cached_tokens / reasoning_tokens
     // details); fall back to message.usage (Anthropic shape) only if absent.
     const usageRaw = pd.usage || (o.message && o.message.usage);

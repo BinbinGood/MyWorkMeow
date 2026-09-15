@@ -169,6 +169,60 @@ async function main() {
   assert(m.getStats().lifetime.tokens >= lifetimeBeforeRebuild,
     'rebuild preserves WorkBuddy lifetime when a rotated source is incomplete');
 
+  // ── 真实 WorkBuddy 行形状（2026-09 本机实测）──────────────────────────────
+  // 一次模型请求落成 type:'function_call'（要工具）或 type:'message'（文本回复），
+  // 转录里**没有** role/type === 'assistant' 的行。usage 挂在 providerData.usage
+  // 上，同一行还带一份数值等价的 message.usage —— 必须只算一次。
+  // 旧实现要求 role/type === 'assistant'，所以真实数据上用量恒为 0。
+  const realBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'wb-real-'));
+  const realDir = path.join(realBase, 'projects', 'Users-binbin-WorkBuddy-2026-09-15-20-00-26');
+  await fsp.mkdir(realDir, { recursive: true });
+  const nowMs = Date.now();
+  await fsp.writeFile(path.join(realDir, 'sess.jsonl'), [
+    JSON.stringify({
+      id: 'gen-1', type: 'function_call', timestamp: nowMs - 60_000,
+      providerData: {
+        model: 'hy4-preview', messageId: 'real-m1',
+        usage: {
+          requests: 1, inputTokens: 38243, outputTokens: 280, totalTokens: 38523,
+          inputTokensDetails: [{ cached_tokens: 24832 }],
+          outputTokensDetails: [{ reasoning_tokens: 191 }],
+        },
+      },
+      message: { usage: { input_tokens: 38243, output_tokens: 280, total_tokens: 38523, cache_read_input_tokens: 24832 } },
+    }),
+    JSON.stringify({
+      id: 'gen-2', type: 'message', timestamp: nowMs - 30_000,
+      providerData: {
+        model: 'deepseek-v4-flash', messageId: 'real-m2',
+        usage: { requests: 1, inputTokens: 1000, outputTokens: 100, totalTokens: 1100 },
+      },
+      message: { usage: { input_tokens: 1000, output_tokens: 100, total_tokens: 1100 } },
+    }),
+    // 不带 usage 的行必须被忽略
+    JSON.stringify({ id: 'r1', type: 'reasoning', timestamp: nowMs - 20_000, text: 'thinking…' }),
+    JSON.stringify({ id: 'r2', type: 'function_call_result', timestamp: nowMs - 10_000, callId: 'c1' }),
+  ].join('\n') + '\n', 'utf8');
+
+  const real = createWorkbuddyMetering({
+    projectsDir: path.join(realBase, 'projects'),
+    stateDir: realBase,
+    pricingCachePath: path.join(realBase, 'absent-cache.json'),
+    pricingOverridePath: path.join(realBase, 'absent-override.json'),
+  });
+  await real.scan();
+  const rs = real.getStats();
+  assert(rs.today.tokens === 39623, `real function_call/message rows counted (got ${rs.today.tokens})`);
+  assert(rs.today.msgs === 2, `one round per usage row (got ${rs.today.msgs})`);
+  assert(rs.today.cachedInput === 24832, `cached_tokens read from inputTokensDetails (got ${rs.today.cachedInput})`);
+  assert(rs.today.reasoningOutput === 191, `reasoning_tokens counted (got ${rs.today.reasoningOutput})`);
+  assert(rs.today.input === 39243, `input not double counted through message.usage (got ${rs.today.input})`);
+  assert(rs.byModel['hy4-preview'] && rs.byModel['deepseek-v4-flash'], 'model read from providerData.model');
+  // 幂等：再扫一次不能翻倍
+  await real.scan();
+  assert(real.getStats().today.tokens === 39623, `re-scan of real-shaped rows stays idempotent (got ${real.getStats().today.tokens})`);
+  await fsp.rm(realBase, { recursive: true, force: true });
+
   // cleanup
   await fsp.rm(base, { recursive: true, force: true });
   console.log('\nALL WORKBUDDY-METERING TESTS PASSED');
