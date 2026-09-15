@@ -5,13 +5,35 @@ const { loadRenderer } = require('./dom-stub');
 assert.strictEqual(config.sanitize({}).showStatus, true);
 assert.strictEqual(config.sanitize({}).showCat, true);
 assert.strictEqual(config.sanitize({ showStatus: 'true' }).showStatus, true);
-assert.strictEqual(config.sanitize({}).showQuota, true);
 assert.strictEqual(config.sanitize({}).showTokens, false);
 assert.strictEqual(config.sanitize({}).showCost, true);
 assert.strictEqual(config.sanitize({ showTokens: true }).showTokens, true);
 assert.strictEqual(config.sanitize({ showCost: 'true' }).showCost, true);
+
+// ── 额度开关：按 Agent 逐个 ──────────────────────────────────────────────────
+// 以前是一个布尔 showQuota + 一个会动态改名的「额度槽位」。2026-09-15 换成
+// quotaAgents 映射：**缺省放行**，只有显式 false 才是关掉。要防的正靶有两个：
+//   1. sanitize 把开关写回共享的 DEFAULTS（顶层 Object.freeze 冻不住内嵌对象）
+//   2. 改一个 Agent 的开关时整表覆盖，把别的 Agent 的开关抹了（这条在 main.js）
+assert.strictEqual(config.sanitize({}).quotaAgents.workbuddy, undefined,
+  'an unmentioned agent defaults to enabled (absent, not false)');
+assert.strictEqual(config.sanitize({ quotaAgents: { codex: false } }).quotaAgents.codex, false);
+assert.strictEqual(config.sanitize({ quotaAgents: { codex: 'no' } }).quotaAgents.codex, undefined,
+  'a non-boolean toggle is ignored rather than coerced');
+assert.strictEqual(config.sanitize({ showQuota: false }).quotaAgents.workbuddy, false,
+  'a legacy showQuota:false migrates so the upgrade does not re-enable a hidden badge');
+assert.strictEqual(config.sanitize({ showQuota: true }).quotaAgents.codex, true,
+  'a legacy showQuota:true migrates into every agent');
+config.sanitize({ quotaAgents: { codex: false } });
+assert.strictEqual(config.sanitize({}).quotaAgents.codex, undefined,
+  'sanitize never leaks the callers toggle into the shared defaults');
+
 const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/pet-insights.js', 'renderer/pet.js']);
+// 底部展示栏现在是「每个检测到的 Agent 一份额度」，所以渲染揣包里必须带上
+// quotaAgents 列表 —— 它同时驱动胶囊徽标、托盘行、设置页的开关。
+const codexAgent = { id: 'codex', label: 'Codex', quota: { kind: 'codex', ready: true, status: null } };
 const stats = { today: { tokens: 1234, cost: 0.123 }, sessions: [], bg: {}, idleMs: 1000,
+  quotaAgents: [codexAgent],
   codexQuota: { status: 'ready', windows: { fiveHour: { remainingPercent: 20, resetsAt: 1800000000 }, weekly: { remainingPercent: 5 } } } };
 w.handlers.stats(stats);
 assert.strictEqual(w.elements('stage').classList.contains('cat-hidden'), false);
@@ -45,7 +67,7 @@ assert.strictEqual(w.elements('quota-popover-insight').hidden, false,
   'the quota popover must show the weekly usage estimate when available');
 w.elements('chip-quota').dispatch('click');
 const compactStats = { ...stats, sessions: [{ state: 'working', agent: 'codex', createdAt: 100 }],
-  chipDisplay: { showCat: false, showStatus: true, showQuota: true, showTokens: false, showCost: false } };
+  chipDisplay: { showCat: false, showStatus: true, showTokens: false, showCost: false, quotaAgents: { codex: true } } };
 w.handlers.stats(compactStats);
 assert.strictEqual(w.elements('stage').classList.contains('cat-hidden'), true);
 assert.strictEqual(w.elements('cat').getAttribute('aria-hidden'), 'true');
@@ -65,14 +87,16 @@ w.handlers.stats({ ...compactStats, sessions: [
 ] });
 assert.strictEqual(w.elements('prop').style.left, '65px',
   'the live tool icon must follow the first dot when parallel sessions change');
-w.handlers.stats({ ...stats, chipDisplay: { showCat: true, showStatus: true, showQuota: true, showTokens: false, showCost: false } });
+w.handlers.stats({ ...stats, chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: false, quotaAgents: { codex: true } } });
 assert.strictEqual(w.elements('stage').classList.contains('cat-hidden'), false);
-w.handlers.stats({ ...stats, chipDisplay: { showStatus: false, showQuota: true, showTokens: false, showCost: false } });
+w.handlers.stats({ ...stats, chipDisplay: { showCat: true, showStatus: false, showTokens: false, showCost: false, quotaAgents: { codex: true } } });
 assert.strictEqual(w.elements('chip-context').hidden, true);
 assert.strictEqual(w.elements('chip-quota').hidden, false);
 assert.strictEqual(w.elements('chip-tokens-sep').hidden, true);
-w.handlers.stats({ ...stats, chipDisplay: { showStatus: false, showQuota: false, showTokens: false, showCost: true } });
+w.handlers.stats({ ...stats, chipDisplay: { showCat: true, showStatus: false, showTokens: false, showCost: true, quotaAgents: { codex: false } } });
 assert.strictEqual(w.elements('chip-context').hidden, true);
+assert.strictEqual(w.elements('chip-quota').hidden, true,
+  'turning the only agent off hides the whole quota block');
 assert.strictEqual(w.elements('chip-cost-sep').hidden, true);
 assert.strictEqual(w.elements('chip-cost').hidden, false);
 w.handlers.stats({ ...stats, codexQuota: { status: 'ready', windows: {
@@ -81,7 +105,7 @@ w.handlers.stats({ ...stats, codexQuota: { status: 'ready', windows: {
 assert.strictEqual(w.elements('chip-quota').children[0].textContent, '75%');
 assert.strictEqual(w.elements('chip-quota').children[1].textContent, '60%');
 assert.strictEqual(w.elements('chip-quota').children[0].dataset.level, 'normal');
-w.handlers.stats({ ...stats, chipDisplay: { showQuota: false, showTokens: true, showCost: false } });
+w.handlers.stats({ ...stats, chipDisplay: { showCat: true, showStatus: true, showTokens: true, showCost: false, quotaAgents: { codex: false } } });
 assert.strictEqual(w.elements('chip-quota').hidden, true);
 assert.strictEqual(w.elements('chip-tokens').hidden, false);
 assert.strictEqual(w.elements('chip-cost-sep').hidden, true);
@@ -89,20 +113,50 @@ assert(!w.elements('chip').title.includes('$'));
 w.handlers.stats({ ...stats, codexQuota: { status: 'unavailable' } });
 assert.strictEqual(w.elements('chip-quota').children[0].textContent, '--');
 
-// ── 积分型额度槽位（接 WorkBuddy 这类余额只在服务端的 Agent）────────────────────
+// ── 多个 Agent 并存 ─────────────────────────────────────────────────────────
+// 这是本轮改动的中心：Codex 的 5h/7d 和 WorkBuddy 的积分可以同时出现在胶囊里，
+// 而且各自能被独立关掉。以前是「二选一」，两者永远不可能同框。
+const creditAgent = {
+  id: 'workbuddy', label: 'WorkBuddy',
+  quota: { kind: 'credit', ready: true, today: 98.6, cycleUsed: 1694.7, remaining: 1809.9,
+    monthly: 3600, resetDay: 1, cycleStart: '2026-09-01' },
+};
+w.handlers.stats({
+  ...stats,
+  quotaAgents: [creditAgent, codexAgent],
+  chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: false, quotaAgents: {} },
+});
+assert.strictEqual(w.elements('chip-quota').children.length, 3,
+  'one credit badge plus the Codex 5h/7d pair, side by side');
+assert.strictEqual(w.elements('chip-quota').children[0].dataset.kind, 'credit',
+  'the first badge is the credit one, in registry order');
+w.handlers.stats({
+  ...stats,
+  quotaAgents: [creditAgent, codexAgent],
+  chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: false, quotaAgents: { codex: false } },
+});
+assert.strictEqual(w.elements('chip-quota').children.length, 1,
+  'disabling Codex leaves only the WorkBuddy credit badge');
+assert.strictEqual(w.elements('chip-quota').children[0].dataset.kind, 'credit');
+w.handlers.stats({
+  ...stats,
+  quotaAgents: [creditAgent, codexAgent],
+  chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: false, quotaAgents: { workbuddy: false } },
+});
+assert.strictEqual(w.elements('chip-quota').children.length, 2,
+  'disabling WorkBuddy leaves the Codex 5h/7d pair');
+assert.strictEqual(w.elements('chip-quota').children[0].dataset.period, '5h');
+
+// ── 积分型额度（接 WorkBuddy 这类余额只在服务端的 Agent）────────────────────────
 // 徽标左侧的标签由 pet.css 用 attr(data-period) 渲染。这里要防的正靶：上一版把
 // data-period 直接写成 'credit'，界面上出现的是「credit 1.8K」——一个英文单词，
 // 而且没说清是剩余还是已用。现在必须是本地化的词标签 + data-kind，后者驱动
 // CSS 放宽宽度（62px 装不下「剩余积分」四个字加数值）并补冒号。
-const creditSlot = {
-  kind: 'credit', id: 'workbuddy', label: 'WorkBuddy',
-  today: 98.6, cycleUsed: 1694.7, remaining: 1809.9, monthly: 3600, resetDay: 1,
-};
-w.handlers.stats({ ...stats, chipDisplay: { showQuota: true, showTokens: false, showCost: false },
-  quotaSlot: creditSlot });
+w.handlers.stats({ ...stats, quotaAgents: [creditAgent],
+  chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: false, quotaAgents: {} } });
 const creditBadge = w.elements('chip-quota').children[0];
 assert.strictEqual(w.elements('chip-quota').children.length, 1,
-  'a credit slot renders exactly one badge (no 5h/7d pair)');
+  'a credit agent renders exactly one badge (no 5h/7d pair)');
 assert.strictEqual(creditBadge.dataset.kind, 'credit', 'the credit badge is tagged so CSS can widen it');
 assert.strictEqual(creditBadge.dataset.period, '剩余积分',
   `the badge label is a localized word, not the literal "credit" (got ${creditBadge.dataset.period})`);
@@ -114,16 +168,19 @@ assert(creditBadge.dataset.level === 'normal',
   '1809.9 / 3600 is a comfortable remainder, so the accent stays neutral');
 
 // 填了 0 剩余 → 这是「额度用尽」，必须显示 0 而不是 --（-- 是「没配额度」）
-w.handlers.stats({ ...stats, chipDisplay: { showQuota: true, showTokens: false, showCost: false },
-  quotaSlot: { ...creditSlot, remaining: 0 } });
+w.handlers.stats({ ...stats, quotaAgents: [{ ...creditAgent, quota: { ...creditAgent.quota, remaining: 0 } }],
+  chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: false, quotaAgents: {} } });
 assert.strictEqual(w.elements('chip-quota').children[0].textContent, '0',
   'an exhausted quota reads 0, not --');
 assert.strictEqual(w.elements('chip-quota').children[0].dataset.level, 'red',
   'an exhausted quota turns the accent red');
 
 // 还没填每期总量 → remaining 为 null，显示 -- 而不是 0
-w.handlers.stats({ ...stats, chipDisplay: { showQuota: true, showTokens: false, showCost: false },
-  quotaSlot: { kind: 'credit', id: 'workbuddy', label: 'WorkBuddy', remaining: null, monthly: null } });
+w.handlers.stats({ ...stats, quotaAgents: [{
+  id: 'workbuddy', label: 'WorkBuddy',
+  quota: { kind: 'credit', ready: false, today: 0, cycleUsed: null, remaining: null, monthly: null, resetDay: null, cycleStart: null },
+}],
+chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: false, quotaAgents: {} } });
 assert.strictEqual(w.elements('chip-quota').children[0].textContent, '--',
   'an unset quota reads --, never 0');
 

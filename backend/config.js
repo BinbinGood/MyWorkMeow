@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { STATE_DIR } = require('./paths');
 const { clampResetDay } = require('./credit-cycle');
+const { SOURCE_IDS } = require('./source-registry');
 
 const CONFIG_DIR = STATE_DIR;
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -24,9 +25,15 @@ const DEFAULTS = Object.freeze({
   privacyMode: false,
   showCat: true,
   showStatus: true,
-  showQuota: true,
   showTokens: false,
   showCost: true,
+  // 「哪个 Agent 的额度要出现在底部展示栏 / 托盘」—— 按 Agent 逐个开关。
+  // 以前这里是一个布尔 showQuota + 一个会动态改名的「额度槽位」：设置页写
+  // Codex、托盘却写 WorkBuddy，看起来自相矛盾。2026-09-15 改成每个检测到
+  // 的 Agent 各一个开关，有几个有效的就有几个按钮，位置从此固定。
+  //   { workbuddy: true, codex: false }
+  // 缺省（没写）= 打开。只有显式 false 才是关掉。
+  quotaAgents: {},
   xiabanTimes: DEFAULT_XIABAN_TIMES,
   // 按数据源手填的「每期积分总量」，用于反推剩余额度：
   //   { workbuddy: { monthly: 3600, resetDay: 1 } }
@@ -41,7 +48,9 @@ function isClockTime(value) {
 }
 
 function sanitize(raw) {
-  const out = { ...DEFAULTS, xiabanTimes: { ...DEFAULT_XIABAN_TIMES } };
+  // quotaAgents 是**可变**的映射，必须每次新建 —— DEFAULTS 顶层 Object.freeze
+  // 冻不住里面的对象，直接展开会把用户的开关写回默认值，跨实例串味。
+  const out = { ...DEFAULTS, xiabanTimes: { ...DEFAULT_XIABAN_TIMES }, quotaAgents: {} };
   if (!raw || typeof raw !== 'object') return out;
   if (raw.petPosition && Number.isFinite(raw.petPosition.x) && Number.isFinite(raw.petPosition.y)) {
     out.petPosition = { x: Math.round(raw.petPosition.x), y: Math.round(raw.petPosition.y) };
@@ -52,8 +61,19 @@ function sanitize(raw) {
   if (typeof raw.hooksEnabled === 'boolean') out.hooksEnabled = raw.hooksEnabled;
   if (typeof raw.autoUpdateEnabled === 'boolean') out.autoUpdateEnabled = raw.autoUpdateEnabled;
   if (typeof raw.privacyMode === 'boolean') out.privacyMode = raw.privacyMode;
-  for (const key of ['showCat', 'showStatus', 'showQuota', 'showTokens', 'showCost']) {
+  for (const key of ['showCat', 'showStatus', 'showTokens', 'showCost']) {
     if (typeof raw[key] === 'boolean') out[key] = raw[key];
+  }
+  // showQuota 是 2026-09-15 之前的老键。迁移：老配置里若明确关掉过额度，
+  // 就把它当作「全部 Agent 都关」，避免升级后用户之前关掉的东西自己亮回来。
+  if (typeof raw.showQuota === 'boolean') {
+    for (const id of SOURCE_IDS) out.quotaAgents[id] = raw.showQuota;
+  }
+  if (raw.quotaAgents && typeof raw.quotaAgents === 'object' && !Array.isArray(raw.quotaAgents)) {
+    for (const [id, enabled] of Object.entries(raw.quotaAgents)) {
+      if (!id || typeof enabled !== 'boolean') continue;
+      out.quotaAgents[id] = enabled;
+    }
   }
   if (raw.creditQuota && typeof raw.creditQuota === 'object' && !Array.isArray(raw.creditQuota)) {
     const quota = {};

@@ -2,10 +2,15 @@
 
 // Regression test for backend/tray-status.js —— 托盘菜单顶部的状态行。
 //
-// 这次改动要防的正靶：托盘菜单曾经把 Codex 写死在最上面，用户接的是别的 agent
-// 时第一眼看到的仍是 Codex 账户邮箱和额度（没装 Codex 时那几行只会显示「未找到
-// Codex，正在自动重试」）。所以下面既断言「该显示的显示」，也断言「不该显示的
-// 一个字都不出现」。
+// 这一版要守的口径（2026-09-15 用户定的）：
+//   1. **检测到**的 Agent 各占一段，不管今天有没有用量 —— 位置从此固定
+//   2. 不排序、不截断 —— 顺序就是注册表顺序，有几个显示几个
+//   3. 没有「额度槽位归谁」的概念 —— 每个 Agent 显示自己的额度
+//   4. 一个 Agent 的信息拼成一行，超过宽度上限在**片段边界**折行
+//   5. 暂时拿不到数字时不删行，改留一行状态文字
+//
+// 要防的正靶：以前托盘按「今天有没有用量」过滤、还只留前三名，于是设置页写着
+// Codex、托盘里却只有 WorkBuddy —— 用户看到的是「两处对不上」。
 
 const i18n = require('../shared/i18n');
 const tray = require('../backend/tray-status');
@@ -25,7 +30,7 @@ function flat(rows) {
   return labels(rows).join('\n');
 }
 
-// IANA 检查：托盘里出现未翻译的键名（比如 'tray.sourceTitle' 原样输出）是最容易
+// IANA 检查：托盘里出现未翻译的键名（比如 'tray.rowCredit' 原样输出）是最容易
 // 漏掉的回归，这里统一兜住。
 function assertTranslated(rows, msg) {
   const text = flat(rows);
@@ -55,207 +60,175 @@ assert(tray.quotaText(0) === '0', 'quotaText KEEPS a real zero — the quota is 
 assert(tray.quotaText(1512.4) === '1512', 'quotaText formats a large remainder');
 assert(tray.quotaText(-5) === null, 'quotaText rejects a negative quota');
 
-// ── 行生成 ────────────────────────────────────────────────────────────────────
+// ── 显示宽度 ──────────────────────────────────────────────────────────────────
+// 折行完全建立在这个度量之上，先把它钉死：汉字/全角标点 = 2 列，ASCII = 1 列。
+assert(tray.displayWidth('abc') === 3, 'ASCII counts one column');
+assert(tray.displayWidth('今日') === 4, 'CJK counts two columns');
+assert(tray.displayWidth('　') === 2, 'the ideographic space counts two columns');
+assert(tray.displayWidth('5h　82%') === 7, 'mixed width adds up (5h=2 + 全角空格=2 + 82%=3)');
+assert(tray.displayWidth(null) === 0, 'displayWidth tolerates null');
+
+// ── 行生成：本机真实形态 ──────────────────────────────────────────────────────
 const workbuddy = {
   id: 'workbuddy',
   label: 'WorkBuddy',
   detected: true,
-  tokens: 55_060_264,
-  msgs: 427,             // 仍然喂进来，但应当被忽略（轮次已从口径里去掉）
-  cost: 1.2521,
-  credit: 63.82,
-  creditRemaining: 1512.4,
-  lifetimeTokens: 282_013_281,
-  lifetimeCredit: 1734.43,
+  tokens: 222_000_000,
+  cost: 3.55,
+  quota: { kind: 'credit', ready: true, remaining: 1696 },
 };
 
-const rows = tray.buildStatusRows({ sources: [workbuddy], codexRows: [], codexReady: false, t });
-assert(rows[0].label === 'WorkBuddy　今日', `no leading separator, the group header is first (got ${rows[0].label})`);
-assert(rows.every((row) => row.type !== 'separator'), 'a single source needs no separator at all');
-assertTranslated(rows, 'source group renders');
+const rows = tray.buildStatusRows({ agents: [workbuddy], t });
+assert(rows.length === 2, `a single agent wraps into 2 lines (got ${rows.length})`);
+assert(rows[0].label === 'WorkBuddy　积分剩余 1696', `first line starts with the name (got ${rows[0].label})`);
+assert(rows[1].label.startsWith('　'), 'continuation lines hang under the name');
+assert(tray.displayWidth(rows[1].label) <= tray.ROW_WIDTH_LIMIT,
+  `continuation stays within the width budget (got ${tray.displayWidth(rows[1].label)})`);
+assertTranslated(rows, 'the agent block renders');
 const text = flat(rows);
-assert(text.includes('55.1M'), 'today tokens are shown');
-assert(/Token/.test(text), 'the token unit reads Token, not 令牌');
-assert(!/令牌/.test(text), 'the old 令牌 wording is gone');
-assert(!/轮/.test(text) && !/427/.test(text), 'rounds are gone from the row (and msgs is ignored)');
-assert(text.includes('$1.25'), 'estimated cost is back, shown when positive');
-// Token 与费用必须在**同一行** —— 用户要求合并，分成两行就回归了。
-const usageRow = labels(rows).find((l) => /Token/.test(l));
-assert(/\$1\.25/.test(usageRow), `cost shares the Token row (got ${usageRow})`);
-assert(/费用/.test(usageRow), 'the row says 费用, not 等价费用');
-assert(!/等价费用/.test(text), 'the old 等价费用 wording is gone');
-assert(text.includes('63.8') && text.includes('1512'), 'credit shows today + remaining');
-assert(!/累计/.test(text) && !/1734/.test(text), 'the lifetime credit is no longer printed');
-assert(!/上下文/.test(text), 'no context water level row — removed by request');
-assert(labels(rows).length === 3, `a group is header + usage + credit (got ${labels(rows).length} rows)`);
-assert(!/Codex/.test(text), 'no Codex row when Codex is not ready — this is the bug being fixed');
-assert(rows.every((row) => row.type === 'separator' || row.enabled === false),
-  'all status rows are non-clickable info rows');
+assert(text.includes('222M'), 'today tokens are shown');
+assert(/Token/.test(text) && !/令牌/.test(text), 'the unit reads Token, not 令牌');
+assert(text.includes('$3.55'), 'estimated cost is shown when positive');
+assert(text.includes('1696'), 'remaining credit is shown');
+assert(rows.every((row) => row.enabled === false), 'status rows are non-clickable info rows');
 
-// 没填每期额度时（creditRemaining === null），「剩余」那一段整体不出现，
-// 只留今日消耗 —— 而不是显示一个会被读成「额度用完了」的 0。
-const noQuota = tray.buildStatusRows({
-  sources: [{ id: 'w', label: 'W', detected: true, tokens: 1000, credit: 12.5, lifetimeTokens: 1000 }],
-  codexReady: false,
-  t,
-});
-assert(/积分　12.5/.test(flat(noQuota)) && !/剩余/.test(flat(noQuota)),
-  'an unset quota drops the 剩余 segment instead of printing 0');
+// 顺序不再被改动 —— 上一版会按用量排序，那正是「昨天在第一行、今天在第三行」的来源
+const unsortedInput = [
+  { id: 'a', label: 'A', detected: true, tokens: 10, quota: null },
+  { id: 'b', label: 'B', detected: true, tokens: 999_999, quota: null },
+  { id: 'c', label: 'C', detected: true, tokens: 1, quota: null },
+];
+assert(flat(tray.buildStatusRows({ agents: unsortedInput, t })).indexOf('A')
+  < flat(tray.buildStatusRows({ agents: unsortedInput, t })).indexOf('B'),
+'the input order is preserved — no re-sorting by usage');
 
-// 反过来：今日积分为 0（hy3）但填了额度时，只显示剩余。
-const leftOnly = tray.buildStatusRows({
-  sources: [{ id: 'w', label: 'W', detected: true, tokens: 1000, credit: 0, creditRemaining: 1400, lifetimeTokens: 1000 }],
-  codexReady: false,
-  t,
-});
-assert(/积分　剩余 1400/.test(flat(leftOnly)) && !/积分　0/.test(flat(leftOnly)),
-  'a zero today-credit still shows the remaining quota, without printing 积分 0');
+// 也不再截断 —— 上一版最多只显示三个
+const fourAgents = ['A', 'B', 'C', 'D'].map((label, i) => ({
+  id: label.toLowerCase(), label, detected: true, tokens: 10 * (i + 1), quota: null,
+}));
+const fourText = flat(tray.buildStatusRows({ agents: fourAgents, t }));
+for (const label of ['A', 'B', 'C', 'D']) {
+  assert(fourText.includes(`${label}　`), `${label} still gets a row with four agents — nothing is truncated`);
+}
 
 // 未接入的来源绝不出现
 const withCodexOff = tray.buildStatusRows({
-  sources: [workbuddy, { id: 'codex', label: 'Codex', detected: false, tokens: 0, lifetimeTokens: 0 }],
-  codexRows: [{ label: 'Codex　账户 a***@example.com' }],
-  codexReady: false,
+  agents: [workbuddy, { id: 'codex', label: 'Codex', detected: false, tokens: 0, quota: null }],
   t,
 });
-assert(!/Codex/.test(flat(withCodexOff)),
-  'a detected:false source is dropped even if rows were supplied for it');
+assert(!/Codex/.test(flat(withCodexOff)), 'a detected:false agent is dropped');
 
-// 装了 Codex 且额度可用时，额度块必须回来（别把功能一起删掉）
-const withCodex = tray.buildStatusRows({
-  sources: [workbuddy],
-  codexRows: [{ label: 'Codex　账户 a***@example.com · Plus', enabled: false }],
-  codexReady: true,
+// ── 折行 ──────────────────────────────────────────────────────────────────────
+// 折行只在片段边界发生：宁可让一个超长片段独占一行，也不把「正在自动重试」
+// 这种词从中间切开。
+const longStatus = tray.agentLines({
+  id: 'x', label: 'X', detected: true, tokens: 0, cost: 0,
+  quota: { kind: 'codex', ready: false, status: '未找到 Codex，正在自动重试', windows: [] },
+}, t);
+assert(longStatus.length === 1, 'an over-wide part gets its own line instead of being chopped');
+assert(!longStatus[0].endsWith('　') && !/　$/.test(longStatus[0]), 'no trailing separator on a single-part line');
+
+// limit 真的生效
+const narrow = tray.agentLines(workbuddy, t, 10);
+assert(narrow.every((line, i) => i === 0 || line.startsWith('　')),
+  'every continuation line is indented');
+assert(narrow.length > 2, `a tight limit forces more lines (got ${narrow.length})`);
+
+// 片段顺序固定：额度 → Token → 费用
+const parts = tray.agentParts(workbuddy, t);
+assert(parts.length === 3, `credit + tokens + cost (got ${parts.length})`);
+assert(/积分/.test(parts[0]) && /Token/.test(parts[1]) && /费用/.test(parts[2]),
+  'parts are ordered quota → tokens → cost');
+assertTranslated(tray.buildStatusRows({ agents: [workbuddy], t }), 'the ordered parts render');
+
+// ── 无数据时不删行 ────────────────────────────────────────────────────────────
+// 「检测到但今天还没用量」也算有效 —— 用户明确要求「有几个有效就显示几个」，
+// 所以退化成「暂无数据」，而不是整段消失。
+const neverUsed = tray.buildStatusRows({
+  agents: [{ id: 'trae', label: 'TRAE', detected: true, tokens: 0, cost: 0, quota: null }],
   t,
 });
-assert(/Codex　账户/.test(flat(withCodex)), 'the Codex quota block still renders when Codex is present');
-assert(labels(withCodex)[0] === 'WorkBuddy　今日',
-  'codexRows are appended after the source groups, not pinned to the top');
-assert(withCodex.some((row) => row.type === 'separator'), 'blocks are separated from each other');
+assert(labels(neverUsed).length === 1, 'a detected agent with no data still gets one line');
+assert(labels(neverUsed)[0] === `TRAE　${t('tray.rowNoData')}`,
+  `it says TRAE + no-data (got ${labels(neverUsed)[0]})`);
+assertTranslated(neverUsed, 'the no-data line renders');
 
-// 装了 Codex 但额度还没到手：整块 5h/7d 不画（没数字的占位是噪音），但必须留**一行**
-// 说明额度归它 —— 否则设置页那一项写着「Codex 订阅额度」、托盘却只有 WorkBuddy 的
-// 今日用量，用户看到的是「两处对不上」（2026-09-15 反馈）。
+// 积分型但没填每期总量：保留整行，说清楚为什么没有数字。
+// 关键是不能打印「积分剩余 0」—— 那会被读成「额度用完了」。
+const creditUnset = tray.buildStatusRows({
+  agents: [{ id: 'w', label: 'W', detected: true, tokens: 1000, cost: 0, quota: { kind: 'credit', ready: false, remaining: null } }],
+  t,
+});
+assert(!/剩余\s*0/.test(flat(creditUnset)), 'an unset credit quota never prints 剩余 0');
+assert(flat(creditUnset).includes(t('tray.rowCreditUnset')), 'it says the per-cycle total is unset');
+
+// 反过来：剩余真的是 0（额度确实用尽）必须显示出来
+const creditExhausted = tray.buildStatusRows({
+  agents: [{ id: 'w', label: 'W', detected: true, tokens: 0, cost: 0, quota: { kind: 'credit', ready: true, remaining: 0 } }],
+  t,
+});
+assert(/剩余 0/.test(flat(creditExhausted)), 'a genuinely exhausted quota prints 剩余 0');
+
+// ── Codex：就绪 vs 未就绪 ─────────────────────────────────────────────────────
+const codexReady = tray.buildStatusRows({
+  agents: [{
+    id: 'codex', label: 'Codex', detected: true, tokens: 1_234_567, cost: 2.1,
+    quota: { kind: 'codex', ready: true, status: null, windows: [{ label: '5h', percent: 82 }, { label: '7d', percent: 64 }] },
+  }],
+  t,
+});
+assert(/5h\s*82%/.test(flat(codexReady)) && /7d\s*64%/.test(flat(codexReady)),
+  'a ready Codex shows its 5h / 7d windows');
+
+// 装了 Codex 但额度还没到手：留一行状态，不整块消失 —— 这正是用户最初提的问题
+// （设置页写着 Codex、托盘里找不到它）。
 const codexPending = tray.buildStatusRows({
-  sources: [workbuddy],
-  codexReady: false,
-  codexPending: true,
-  codexPendingRows: [{ label: t('tray.quotaPending', { status: t('tray.quotaStatusUnavailable') }), enabled: false }],
+  agents: [{
+    id: 'codex', label: 'Codex', detected: true, tokens: 0, cost: 0,
+    quota: { kind: 'codex', ready: false, status: t('tray.quotaStatusCodexMissing'), windows: [] },
+  }],
   t,
 });
-assert(/Codex/.test(flat(codexPending)), 'a detected-but-unready Codex still gets one line in the tray');
-assert(labels(codexPending).length === 4,
-  `header + usage + credit + the one Codex line (got ${labels(codexPending).length})`);
-assert(codexPending.some((row) => row.type === 'separator'),
-  'the pending Codex line is its own block, separated from the sources');
+assert(/Codex/.test(flat(codexPending)), 'a detected-but-unready Codex still gets its line');
 assertTranslated(codexPending, 'the pending Codex line renders');
 
-// 额度到手后只画整块，不能两行同时出现
-const readyWins = tray.buildStatusRows({
-  sources: [workbuddy],
-  codexReady: true,
-  codexPending: true,
-  codexRows: [{ label: 'Codex　账户 a***@example.com · Plus' }],
-  codexPendingRows: [{ label: 'Codex　额度暂不可用' }],
+// 多个 Agent 之间插分隔线 —— 折行之后光看行首不容易分辨归属
+const two = tray.buildStatusRows({
+  agents: [
+    workbuddy,
+    { id: 'codex', label: 'Codex', detected: true, tokens: 0, cost: 0, quota: { kind: 'codex', ready: false, status: 'pending', windows: [] } },
+  ],
   t,
 });
-assert(/账户/.test(flat(readyWins)) && !/暂不可用/.test(flat(readyWins)),
-  'the ready quota block replaces the pending line');
+assert(two.filter((row) => row.type === 'separator').length === 1,
+  'one separator between two agent blocks, none before the first');
 
-// 没接 Codex：pending 行给了也不许出现（防止「插一行就冒一行」）
-const noCodexPending = tray.buildStatusRows({
-  sources: [workbuddy],
-  codexReady: false,
-  codexPending: false,
-  codexPendingRows: [{ label: 'Codex　额度暂不可用' }],
-  t,
-});
-assert(!/Codex/.test(flat(noCodexPending)), 'pending rows need the explicit codexPending flag');
-
-// 装过但从未产生用量 → 不占位
-const neverUsed = tray.buildStatusRows({
-  sources: [{ id: 'trae', label: 'TRAE', detected: true, tokens: 0, lifetimeTokens: 0 }],
-  codexReady: false,
-  t,
-});
-assert(labels(neverUsed).length === 1 && labels(neverUsed)[0] === t('tray.noSources'),
-  'a detected but never-used source falls back to the "no sources" line');
-assertTranslated(neverUsed, 'the empty state renders');
-
-// 什么都没接入
-const empty = tray.buildStatusRows({ sources: [], codexReady: false, t });
+// ── 空态 ──────────────────────────────────────────────────────────────────────
+const empty = tray.buildStatusRows({ agents: [], t });
 assert(empty.length === 1 && empty[0].label === t('tray.noSources'), 'the empty state is a single line');
 const emptyNoT = tray.buildStatusRows({});
 assert(emptyNoT.length === 1, 'buildStatusRows tolerates a missing t function');
+const emptyNoAgents = tray.buildStatusRows({ agents: [{ id: 'x', label: 'X', detected: false }], t });
+assert(emptyNoAgents.length === 1, 'agents that are all undetected fall back to the empty line');
 
-// 排序 + 上限
-const many = tray.buildStatusRows({
-  sources: [
-    { id: 'a', label: 'A', detected: true, tokens: 10, lifetimeTokens: 10 },
-    { id: 'b', label: 'B', detected: true, tokens: 300, lifetimeTokens: 300 },
-    { id: 'c', label: 'C', detected: true, tokens: 200, lifetimeTokens: 200 },
-    { id: 'd', label: 'D', detected: true, tokens: 100, lifetimeTokens: 100 },
-  ],
-  codexReady: false,
-  t,
-});
-const order = labels(many).filter((l) => l.endsWith('今日')).map((l) => l[0]);
-assert(order.length === tray.MAX_SOURCES, `at most ${tray.MAX_SOURCES} source groups (got ${order.length})`);
-assert(order.join('') === 'BCD', `most-used source first (got ${order.join('')})`);
-
-assert(tray.isReportable({ detected: true, lifetimeCredit: 5 }) === true,
-  'a credit-only source is reportable');
-assert(tray.isReportable({ detected: false, lifetimeTokens: 10 }) === false,
-  'an undetected source is never reportable');
-
-// ── 额度槽位归谁 ──────────────────────────────────────────────────────────────
-// 正靶：早先要求 Codex 的额度「已经就绪」才归它，于是额度拉取中/失败的那段时间
-// 槽位会落到别的 Agent 上 —— 设置页那一项就写成别的名字，用户看到的是
-// 「我用的是 Codex，选项怎么没了」。
-const wbSource = { id: 'workbuddy', label: 'WorkBuddy' };
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-assert(same(tray.slotOwner({ codexDetected: true, codexReady: true, creditSource: wbSource }),
-  { kind: 'codex', id: 'codex', label: 'Codex', ready: true }),
-'an installed Codex owns the slot');
-assert(same(tray.slotOwner({ codexDetected: true, codexReady: false, creditSource: wbSource }),
-  { kind: 'codex', id: 'codex', label: 'Codex', ready: false }),
-'Codex keeps the slot BEFORE its quota arrives — this is the reported bug');
-assert(same(tray.slotOwner({ codexDetected: true, codexReady: false }),
-  { kind: 'codex', id: 'codex', label: 'Codex', ready: false }),
-'Codex owns the slot even with no credit source to fall back to');
-assert(same(tray.slotOwner({ codexDetected: false, codexReady: true, creditSource: wbSource }),
-  { kind: 'credit', id: 'workbuddy', label: 'WorkBuddy', ready: true }),
-'with no Codex installed the credit source takes the slot');
-assert(same(tray.slotOwner({ codexDetected: false }),
-  { kind: 'none', id: null, label: null, ready: false }),
-'nothing detected → the slot is empty, not someone else\'s shell');
-assert(tray.slotOwner({ creditSource: { label: 'no id' } }).kind === 'none',
-  'a credit source without an id cannot own the slot');
-assert(tray.slotOwner().kind === 'none', 'slotOwner tolerates no input');
-
-// 每个新文案键都必须真的存在于词典里
-for (const key of ['tray.sourceTitle', 'tray.sourceTokens', 'tray.sourceUsage',
-  'tray.sourceCredit', 'tray.sourceCreditUsed', 'tray.sourceCreditLeft', 'tray.noSources',
-  'tray.quotaPending']) {
+// ── i18n ──────────────────────────────────────────────────────────────────────
+for (const key of ['tray.rowWindow', 'tray.rowStatus', 'tray.rowCredit', 'tray.rowCreditUnset',
+  'tray.rowTokens', 'tray.rowCost', 'tray.rowNoData', 'tray.noSources']) {
   assert(typeof t(key) === 'string' && t(key) !== key, `i18n has ${key}`);
 }
 
-// 上一轮删掉的键不能悄悄复活
-for (const gone of ['tray.sourceContext', 'tray.sourceCost']) {
+// 上一版的键不能悄悄复活 —— 它们对应的是已被替换掉的「三行块」口径
+for (const gone of ['tray.sourceTitle', 'tray.sourceUsage', 'tray.sourceCredit',
+  'tray.sourceTokens', 'tray.sourceCreditUsed', 'tray.sourceCreditLeft']) {
   assert(t(gone) === gone, `${gone} is gone from the dictionary`);
 }
 
-// 积分为 0 且没填额度的数据源（WorkBuddy 的默认模型 hy3 就是这种）不该出现积分行
-const noCredit = tray.buildStatusRows({
-  sources: [{ id: 'a', label: 'A', detected: true, tokens: 1000, msgs: 2, lifetimeTokens: 1000 }],
-  codexReady: false,
+// 费用为 0 时不留「费用 --」，整段不出现
+const zeroCost = tray.buildStatusRows({
+  agents: [{ id: 'a', label: 'A', detected: true, tokens: 1000, cost: 0, quota: null }],
   t,
 });
-assert(labels(noCredit).length === 2 && !/积分/.test(flat(noCredit)),
-  'no credit and no quota drops the credit row entirely');
-// 费用为 0 时那一行退化成纯 Token —— 既不能出现 $0.00，也不要留个「费用 --」
-const usageOnly = labels(noCredit).find((l) => /Token/.test(l));
-assert(!/\$/.test(usageOnly) && !/费用/.test(usageOnly),
-  `a zero cost leaves the row as bare Token (got ${usageOnly})`);
+assert(!/费用/.test(flat(zeroCost)) && !/\$/.test(flat(zeroCost)),
+  'a zero cost leaves no cost segment at all');
 
 console.log('\nTRAY STATUS TESTS PASSED');

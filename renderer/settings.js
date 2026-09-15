@@ -5,7 +5,7 @@ const ASSETS = window.WorkMeowPetAssets;
 const $ = (id) => document.getElementById(id);
 
 async function initializeChipDisplay() {
-  const keys = ['showCat', 'showStatus', 'showQuota', 'showTokens', 'showCost'];
+  const keys = ['showCat', 'showStatus', 'showTokens', 'showCost'];
   const status = $('chip-display-status');
   const render = (value) => keys.forEach(key => $(key + '-toggle').setAttribute('aria-checked', String(value[key] === true)));
   keys.forEach(key => { $(key + '-toggle').disabled = true; });
@@ -29,22 +29,101 @@ async function initializeChipDisplay() {
 }
 initializeChipDisplay();
 
-// ── 额度槽位 + 手填积分额度 ──────────────────────────────────────────────────
-// 额度那一项以前写死成「Codex 订阅额度」，描述里也写死 5h/7d。但本项目支持五种
-// Agent，这一项必须跟着**实际接入**的那个走：接 Codex 就是它的 5h/7d，接
-// WorkBuddy 就是它的积分（归属由主进程 quotaSlot() 判定，渲染端只负责画）。
-const quotaSlotTitle = $('quota-slot-title');
-const quotaSlotDescription = $('quota-slot-description');
-const creditQuotaSection = $('credit-quota-section');
+// ── 每个 Agent 一个额度开关 ─────────────────────────────────────────────────
+// 以前是一个会动态改名的「额度槽位」（接 Codex 就叫 Codex、否则叫 WorkBuddy），
+// 于是出现「设置页写 Codex、托盘写 WorkBuddy」的自相矛盾。2026-09-15 改成
+// **检测到几个 Agent 就给几个开关**，位置和名字都固定，不再动态改名、动态增删。
+const quotaAgentList = $('quota-agent-list');
+const quotaAgentStatus = $('quota-agent-status');
 const creditQuotaDescription = $('credit-quota-description');
 const creditQuotaMonthly = $('credit-quota-monthly');
 const creditQuotaResetDay = $('credit-quota-reset-day');
 const creditQuotaStatus = $('credit-quota-status');
 const creditQuotaSave = $('credit-quota-save');
 const creditQuotaClear = $('credit-quota-clear');
-const quotaToggle = $('showQuota-toggle');
-let quotaSlotState = { kind: 'none' };
+// agents 里最后一个 Credit 型 Agent —— 手填那张卡片归属它。
+let creditAgentState = null;
+let quotaAgentRows = [];
 let creditQuotaBusy = false;
+
+function quotaAgentCard(agent) {
+  const card = document.createElement('div');
+  card.className = 'setting-card';
+
+  const copy = document.createElement('div');
+  copy.className = 'setting-copy';
+  const title = document.createElement('div');
+  title.className = 'setting-title';
+  title.textContent = agent.label || agent.id;
+  const description = document.createElement('div');
+  description.className = 'setting-description';
+  description.textContent = t(`settings.quotaAgent${agent.quotaKind || 'None'}Description`);
+  copy.append(title, description);
+
+  const button = document.createElement('button');
+  button.id = `quota-agent-${agent.id}-toggle`;
+  button.className = 'switch';
+  button.type = 'button';
+  button.setAttribute('role', 'switch');
+  button.setAttribute('aria-checked', String(agent.enabled !== false));
+  button.setAttribute('aria-label', t('settings.quotaAgentToggle', { name: agent.label || agent.id }));
+  const thumb = document.createElement('span');
+  thumb.className = 'switch-thumb';
+  thumb.setAttribute('aria-hidden', 'true');
+  button.appendChild(thumb);
+
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    quotaAgentStatus.className = 'setting-status';
+    quotaAgentStatus.textContent = t('settings.chipHint');
+    try {
+      const result = await window.pet.setChipDisplay({
+        quotaAgents: { [agent.id]: button.getAttribute('aria-checked') !== 'true' },
+      });
+      if (!result || !result.ok) throw new Error('save failed');
+      button.setAttribute('aria-checked', String(result.quotaAgents[agent.id] !== false));
+      quotaAgentStatus.textContent = '已保存，喵底部展示已更新';
+    } catch { quotaAgentStatus.textContent = '保存失败，请重试'; }
+    finally { button.disabled = false; }
+  });
+
+  card.append(copy, button);
+  return card;
+}
+
+function quotaAgentQuotaKind(agent) {
+  const kind = agent && agent.quota && agent.quota.kind;
+  if (kind === 'codex') return 'Codex';
+  if (kind === 'credit') return 'Credit';
+  return 'None';
+}
+
+function renderQuotaAgents(agents) {
+  quotaAgentRows = Array.isArray(agents) ? agents : [];
+  quotaAgentList.replaceChildren();
+  if (!quotaAgentRows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'setting-description';
+    empty.textContent = t('settings.quotaAgentsLoading');
+    quotaAgentList.appendChild(empty);
+    return;
+  }
+  for (const agent of quotaAgentRows) {
+    quotaAgentList.appendChild(quotaAgentCard({
+      id: agent.id,
+      label: agent.label,
+      enabled: agent.enabled !== false,
+      quotaKind: quotaAgentQuotaKind(agent),
+    }));
+  }
+}
+
+// 额度 → 手填卡片：一个 Agent 可能一会儿 Codex（自动）一会儿 Credit（要手填），
+// 这里统一把 Credit 形态需要的字段从 rows 里取出来。
+function pickCreditAgent(rows) {
+  const configured = rows.find((row) => row.quota && row.quota.kind === 'credit' && Number(row.quota.monthly) > 0);
+  return configured || rows.find((row) => row.quota && row.quota.kind === 'credit') || null;
+}
 
 function renderCreditQuotaStatus(messageKey = null, kind = '') {
   creditQuotaStatus.className = `setting-status${kind ? ` ${kind}` : ''}`;
@@ -52,51 +131,37 @@ function renderCreditQuotaStatus(messageKey = null, kind = '') {
     creditQuotaStatus.textContent = t(messageKey);
     return;
   }
-  const monthly = Number(quotaSlotState && quotaSlotState.monthly);
+  const monthly = Number(creditAgentState && creditAgentState.quota && creditAgentState.quota.monthly);
   creditQuotaStatus.textContent = Number.isFinite(monthly) && monthly > 0
-    ? t('settings.creditQuotaOn', { monthly, day: quotaSlotState.resetDay })
+    ? t('settings.creditQuotaOn', { monthly, day: creditAgentState.quota.resetDay })
     : '';
 }
 
-function renderQuotaSlot(slot) {
-  quotaSlotState = slot && typeof slot === 'object' ? slot : { kind: 'none' };
-  const name = quotaSlotState.label || '';
-  if (quotaSlotState.kind === 'codex') {
-    quotaSlotTitle.textContent = t('settings.quotaSlotCodex');
-    quotaSlotDescription.textContent = t('settings.quotaSlotCodexDescription');
-  } else if (quotaSlotState.kind === 'credit') {
-    quotaSlotTitle.textContent = t('settings.quotaSlotCredit', { name });
-    quotaSlotDescription.textContent = t('settings.quotaSlotCreditDescription');
-  } else {
-    quotaSlotTitle.textContent = t('settings.quotaSlotNone');
-    quotaSlotDescription.textContent = t('settings.quotaSlotNoneDescription');
-  }
-  quotaToggle.setAttribute('aria-label', quotaSlotTitle.textContent);
-
-  // 「积分额度」那张手填卡片只在槽位确实归属某个积分型数据源时才出现 ——
-  // 接的是 Codex 时它的额度来自官方接口，没有要手填的东西。
-  const showCredit = quotaSlotState.kind === 'credit';
-  creditQuotaSection.hidden = !showCredit;
-  if (!showCredit) return;
+function renderCreditQuotaForm() {
+  creditAgentState = pickCreditAgent(quotaAgentRows);
+  if (!creditAgentState) return;
+  const name = creditAgentState.label || '';
   creditQuotaDescription.textContent = t('settings.creditQuotaDescription', { name });
-  const monthly = Number(quotaSlotState.monthly);
+  const quota = creditAgentState.quota || {};
+  const monthly = Number(quota.monthly);
   creditQuotaMonthly.value = Number.isFinite(monthly) && monthly > 0 ? String(monthly) : '';
-  const resetDay = Number(quotaSlotState.resetDay);
+  const resetDay = Number(quota.resetDay);
   creditQuotaResetDay.value = Number.isFinite(resetDay) && resetDay > 0 ? String(resetDay) : '1';
   renderCreditQuotaStatus();
 }
 
-async function loadQuotaSlot() {
+async function loadQuotaAgents() {
   try {
-    const result = await window.pet.getQuotaSlot();
-    renderQuotaSlot(result && result.slot ? result.slot : null);
-  } catch { renderQuotaSlot(null); }
+    const result = await window.pet.getQuotaAgents();
+    renderQuotaAgents(result && result.agents ? result.agents : []);
+  } catch { renderQuotaAgents([]); }
+  renderCreditQuotaForm();
 }
 
-// clear=true 时传 monthly=0：主进程会把这一项删掉，托盘随之不再显示「剩余」，
-// 而不是显示一个会被读成「额度用完了」的 0。
+// clear=true 时传 monthly=0：主进程会把这一项删掉，托盘仍保留这个 Agent 的行，
+// 只是不再显示「剩余」，而不是显示一个会被读成「额度用完了」的 0。
 async function saveCreditQuota(clear = false) {
-  if (creditQuotaBusy || quotaSlotState.kind !== 'credit') return;
+  if (creditQuotaBusy || !creditAgentState) return;
   const monthly = clear ? 0 : Number(creditQuotaMonthly.value);
   if (!clear && (!Number.isFinite(monthly) || monthly <= 0)) {
     renderCreditQuotaStatus('settings.creditQuotaInvalid', 'error');
@@ -108,12 +173,13 @@ async function saveCreditQuota(clear = false) {
   renderCreditQuotaStatus('settings.creditQuotaSaving');
   try {
     const result = await window.pet.setCreditQuota({
-      sourceId: quotaSlotState.id,
+      sourceId: creditAgentState.id,
       monthly,
       resetDay: Number(creditQuotaResetDay.value),
     });
-    if (!result || !result.ok || !result.slot) throw new Error('save failed');
-    renderQuotaSlot(result.slot);
+    if (!result || !result.ok || !result.agents) throw new Error('save failed');
+    renderQuotaAgents(result.agents);
+    renderCreditQuotaForm();
     renderCreditQuotaStatus(clear ? 'settings.creditQuotaCleared' : 'settings.creditQuotaSaved');
   } catch { renderCreditQuotaStatus('settings.creditQuotaFailed', 'error'); }
   finally {
@@ -125,7 +191,7 @@ async function saveCreditQuota(clear = false) {
 
 creditQuotaSave.addEventListener('click', () => saveCreditQuota(false));
 creditQuotaClear.addEventListener('click', () => saveCreditQuota(true));
-loadQuotaSlot();
+loadQuotaAgents();
 
 const toggle = $('auto-launch-toggle');
 const statusEl = $('setting-status');

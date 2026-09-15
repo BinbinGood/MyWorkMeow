@@ -34,19 +34,17 @@
     'tray.quotaStatusSignedOut': 'Codex 尚未登录 ChatGPT',
     'tray.quotaStatusChatgptRequired': '当前账户没有订阅额度',
     'tray.quotaStatusUnavailable': '暂时不可用，正在自动重试',
-    // 按数据源分组的状态行。只对「已接入且用过」的工具生成，不再写死某一个。
-    // 每行口径：今日 Token / 今日等价费用 / 今日积分 + 剩余额度。
-    // 单位用行业通用的 Token（不再叫「令牌」），轮次已按用户要求去掉。
-    // 「剩余」= 用户手填的每期总量 − 本期已用；没填额度时用 *Used 那一条，
-    // 整段「剩余」不出现（而不是显示一个会被读成「用完了」的 0）。
-    'tray.sourceTitle': '{name}　今日',
-    'tray.sourceTokens': 'Token　{tokens}',
-    // Token 与费用合在一行显示（托盘是速览位，省一行是一行）。费用为 0 时
-    // 退化成上面那条纯 Token 文案，不会打印 $0.00。
-    'tray.sourceUsage': 'Token　{tokens}　·　费用 {cost}',
-    'tray.sourceCredit': '积分　{credit}　·　剩余 {left}',
-    'tray.sourceCreditUsed': '积分　{credit}',
-    'tray.sourceCreditLeft': '积分　剩余 {left}',
+    // 每个「有效 agent」（检测到就算）一行，按片段拼接，超宽在片段边界折行。
+    // 每个片段自带单位/名词 —— 压到一行之后光看「1696」分不清是积分还是 token。
+    // 「剩余」= 用户手填的每期总量 − 本期已用；没填额度时显示 *Unset 那一条
+    // （而不是一个会被读成「用完了」的 0，也不是把整行删掉）。
+    'tray.rowWindow': '{label}　{percent}%',
+    'tray.rowStatus': '{status}',
+    'tray.rowCredit': '积分剩余 {left}',
+    'tray.rowCreditUnset': '积分未设置每期总量',
+    'tray.rowTokens': 'Token　{tokens}',
+    'tray.rowCost': '费用 {cost}',
+    'tray.rowNoData': '暂无数据',
     'tray.noSources': '尚未接入任何 AI 工具',
     'tray.settings': '设置',
     'tray.quit': '退出',
@@ -91,9 +89,10 @@
     'settings.privacyFailed': '切换失败，请重试',
     'settings.privacyHint': '也可以右键打工喵，通过 ON/OFF 快速切换。',
 
-    // 喵底部展示栏。原先这一整段是写死的中文，且额度那一项写死成「Codex 订阅额度」——
-    // 但本项目支持五种 Agent，额度槽位必须跟着**实际接入**的那个走（见 main.js
-    // quotaSlot()）：接 Codex 显示它的 5h/7d，接 WorkBuddy 显示它的积分。
+    // 喵底部展示栏。额度那一项以前是**一个**会动态改名的槽位（接 Codex 就叫
+    // 「Codex 订阅额度」，否则叫「WorkBuddy 积分」），设置页写 Codex 而托盘写
+    // WorkBuddy，看起来自相矛盾。2026-09-15 改成：**每个检测到的 Agent 各一个
+    // 开关**，有几个有效的就有几个按钮，和托盘的行一一对应（见 backend/tray-status.js）。
     'settings.chipSection': '喵底部展示栏',
     'settings.chipShowCat': '显示喵喵',
     'settings.chipShowCatDescription': '隐藏喵喵本体，状态小点会移动到胶囊左侧；胶囊可直接拖动',
@@ -104,12 +103,13 @@
     'settings.chipShowCost': '今日 API 等价费用',
     'settings.chipShowCostDescription': '按 API 价格估算，不代表订阅实际扣费',
     'settings.chipHint': '修改立即生效并自动保存；完整用量仍可在统计面板查看。',
-    'settings.quotaSlotCodex': 'Codex 订阅额度',
-    'settings.quotaSlotCodexDescription': '显示 5h、7d 剩余百分比，与托盘同步更新；点击额度查看刷新时间',
-    'settings.quotaSlotCredit': '{name} 积分',
-    'settings.quotaSlotCreditDescription': '显示剩余积分，与托盘同步；点击查看今日消耗与本机已用',
-    'settings.quotaSlotNone': '订阅额度',
-    'settings.quotaSlotNoneDescription': '当前没有接入提供额度数据的 Agent，这一项暂时不显示内容',
+    // 按 Agent 拆开的额度开关。有几个「有效的」（已接入）就有几个按钮。
+    'settings.quotaAgentsKicker': '订阅额度',
+    'settings.quotaAgentCodexDescription': '显示这个 Agent 的 5h、7d 剩余百分比；点击额度查看刷新时间。托盘也会有一行',
+    'settings.quotaAgentCreditDescription': '显示这个 Agent 的剩余积分（需在下面填每期总量）；点击查看今日消耗与本机已用。托盘也会有一行',
+    'settings.quotaAgentNoneDescription': '已接入，但这个 Agent 不提供额度数据；托盘仍会为它保留一行',
+    'settings.quotaAgentToggle': '在底部展示栏显示 {name} 的额度',
+    'settings.quotaAgentsLoading': '正在检查接入的 Agent…',
 
     // 积分额度（手填）。WorkBuddy 的余额只在服务端、本机无副本，所以由用户填每期
     // 总量、本机用已用反推剩余。见 backend/credit-cycle.js。

@@ -16,7 +16,7 @@ const IPC = Object.freeze({
   GET_AUTO_LAUNCH: 'get-auto-launch', SET_AUTO_LAUNCH: 'set-auto-launch',
   GET_PRIVACY_MODE: 'privacy:get', SET_PRIVACY_MODE: 'privacy:set',
   GET_CHIP_DISPLAY: 'chip:get-display', SET_CHIP_DISPLAY: 'chip:set-display',
-  GET_QUOTA_SLOT: 'quota:get-slot', SET_CREDIT_QUOTA: 'quota:set-credit',
+  GET_QUOTA_AGENTS: 'quota:get-agents', SET_CREDIT_QUOTA: 'quota:set-credit',
   GET_INTEGRATION_HEALTH: 'integrations:get-health', REPAIR_INTEGRATIONS: 'integrations:repair',
   UNINSTALL_INTEGRATIONS: 'integrations:uninstall',
   GET_XIABAN_SCHEDULE: 'get-xiaban-schedule', SET_XIABAN_SCHEDULE: 'set-xiaban-schedule',
@@ -47,8 +47,8 @@ contextBridge.exposeInMainWorld('pet', {
   getPrivacyMode: () => ipcRenderer.invoke(IPC.GET_PRIVACY_MODE),
   getChipDisplay: () => ipcRenderer.invoke(IPC.GET_CHIP_DISPLAY),
   setChipDisplay: (value) => ipcRenderer.invoke(IPC.SET_CHIP_DISPLAY, value),
-  // 额度槽位跟着实际接入的 agent 走（Codex 的 5h/7d，或手填额度反推的积分剩余）
-  getQuotaSlot: () => ipcRenderer.invoke(IPC.GET_QUOTA_SLOT),
+  // 每个检测到的 Agent 各自一份额度（Codex 的 5h/7d，或手填额度反推的积分剩余）
+  getQuotaAgents: () => ipcRenderer.invoke(IPC.GET_QUOTA_AGENTS),
   setCreditQuota: (payload) => ipcRenderer.invoke(IPC.SET_CREDIT_QUOTA, payload || {}),
   setPrivacyMode: (enabled) => ipcRenderer.invoke(IPC.SET_PRIVACY_MODE, !!enabled),
   getIntegrationHealth: () => ipcRenderer.invoke(IPC.GET_INTEGRATION_HEALTH),

@@ -740,9 +740,9 @@ function buildStats(agent = 'all', snapshot = null, cachedMeter = null) {
     usageProvider: 'all',
   });
   stats.chipDisplay = getChipDisplay();
-  // 底部展示栏的「额度」槽位挂谁身上 —— 接 Codex 就是 Codex 的 5h/7d，
-  // 接 WorkBuddy 就是它的积分。渲染端据此决定画哪种徽标（见 renderer/pet.js）。
-  stats.quotaSlot = quotaSlot();
+  // 底部展示栏每个**检测到**的 Agent 一个额度徽标，显不显示由 chipDisplay.quotaAgents
+  // 逐个控制（以前是一个会动态改名的「额度槽位」，见 config.js quotaAgents 的说明）。
+  stats.quotaAgents = trayAgents();
   const quotaWindows = codexQuotaState.windows || {};
   const quotaAccount = codexQuotaState.account && typeof codexQuotaState.account === 'object'
     ? {
@@ -1069,17 +1069,30 @@ function registerIpc() {
   ipcMain.handle(IPC.SET_CHIP_DISPLAY, (e, value) => {
     if (!settingsWin || settingsWin.isDestroyed() || e.sender !== settingsWin.webContents) return { ok: false };
     const patch = {};
-    for (const key of ['showCat', 'showStatus', 'showQuota', 'showTokens', 'showCost']) {
+    for (const key of ['showCat', 'showStatus', 'showTokens', 'showCost']) {
       if (value && typeof value[key] === 'boolean') patch[key] = value[key];
     }
+    // 额度开关按 Agent 逐个给：{ quotaAgents: { workbuddy: false } }。
+    // 走 merge 而不是整表覆盖，改一个不会把别的 Agent 的开关抹掉。
+    if (value && value.quotaAgents && typeof value.quotaAgents === 'object' && !Array.isArray(value.quotaAgents)) {
+      const merged = { ...(config.get().quotaAgents || {}) };
+      let touched = false;
+      for (const [id, enabled] of Object.entries(value.quotaAgents)) {
+        if (!id || typeof enabled !== 'boolean') continue;
+        merged[id] = enabled;
+        touched = true;
+      }
+      if (touched) patch.quotaAgents = merged;
+    }
     config.save(patch);
+    refreshTrayMenu();
     emitStats();
     return { ok: true, ...getChipDisplay() };
   });
   ipcMain.handle(IPC.SET_AUTO_LAUNCH, (_e, enabled) => setAutoLaunch(enabled));
-  // 额度槽位与手填额度：设置页那一项要跟着实际接入的 agent 变，不能写死 Codex，
-  // 所以取值统一走 quotaSlot()。写入只接受设置窗口来的请求（和前面几个一致）。
-  ipcMain.handle(IPC.GET_QUOTA_SLOT, () => ({ ok: true, slot: quotaSlot() }));
+  // 每个检测到的 Agent 各自一份额度，不再有「槽位归谁」的概念 —— 设置页、底部
+  // 展示栏、托盘三处都读同一份 trayAgents()。写入只接受设置窗口来的请求。
+  ipcMain.handle(IPC.GET_QUOTA_AGENTS, () => ({ ok: true, agents: trayAgents() }));
   ipcMain.handle(IPC.SET_CREDIT_QUOTA, (e, payload) => {
     if (!settingsWin || settingsWin.isDestroyed() || e.sender !== settingsWin.webContents) {
       return { ok: false, error: 'forbidden' };
@@ -1457,12 +1470,12 @@ function setPrivacyMode(enabled) {
 }
 
 function getChipDisplay() {
-  const { showCat, showStatus, showQuota, showTokens, showCost } = config.get();
-  return { showCat, showStatus, showQuota, showTokens, showCost };
+  const { showCat, showStatus, showTokens, showCost, quotaAgents } = config.get();
+  return { showCat, showStatus, showTokens, showCost, quotaAgents: { ...quotaAgents } };
 }
 
-// 手填「每期积分总量」并落盘。monthly 传成非正数/空 = 清掉这一项 —— 清掉之后
-// 托盘与展示栏都不显示「剩余」，而不是显示一个 0（0 会被读成「额度用完了」）。
+  // 手填「每期积分总量」并落盘。monthly 传成非正数/空 = 清掉这一项 —— 清掉之后
+// 托盘与展示栏仍保留这个 Agent 的行，只是不显示「剩余」（0 会被读成额度用完了）。
 //
 // 刻意按数据源**合并**而不是整表覆盖：将来多个 agent 都要手填时，改其中一个
 // 不会把另一个的额度抹掉。
@@ -1479,7 +1492,7 @@ function setCreditQuota(payload) {
   config.save({ creditQuota: Object.keys(quota).length ? quota : null });
   refreshTrayMenu();
   emitStats();
-  return { ok: true, slot: quotaSlot() };
+  return { ok: true, agents: trayAgents() };
 }
 
 function quotaStatusLabel(quota) {
@@ -1511,22 +1524,29 @@ function detectedSourceIds() {
   }
 }
 
-// 每个数据源一行分组。只有「已接入且真跑过」的才会出现在托盘里（过滤逻辑在
-// backend/tray-status.js），Codex 额度块也只在检测到 Codex 时附加。
+// 每个**检测到**的 Agent 一份账面，托盘 / 底部展示栏 / 设置页三处共用。
 //
-// 每行喂「总览」字段：今日 Token / 今日等价费用 / 今日积分 + 剩余额度。
+// 口径（2026-09-15 用户定的）：
+//   · 检测到就算「有效」—— 不再按「今天有没有用量」过滤，位置从此固定
+//   · 顺序固定按注册表，不排序 —— 行不会跳来跳去
+//   · 不截断 —— 有几个显示几个
+//   · 不再有「额度槽位归谁」这个概念 —— 每个 Agent 显示自己的额度，
+//     所以设置页写 Codex 而托盘写 WorkBuddy 这种东西不会再出现
+//
 // 剩余额度由用户手填的每期总量减去本机已用得出 —— WorkBuddy 的余额只在服务端，
 // 本机拿不到（详见交接报告「第四轮」），所以只能这样反推。
-function traySourceRows() {
+// Codex 的额度是它自己的接口给的，不需要手填。
+function trayAgentRows() {
   const meters = meterStats();
   const detected = detectedSourceIds();
   const quota = config.get().creditQuota || {};
+  const codexQuota = codexQuotaBundle();
   return withSourceValues(meters).map(({ id, label, value }) => {
     const today = (value && value.today) || {};
     const lifetime = (value && value.lifetime) || {};
     const configured = quota[id];
     // 本期已用从计量台账的按日分桶求和（本地自然日，保留 95 天，见
-    // backend/credit-cycle.js）。没填额度时整段为 null，托盘不会显示「剩余」。
+    // backend/credit-cycle.js）。没填额度时 remaining 为 null。
     const cycle = configured
       ? creditCycle.sumCycleCredit(value && value.daily, Date.now(), configured.resetDay)
       : null;
@@ -1537,54 +1557,58 @@ function traySourceRows() {
       tokens: today.tokens,
       cost: today.cost,
       credit: today.credit,
-      creditRemaining: cycle ? creditCycle.remainingQuota(configured.monthly, cycle.used) : null,
-      creditUsed: cycle ? cycle.used : null,
-      creditMonthly: configured ? configured.monthly : null,
-      creditResetDay: configured ? configured.resetDay : null,
-      creditCycleStart: cycle ? cycle.startKey : null,
       lifetimeTokens: lifetime.tokens,
       lifetimeCredit: lifetime.credit,
+      quota: id === 'codex'
+        ? codexQuota
+        : supportsCreditQuota(id)
+          ? {
+            kind: 'credit',
+            ready: !!configured,
+            remaining: cycle ? creditCycle.remainingQuota(configured.monthly, cycle.used) : null,
+            today: Number(today.credit) || 0,
+            cycleUsed: cycle ? cycle.used : null,
+            monthly: configured ? configured.monthly : null,
+            resetDay: configured ? configured.resetDay : null,
+            cycleStart: cycle ? cycle.startKey : null,
+          }
+          : null,
     };
   });
 }
 
-// 「额度槽位」的归属 —— 设置页那一项和底部展示栏的额度徽标都跟着它走，
-// 不再写死 Codex。归属规则本身在 backend/tray-status.js 的 slotOwner()（纯函数，
-// 有回归测试），这里只负责把积分型的数字补齐。
-function quotaSlot() {
-  const creditSource = traySourceRows().find((item) => item.detected && supportsCreditQuota(item.id)
-    && (Number(item.tokens) > 0 || Number(item.credit) > 0 || Number(item.lifetimeTokens) > 0)) || null;
-  const owner = trayStatus.slotOwner({
-    codexDetected: codexDetected(),
-    codexReady: codexQuotaState.status === 'ready',
-    creditSource,
-  });
-  if (owner.kind !== 'credit' || !creditSource) return owner;
+// Codex 的额度包。注意「检测到但额度没到手」也要返回 —— 有效 Agent 必须在
+// 托盘/设置页各占一格，不能因为暂时没数字就整格消失（这是之前最容易看出的
+// 不一致：设置页写着 Codex，托盘里却什么都找不到）。
+function codexQuotaBundle() {
+  if (!codexDetected()) return null;
+  const ready = codexQuotaState.status === 'ready';
+  const windows = codexQuotaState.windows || {};
   return {
-    ...owner,
-    today: Number(creditSource.credit) || 0,
-    cycleUsed: creditSource.creditUsed,
-    remaining: creditSource.creditRemaining,
-    monthly: creditSource.creditMonthly,
-    resetDay: creditSource.creditResetDay,
-    cycleStart: creditSource.creditCycleStart,
+    kind: 'codex',
+    ready,
+    status: ready ? null : quotaStatusLabel(codexQuotaState),
+    // 托盘一行只要 `5h 82%` 这样的压缩片段；完整形态渲染端本来就有 stats.codexQuota
+    windows: ready
+      ? [['fiveHour', '5h'], ['weekly', '7d']]
+        .map(([key, label]) => ({ label, percent: Number(windows[key] && windows[key].remainingPercent) }))
+        .filter((w) => Number.isFinite(w.percent))
+      : [],
   };
 }
 
-// Codex 额度块。以前它是托盘菜单的固定开头，现在只在「机器上确实装了 Codex
-// 且额度可用」时才作为额外分组附上 —— 菜单不再预设用户接的是哪一个 agent。
-function codexQuotaRows(quota) {
-  return [
-    { label: t('tray.quotaTitle', { account: quota.account }), enabled: false },
-    { type: 'separator' },
-    { label: t('tray.quotaWindow', quota.fiveHour), enabled: false },
-    { label: t('tray.quotaWindow', quota.weekly), enabled: false },
-    { type: 'separator' },
-    { label: t('tray.quotaUpdated', { time: quota.updated }), enabled: false },
-    ...(quota.status === 'ready' ? [] : [
-      { label: t('tray.quotaStatus', { status: quotaStatusLabel(quota) }), enabled: false },
-    ]),
-  ];
+// 「托盘/底部展示栏要不要显示这个 Agent 的额度」。缺省放行，只有显式 false 才关。
+function quotaAgentEnabled(id) {
+  const map = config.get().quotaAgents || {};
+  return map[id] !== false;
+}
+
+// 给托盘的入参：只留检测到的，其余字段照原样带过去。
+function trayAgents() {
+  return trayAgentRows().filter((row) => row.detected).map((row) => ({
+    ...row,
+    enabled: quotaAgentEnabled(row.id),
+  }));
 }
 
 function refreshTrayMenu() {
@@ -1593,25 +1617,9 @@ function refreshTrayMenu() {
   const baseTooltip = t(privacyMode ? 'tray.tooltipPrivate' : 'tray.tooltip');
   tray.setToolTip(baseTooltip);
   const petVisible = !!(mergedWin && !mergedWin.isDestroyed() && mergedWin.isVisible());
-  // 托盘里的 Codex 块要求额度**已经就绪**：这一块是「信息」，没有数字就是几行
-  // 占位的 -- ，比不显示更吵。额度槽位（quotaSlot）的判定条件不一样 —— 它是
-  // 「归属」，只要装了 Codex 就得归它、不能中途飘到别的 Agent 上。
-  const codexReady = codexDetected() && codexQuotaState.status === 'ready';
-  // 装了 Codex 但额度还没到手：托盘留一行状态（见 tray-status 的说明），
-  // 让「额度归谁」在三处（设置页 / 徽标 / 托盘）口径一致。
-  const codexPending = codexDetected() && !codexReady;
-  const statusRows = trayStatus.buildStatusRows({
-    sources: traySourceRows(),
-    codexRows: codexReady ? codexQuotaRows(codexQuotaTray.displayRows(codexQuotaState)) : [],
-    codexReady,
-    codexPendingRows: codexPending
-      ? [{ label: t('tray.quotaPending', { status: quotaStatusLabel(codexQuotaState) }), enabled: false }]
-      : [],
-    codexPending,
-    t,
-  });
   const items = [
-    ...statusRows,
+    // 每个检测到的 Agent 一段；段内超宽在片段边界折行，看细节去详情面板。
+    ...trayStatus.buildStatusRows({ agents: trayAgents(), t }),
     { type: 'separator' },
     { label: t('tray.panel'), click: () => openPanel() },
     { label: petVisible ? t('tray.hidePet') : t('tray.showPet'), click: () => (petVisible ? hidePet() : showPet()) },

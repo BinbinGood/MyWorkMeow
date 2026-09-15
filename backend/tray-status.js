@@ -2,31 +2,47 @@
 
 // 托盘菜单顶部的状态行。
 //
-// 改版原因：原先这里把 Codex 写死在菜单最上面 —— 不管用户接的是哪个 agent，
-// 点开托盘第一眼看到的都是 Codex 账户邮箱 + 5h/7d 额度。本项目支持 Claude /
-// Codex / WorkBuddy / TRAE / opencode 五种，把其中一个当成默认既没有依据，也不
-// 是用户想要的：机器上没装 Codex 时那几行只会显示「未找到 Codex，正在自动重试」。
+// 改版历史（每一版都是用户口径变了，不是修 bug）：
 //
-// 现在改成按「实际接入、且确实产生过用量」的数据源生成分组行，Codex 额度块只在
-// 检测到 Codex 且额度可用时才出现。这里保持纯函数，方便回归测试直接断言行内容。
+// v1 把 Codex 写死在最上面 —— 机器上没装 Codex 时那几行只会显示「未找到 Codex」。
+// v2 改成按「实际接入、且确实产生过用量」的数据源分组，Codex 额度块只在就绪时附加。
+// v3（2026-09-15）用户定了每行口径：标题 / Token·费用 / 积分（今日 + 剩余）。
 //
-// 2026-09-15 二次调整：用户定了每行口径 ——
-//   标题 / Token·费用 / 积分（今日消耗 · 剩余）
-// 「令牌」改回行业通用的 Token；「N 轮」去掉（托盘是速览位，轮次没人看）；
-// 积分不再显示「累计消耗」，改为「今日 + 剩余」，剩余由用户手填的每期总量减去
-// 本机已用得出（backend/credit-cycle.js）。
+// v5（2026-09-15，当前）：用户看到「设置里写 Codex、托盘却显示 WorkBuddy」之后
+// 放弃继续调「额度槽位归谁」，直接换了口径 ——
 //
-// 2026-09-15 三次调整：Token 与费用并成一行，且「等价费用」简化为「费用」。
-// 费用仍然只在真的是正数时出现在那一行里（见 money() 的注释）。
+//     「有多少个 agent 有效，设置就显示几个按钮，然后任务栏也对应一行。
+//       托盘不一定是 N 行，就按照现在的格式，一行最多可以显示多少个，
+//       然后多余的就换行。」
+//
+// 于是：
+//   · 不再按「跑过没有」过滤（检测到就算有效）
+//   · 不再排序（固定用调用方给的顺序 = 注册表顺序，行不会跳来跳去）
+//   · 不再截断（有几个显示几个）
+//   · 不再有「额度槽位归谁」的概念（每个 agent 各显示自己的额度）
+//   · 每个 agent 的信息拼成一行；超过宽度上限就在片段边界折行，
+//     续行用全角空格做悬挂缩进（同一行的**片段内部**不做断字，
+//     一个片段本身超宽就让它独占一行，宁可溢出也不把词切两半）
+//   · 没有数字时不删行，写一行状态文字（例如「积分未设置每期总量」）
+//
+// 这里保持纯函数：不碰文件系统、不碰 Electron，输出直接是
+// Menu.buildFromTemplate 能吃的形状，回归测试可以直接断言行内容。
 
-const MAX_SOURCES = 3;
+// 一行的显示列数上限。1 个汉字/全角标点 = 2 列，1 个 ASCII = 1 列。
+// 32 列≈16 个汉字；macOS 菜单里这个宽度不会折成两排，也不会宽到贴近屏幕边。
+const ROW_WIDTH_LIMIT = 32;
 
+// 片段之间的分隔符。沿用 v3 的全角空格 + 中点，和托盘其它地方一致。
+const PART_SEP = '　·　';
+// 折行后的续行缩进。全角空格 = 2 列，正好让续行挂在名字下面。
+const CONTINUATION_INDENT = '　';
+
+// 令牌数量级缩写。桌宠托盘是速览场景，1,234,567 不如 1.2M 好读。
 function num(value) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-// 令牌数量级缩写。桌宠托盘是速览场景，1,234,567 不如 1.2M 好读。
 function compact(value) {
   const n = num(value);
   if (n <= 0) return '0';
@@ -70,95 +86,125 @@ function quotaText(value) {
   return fmtCredit(n);
 }
 
-// 只有「被检测到」且「历史上真的跑过」的数据源才占一行。后者避免装完还没用过的
-// 工具在托盘里占位。
-function isReportable(source) {
-  if (!source || source.detected !== true) return false;
-  return num(source.lifetimeTokens) > 0 || num(source.lifetimeCredit) > 0;
+// 全角判定。够用就行：CJK、假名、谚文、全角标点、常见 emoji 都算 2 列。
+function isWideCodePoint(code) {
+  return (
+    (code >= 0x1100 && code <= 0x115f)
+    || (code >= 0x2e80 && code <= 0x303e)   // 含 U+3000 全角空格
+    || (code >= 0x3041 && code <= 0x33ff)
+    || (code >= 0x3400 && code <= 0x4dbf)
+    || (code >= 0x4e00 && code <= 0x9fff)
+    || (code >= 0xa000 && code <= 0xa4cf)
+    || (code >= 0xac00 && code <= 0xd7a3)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0xfe30 && code <= 0xfe6f)
+    || (code >= 0xff00 && code <= 0xff60)
+    || (code >= 0xffe0 && code <= 0xffe6)
+    || (code >= 0x1f300 && code <= 0x1f64f)
+    || (code >= 0x1f900 && code <= 0x1f9ff)
+  );
 }
 
-function sourceRows(source, t) {
-  const rows = [];
-  const tokens = compact(source.tokens);
-  const cost = money(source.cost);
-  // Token 与费用合并成一行：托盘是速览位，两行压一行少占一个菜单位。
-  // 费用为 0 时（hy3 这类没有公开价目的模型恒为 0）整行退化成纯 Token，
-  // 而不是打印一个会被读成「不要钱」的 $0.00。
-  rows.push(cost
-    ? t('tray.sourceUsage', { tokens, cost })
-    : t('tray.sourceTokens', { tokens }));
-  // 积分行：今日消耗与剩余额度各自独立，谁有值就带谁。
-  // creditRemaining === null 表示用户还没填每期额度（不是 0）——那种情况下
-  // 只显示今日消耗，整段「剩余」不出现。
-  const used = creditText(source.credit);
-  const left = quotaText(source.creditRemaining);
-  if (used && left !== null) rows.push(t('tray.sourceCredit', { credit: used, left }));
-  else if (used) rows.push(t('tray.sourceCreditUsed', { credit: used }));
-  else if (left !== null) rows.push(t('tray.sourceCreditLeft', { left }));
-  return rows;
+function displayWidth(text) {
+  let width = 0;
+  for (const ch of String(text == null ? '' : text)) {
+    const code = ch.codePointAt(0);
+    width += isWideCodePoint(code) ? 2 : 1;
+  }
+  return width;
 }
 
-// 输入 rows 之外的东西都由调用方取好（这里不碰文件系统、不碰 Electron）。
-// 输出直接就是 Menu.buildFromTemplate 能吃的形状。
-//
-// 分隔线只在**块之间**插入，不在最前面 —— 菜单开头挂一条 separator 在 macOS 上
-// 会渲染成一段空白，看起来像渲染坏了。
+// 一个 agent 的信息片段。每个片段自带单位/名词 —— 压到一行之后，
+// 光看「1696」已经不知道是积分还是 token 了。
+// 顺序：额度（或额度状态）→ Token → 费用。
+function agentParts(agent, t) {
+  const parts = [];
+  const quota = agent && agent.quota && typeof agent.quota === 'object' ? agent.quota : null;
+
+  if (quota && quota.kind === 'codex') {
+    // 额度没到手时不留空占位，写状态文字（用户选的：留一行状态文字）。
+    const windows = quota.ready && Array.isArray(quota.windows) ? quota.windows : [];
+    if (windows.length) {
+      for (const w of windows) {
+        const percent = Number(w && w.percent);
+        parts.push(t('tray.rowWindow', {
+          label: String((w && w.label) || ''),
+          percent: Number.isFinite(percent) ? String(Math.round(percent)) : '--',
+        }));
+      }
+    } else if (quota.status) {
+      parts.push(t('tray.rowStatus', { status: quota.status }));
+    }
+  } else if (quota && quota.kind === 'credit') {
+    const left = quotaText(quota.remaining);
+    parts.push(left !== null ? t('tray.rowCredit', { left }) : t('tray.rowCreditUnset'));
+  }
+
+  const tokens = num(agent && agent.tokens);
+  if (tokens > 0) parts.push(t('tray.rowTokens', { tokens: compact(tokens) }));
+  const cost = money(agent && agent.cost);
+  if (cost) parts.push(t('tray.rowCost', { cost }));
+
+  return parts;
+}
+
+// 一个 agent → 1..N 行。第一行以名字开头，续行用全角空格悬挂缩进。
+// 折行只在片段边界发生：宁可让一个超长片段独占一行（轻微溢出），
+// 也不把「正在自动重试」这种词从中间切开。
+function agentLines(agent, t, limit = ROW_WIDTH_LIMIT) {
+  const budget = Number.isFinite(limit) && limit > 0 ? limit : ROW_WIDTH_LIMIT;
+  const name = String((agent && agent.label) || (agent && agent.id) || '');
+  const head = name ? `${name}　` : '';
+  const parts = agentParts(agent, t);
+  // 一个片段都没有（既没有额度也没有用量）也算有效 —— 用户要的是「有几个就显示几个」，
+  // 所以退化成一行「暂无数据」，而不是整行消失。
+  if (!parts.length) parts.push(t('tray.rowNoData'));
+
+  const lines = [];
+  let line = null;
+  for (const part of parts) {
+    if (line === null) {
+      line = head + part;
+      continue;
+    }
+    if (displayWidth(line) + displayWidth(PART_SEP) + displayWidth(part) <= budget) {
+      line += PART_SEP + part;
+    } else {
+      lines.push(line);
+      line = CONTINUATION_INDENT + part;
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+
+// agents 里只保留 detected === true 的，顺序按调用方给的顺序（= 注册表顺序），
+// 这里不排序、不截断 —— 有效 agent 一定有自己的行，几个就是几个。
+// agent 之间插一条分隔线：折行之后光看行首已经不容易分辨归属了。
 function buildStatusRows(input = {}) {
   const t = typeof input.t === 'function' ? input.t : (key) => key;
-  const sources = (Array.isArray(input.sources) ? input.sources : [])
-    .filter(isReportable)
-    .sort((a, b) => num(b.tokens) - num(a.tokens))
-    .slice(0, MAX_SOURCES);
-  const codexRows = Array.isArray(input.codexRows) ? input.codexRows : [];
-  const pendingRows = Array.isArray(input.codexPendingRows) ? input.codexPendingRows : [];
-  const showCodex = input.codexReady === true && codexRows.length > 0;
-  // 接了 Codex 但额度还没拿到手：整块 5h/7d 不画（没有数字的占位行更吵），但留
-  // **一行**说明额度归它。否则设置页那一项写着「Codex 订阅额度」、托盘却只有
-  // WorkBuddy 的今日用量，两处口径看起来互相矛盾（用户 2026-09-15 反馈）。
-  const showCodexPending = !showCodex && input.codexPending === true && pendingRows.length > 0;
-
-  const blocks = sources.map((source) => [
-    { label: t('tray.sourceTitle', { name: source.label }), enabled: false },
-    ...sourceRows(source, t).map((label) => ({ label, enabled: false })),
-  ]);
-  if (showCodex) blocks.push(codexRows.slice());
-  else if (showCodexPending) blocks.push(pendingRows.slice());
-  if (!blocks.length) return [{ label: t('tray.noSources'), enabled: false }];
+  const limit = input.limit;
+  const agents = (Array.isArray(input.agents) ? input.agents : [])
+    .filter((agent) => agent && agent.detected === true);
+  if (!agents.length) return [{ label: t('tray.noSources'), enabled: false }];
 
   const rows = [];
-  blocks.forEach((block, index) => {
-    if (index > 0) rows.push({ type: 'separator' });
-    rows.push(...block);
-  });
-  return rows;
-}
-
-// 额度槽位归谁。设置页「喵底部展示栏」那一项和底部展示栏的额度徽标共用这一个
-// 判断，抽成纯函数是因为「谁占这一格」很容易写错，而且错了要隔一层才看得出来：
-// 早先的版本要求 Codex 的额度**已经就绪**才归它（status === 'ready'），于是额度
-// 拉取中 / 拉取失败的那段时间槽位会落到别的 Agent 上 —— 用户接的明明是 Codex，
-// 设置页那一项却写成别的名字、还多出一张「积分额度」手填卡片，看起来就像
-// 「Codex 的选项没了」。归属只看「装没装」，有没有数字是另一回事。
-//
-//   codexDetected → Codex（额度没到时 ready:false，徽标先显示 --）
-//   否则 creditSource → 那个积分型数据源
-//   都没有 → none（槽位置灰，而不是继续显示某个 Agent 的空壳）
-function slotOwner(input = {}) {
-  if (input.codexDetected === true) {
-    return { kind: 'codex', id: 'codex', label: 'Codex', ready: input.codexReady === true };
+  for (const agent of agents) {
+    if (rows.length) rows.push({ type: 'separator' });
+    for (const line of agentLines(agent, t, limit)) rows.push({ label: line, enabled: false });
   }
-  const row = input.creditSource;
-  if (!row || !row.id) return { kind: 'none', id: null, label: null, ready: false };
-  return { kind: 'credit', id: row.id, label: row.label, ready: true };
+  return rows;
 }
 
 module.exports = {
-  MAX_SOURCES,
+  ROW_WIDTH_LIMIT,
   compact,
   money,
   creditText,
   quotaText,
-  isReportable,
-  slotOwner,
+  displayWidth,
+  isWideCodePoint,
+  agentParts,
+  agentLines,
   buildStatusRows,
 };

@@ -1936,12 +1936,62 @@ function quotaLevel(remaining) {
   return remaining === null ? 'unknown' : remaining <= 5 ? 'red' : remaining <= 20 ? 'amber' : 'normal';
 }
 
-// ── 积分型额度槽位 ────────────────────────────────────────────────────────────
-// 接 WorkBuddy 这类「余额只在服务端」的 Agent 时，额度槽位换成积分形态：
-// 一个徽标显示剩余积分，点开看今日消耗 / 本期已用 / 每期总量。
-// 归属由主进程 quotaSlot() 决定，这里只负责画。
+// ── 每个 Agent 一份额度徽标 ──────────────────────────────────────────────────
+// 以前是「一个槽位」：接 WorkBuddy 画积分徽标，否则画 Codex 的 5h/7d（归属由
+// 主进程 quotaSlot() 决定）。2026-09-15 改成**每个检测到的 Agent 一份**，和
+// 设置页的开关、托盘的行一一对应 —— 于是「设置页写 Codex、托盘写 WorkBuddy」
+// 这种自相矛盾不再可能出现。显示与否由 chipDisplay.quotaAgents[id] 逐个控制。
+function activeQuotaAgents(s) {
+  const display = s && s.chipDisplay ? s.chipDisplay : {};
+  const map = display.quotaAgents && typeof display.quotaAgents === 'object' ? display.quotaAgents : {};
+  const rows = Array.isArray(s && s.quotaAgents) ? s.quotaAgents : [];
+  return rows.filter((row) => row && map[row.id] !== false);
+}
+
+// 积分形态：Agent 的余额只在服务端、本机拿不到，只能由用户手填每期总量、
+// 再用本机已用反推剩余（见 backend/credit-cycle.js）。
+// 底部展示栏里有没有积分型 Agent —— 决定 aria-label 讲不讲「剩余积分」。
 function isCreditSlot(s) {
-  return !!(s && s.quotaSlot && s.quotaSlot.kind === 'credit');
+  const row = primaryQuotaAgent(s);
+  return !!(row && row.quota && row.quota.kind === 'credit');
+}
+
+// 每个 Agent 一组徽标：Codex 画 5h/7d 百分比，积分型画剩余积分。
+// 行数 = 设置页里打开开关的有效 Agent 数，和托盘的行一一对应。
+function activeAgentBadges(s) {
+  const quota = s && s.codexQuota ? s.codexQuota : {};
+  const badges = [];
+  for (const row of activeQuotaAgents(s)) {
+    const kind = row.quota && row.quota.kind;
+    if (kind === 'credit') {
+      badges.push(createCreditBadge({ ...row.quota, label: row.label }));
+      continue;
+    }
+    if (kind !== 'codex') continue;
+    for (const [key, labelKey] of quotaWindowEntries(quota)) {
+      const label = labelKey === 'quota.fiveHour' ? '5h' : '7d';
+      const w = quota.windows && quota.windows[key];
+      const remaining = quotaRemainingPercent(w);
+      const badge = document.createElement('span');
+      badge.className = 'quota-badge';
+      badge.dataset.level = quotaLevel(remaining);
+      badge.dataset.period = label;
+      badge.textContent = remaining === null ? '--' : Math.round(remaining) + '%';
+      badge.style.setProperty('--quota-remaining', `${remaining === null ? 0 : remaining}%`);
+      badge.setAttribute('aria-label', `${label} 剩余 ${badge.textContent}`);
+      badges.push(badge);
+    }
+  }
+  return badges;
+}
+
+// 弹层一次只讲一个 Agent 的账，这里挑「最值得讲」的那个：先积分型（它的数字
+// 是本机反推的、最需要核对），没有再退到 Codex。
+function primaryQuotaAgent(s) {
+  const rows = activeQuotaAgents(s);
+  return rows.find((row) => row.quota && row.quota.kind === 'credit')
+    || rows.find((row) => row.quota && row.quota.kind === 'codex')
+    || null;
 }
 
 function creditRemainingPercent(slot) {
@@ -2132,7 +2182,7 @@ function renderCreditPopover(slot) {
 function renderQuotaPopover(s) {
   if (!quotaPopoverRows || !quotaPopoverStatus || !s) return;
   if (isCreditSlot(s)) {
-    renderCreditPopover(s.quotaSlot);
+    renderCreditPopover(primaryQuotaAgent(s));
     return;
   }
   const quota = s.codexQuota || {};
@@ -2254,13 +2304,17 @@ function toggleQuotaPopover() {
 
 function renderContextCapsule(s) {
   if (!chip || !chipContext || !s || !petInsights || typeof petInsights.context !== 'function') return;
-  const display = s.chipDisplay || { showCat: true, showStatus: true, showQuota: true, showTokens: false, showCost: true };
+  // quotaAgents 缺省是空表，语义为「全部放行」；只有当某个 agent 被显式关掉才隐藏。
+  const display = s.chipDisplay
+    || { showCat: true, showStatus: true, showTokens: false, showCost: true, quotaAgents: {} };
   const showCat = display.showCat !== false;
   catVisible = showCat;
   stage.classList.toggle('cat-hidden', !showCat);
   cat.setAttribute('aria-hidden', String(!showCat));
   const showStatus = display.showStatus !== false;
-  const showQuota = display.showQuota !== false;
+  // 额度不再是「一个总开关」——按 Agent 逐个开关，一个都没开才整段隐藏。
+  const visibleAgents = activeQuotaAgents(s);
+  const showQuota = visibleAgents.length > 0;
   const showTokens = display.showTokens === true;
   const showCost = display.showCost === true;
   chipContext.hidden = !showStatus;
@@ -2275,23 +2329,7 @@ function renderContextCapsule(s) {
   document.getElementById('chip-cost-sep').hidden = !showCost || !(showStatus || showQuota || showTokens);
   const quota = s.codexQuota || {};
   quotaEl.innerHTML = '';
-  if (isCreditSlot(s)) {
-    quotaEl.appendChild(createCreditBadge(s.quotaSlot));
-  } else {
-    for (const [key, labelKey] of quotaWindowEntries(quota)) {
-      const label = labelKey === 'quota.fiveHour' ? '5h' : '7d';
-      const w = quota.windows && quota.windows[key];
-      const remaining = quotaRemainingPercent(w);
-      const badge = document.createElement('span');
-      badge.className = 'quota-badge';
-      badge.dataset.level = quotaLevel(remaining);
-      badge.dataset.period = label;
-      badge.textContent = remaining === null ? '--' : Math.round(remaining) + '%';
-      badge.style.setProperty('--quota-remaining', `${remaining === null ? 0 : remaining}%`);
-      badge.setAttribute('aria-label', `${label} 剩余 ${badge.textContent}`);
-      quotaEl.appendChild(badge);
-    }
-  }
+  for (const badge of activeAgentBadges(s)) quotaEl.appendChild(badge);
   quotaEl.setAttribute('aria-label', isCreditSlot(s) ? t('quota.creditOpen') : t('quota.open'));
   chip.removeAttribute('title');
   if (quotaPopoverOpen) {

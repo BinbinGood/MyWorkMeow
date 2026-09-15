@@ -44,7 +44,10 @@ assert(/assets', 'salary-cat-tray\.png'/.test(main), 'the tray must use the gene
 assert(!/refreshTrayQuotaIcon|renderTrayIcon/.test(main), 'quota must never replace the mascot tray icon');
 assert(/tray\.setToolTip\(baseTooltip\)/.test(main) && !/quotaTooltip/.test(main),
   'tray hover text must not expose quota details');
-assert(/quota\.status === 'ready' \? \[\] :/.test(main),
+// 额度就绪时不写状态行（省一行），只有失败时才把原因塞进这个 Agent 那一行。
+// 以前这段写死在 codexQuotaRows() 里，2026-09-15 跟着「每个 Agent 一行」搬到了
+// codexQuotaBundle() —— 但「健康时不占行」这条口径没变。
+assert(/status: ready \? null : quotaStatusLabel\(codexQuotaState\)/.test(main),
   'healthy quota layout must stay compact and reserve the status row for failures');
 assert(/function enqueueQuotaAlert\(ev\)/.test(pet) && /showBubble\(text, 6500\)/.test(pet)
   && !/quota[^\n]*setState\(/.test(pet),
