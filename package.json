@@ -1,0 +1,77 @@
+{
+  "name": "workmeow",
+  "version": "1.7.6",
+  "description": "打工喵（WorkMeow）桌面宠物：一只喵实时呈现 Claude Code / Codex / TRAE / WorkBuddy / opencode 的状态、消息与统一 token 用量统计",
+  "main": "main.js",
+  "license": "MIT",
+  "author": "vista-zhang",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vista-zhangg/WorkMeow.git"
+  },
+  "homepage": "https://github.com/vista-zhangg/WorkMeow#readme",
+  "bugs": {
+    "url": "https://github.com/vista-zhangg/WorkMeow/issues"
+  },
+  "scripts": {
+    "start": "node start-detached.js",
+    "start:console": "electron .",
+    "install:hooks": "node backend/hooks-cli.js",
+    "uninstall:hooks": "node backend/hooks-cli.js --uninstall",
+    "meter:rebuild": "node backend/meter-rebuild.js",
+    "package:win": "electron-builder --win nsis --x64 --publish never && node scripts/finalize-dist.js && node scripts/verify-dist.js",
+    "verify:dist": "node scripts/verify-dist.js",
+    "test": "node test/run-all.js"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "sharp": "^0.35.3"
+  },
+  "build": {
+    "appId": "io.github.vista-zhangg.workmeow",
+    "productName": "打工喵",
+    "executableName": "WorkMeow",
+    "asar": false,
+    "electronDist": "node_modules/electron/dist",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "vista-zhangg",
+        "repo": "WorkMeow",
+        "releaseType": "release"
+      }
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "backend/**",
+      "renderer/**",
+      "assets/**",
+      "shared/**",
+      "hook/**",
+      "LICENSE"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/salary-cat.ico",
+      "signExecutable": false,
+      "artifactName": "WorkMeow-${version}-Windows-${arch}.${ext}",
+      "electronLanguages": [
+        "zh-CN"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

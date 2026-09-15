@@ -1,0 +1,959 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#stage {
+  position: relative;
+  width: 100%;
+  height: 100vh;      /* 填满窗口；选项面板需要时窗口会变高，形象始终贴底 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* Screen-edge anchoring ----------------------------------------------------
+   The BrowserWindow stays fully inside the work area; the visible pet moves
+   to the relevant side *inside* that transparent window. This is what lets a
+   pet genuinely touch the top/left/right edge without sacrificing room for a
+   popup or circular menu. */
+#stage.edge-below { justify-content: flex-start; }
+#stage.edge-left { align-items: flex-start; }
+#stage.edge-right { align-items: flex-end; }
+
+#compact-row {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  width: max-content;
+  max-width: none;
+}
+#stage.edge-left #compact-row { align-items: flex-start; }
+#stage.edge-right #compact-row { align-items: flex-end; }
+#stage.edge-below #compact-row .cat { order: 0; }
+#stage.edge-below #compact-row .sessions { order: 1; margin-top: 3px; margin-bottom: 0; }
+#stage.edge-below #compact-row .chip { order: 2; }
+#stage.edge-below .bubble,
+#stage.edge-below .think,
+#stage.edge-below .ask,
+#stage.edge-below .peek { order: 4; margin-top: 8px; margin-bottom: 0; }
+
+#stage.edge-below .bubble::after {
+  top: -7px;
+  bottom: auto;
+  border-width: 0 7px 8px 7px;
+  border-color: transparent transparent rgba(255, 255, 255, 0.97) transparent;
+}
+
+/* 左右贴边时，token 条也按猫咪本体宽度居中，避免因自身较窄而偏向外侧。 */
+#stage.edge-left .chip,
+#stage.edge-right .chip {
+  justify-content: center;
+}
+
+/* Optional compact mode: keep the live session dots visible to the left of
+   the capsule after the cat body is hidden. */
+#stage.cat-hidden {
+  /* The compact row owns the horizontal layout so bubbles and panels keep
+     their normal vertical position in the stage. */
+}
+#stage.cat-hidden #compact-row { flex-direction: row; align-items: flex-end; }
+#stage.cat-hidden.edge-below #compact-row { align-items: flex-start; }
+#stage.cat-hidden #cat { display: none; }
+#stage.cat-hidden #compact-row .sessions {
+  width: max-content;
+  min-width: 0;
+  order: 0;
+  min-height: 21px;
+  margin: 0 5px 3px 0;
+}
+#stage.cat-hidden #compact-row .sessions:empty { display: none; }
+#stage.cat-hidden #compact-row .chip {
+  order: 1;
+  margin-top: 0;
+  cursor: grab;
+}
+#stage.cat-hidden.edge-below #compact-row .sessions { margin-top: 3px; margin-bottom: 0; }
+#stage.cat-hidden .chip.dragging { cursor: grabbing; }
+
+/* ---------- 选项面板（点选答案） ---------- */
+.ask {
+  width: min(340px, calc(100vw - 24px));
+  /* 520 = pet.js 的 ASK_VIEWPORT_MAX_H：超过就靠 .ask-scroll 内部滚动，
+     保证顶栏和底部按钮永远留在窗口里（fitPopup 量高时会临时置 none）。 */
+  max-height: min(520px, calc(100vh - 24px));
+  margin-bottom: 10px;
+  padding: 11px 13px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(217, 119, 87, 0.45);
+  border-radius: 15px;
+  box-shadow: 0 8px 24px rgba(120, 60, 35, 0.32);
+  -webkit-app-region: no-drag;
+  overflow: hidden;          /* 配合 .ask-scroll 的内部滚动，超高时不外溢 */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: askIn 0.25s ease;
+}
+.ask.hidden { display: none; }
+@keyframes askIn { from { opacity: 0; transform: translateY(8px) scale(0.96); } to { opacity: 1; transform: none; } }
+
+/* 顶栏：左「需要输入 / 需要授权」标签，右会话名 */
+.ask-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ask-label {
+  flex: 0 0 auto; font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px;
+  padding: 3px 8px; border-radius: 7px;
+  background: rgba(217, 119, 87, 0.12); color: #b06a48;
+}
+.ask-sess {
+  flex: 1 1 auto; min-width: 0; text-align: right;
+  font-size: 10.5px; color: #b28a75;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* 中部滚动区：头尾固定，只有问题正文滚动 */
+.ask-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.ask-scroll::-webkit-scrollbar { width: 0; }
+.ask-card { display: flex; flex-direction: column; gap: 7px; }
+.ask-qhead { font-size: 10.5px; font-weight: 700; color: #b06a48; line-height: 1.3; }
+.ask-qhead:empty { display: none; }
+.ask-q { font-size: 12.5px; font-weight: 700; color: #3a2a22; line-height: 1.45; white-space: pre-wrap; }
+.ask-hint {
+  padding: 5px 8px; border-radius: 8px;
+  background: rgba(217, 119, 87, 0.07); color: #a06d55;
+  font-size: 10px; line-height: 1.35;
+}
+.ask-hint:empty { display: none; }
+
+.ask-opts { display: flex; flex-direction: column; gap: 6px; }
+/* 只有「允许 / 拒绝」两个选项时并排，避免竖着占两行 */
+.ask-opts.perm-row { flex-direction: row; }
+.ask-opts.perm-row .ask-opt { flex: 1; align-items: center; text-align: center; }
+.ask-opt {
+  display: flex; align-items: flex-start; gap: 7px;
+  text-align: left; font-family: inherit; font-size: 11.5px;
+  padding: 7px 11px; border-radius: 10px;
+  border: 1px solid rgba(217, 119, 87, 0.35);
+  background: #fff7f2; color: #5a3a2a; cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.1s ease;
+  -webkit-app-region: no-drag;
+}
+.ask-opt:hover { background: #fbe8dc; border-color: rgba(217, 119, 87, 0.55); transform: translateX(2px); }
+.ask-opt.sel { background: #f3c8ac; border-color: #d97757; }
+
+/* 单选圆点：选中后填成主色，替代「靠背景色猜有没有选中」 */
+.ask-radio {
+  flex: 0 0 auto; width: 11px; height: 11px; margin-top: 3px;
+  border: 1.5px solid rgba(217, 119, 87, 0.5); border-radius: 50%;
+  background: #fff; transition: background 0.12s ease, border-color 0.12s ease;
+}
+.ask-opt.multi .ask-radio { border-radius: 4px; }   /* 多选画成方框 */
+.ask-opt.sel .ask-radio { background: #d97757; border-color: #d97757; box-shadow: inset 0 0 0 2px #fff; }
+.ask-ot { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ask-ol { font-size: 11.5px; font-weight: 650; line-height: 1.35; }
+.ask-od { font-size: 10px; color: #9b725f; line-height: 1.35; }
+
+/* 授权 / 方案评审的动作按钮：允许=绿、拒绝=红、始终允许=中性 */
+.ask-opt.act { align-items: center; justify-content: center; text-align: center; font-weight: 700; }
+.ask-opt.act .ask-ol { font-weight: 700; }
+.ask-opt.allow { background: #e8f6ec; border-color: rgba(47, 158, 82, 0.42); color: #24713c; }
+.ask-opt.allow:hover { background: #d9efe0; border-color: rgba(47, 158, 82, 0.62); }
+.ask-opt.deny { background: #fdeceb; border-color: rgba(255, 90, 82, 0.42); color: #b33a34; }
+.ask-opt.deny:hover { background: #fbdedc; border-color: rgba(255, 90, 82, 0.62); }
+.ask-opt.sugg { background: rgba(90, 58, 42, 0.05); border-color: rgba(90, 58, 42, 0.2); color: #7b4e38; }
+.ask-opt.sugg:hover { background: rgba(90, 58, 42, 0.1); border-color: rgba(90, 58, 42, 0.32); }
+
+/* 自定义回答输入行 */
+.ask-other { display: flex; gap: 6px; }
+.ask-other.hidden { display: none; }
+#ask-text {
+  flex: 1; min-width: 0;
+  font-family: inherit; font-size: 11.5px; padding: 7px 9px;
+  border: 1px solid rgba(217, 119, 87, 0.35); border-radius: 9px;
+  background: #fff; color: #3a2a22;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+#ask-text::placeholder { color: #c3a493; }
+#ask-text:focus { outline: none; border-color: #d97757; box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.14); }
+#ask-text.warn { border-color: #ff5a52; box-shadow: 0 0 0 3px rgba(255, 90, 82, 0.14); }
+#ask-text.warn::placeholder { color: #d4544c; }
+
+/* 底栏：页码 + 返回/提交 + 去终端。三者共用一套按钮语言 */
+.ask-toolbar {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding-top: 8px; border-top: 1px solid rgba(217, 119, 87, 0.16);
+}
+.ask-page {
+  flex: 0 0 auto; font-size: 10px; color: #b28a75;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.ask-page:empty { display: none; }
+.ask-foot { flex: 1 1 auto; display: flex; justify-content: flex-end; gap: 6px; min-width: 0; }
+.ask-foot.hidden { display: none; }
+.ask-btn, .ask-term {
+  min-height: 30px; padding: 6px 12px; border-radius: 9px;
+  font-family: inherit; font-size: 11px; font-weight: 650;
+  cursor: pointer; white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+/* 次要按钮（返回）：描边，跟 .peek-panel 同款 */
+.ask-btn {
+  border: 1px solid rgba(217, 119, 87, 0.34);
+  background: #fff7f2; color: #7b4e38;
+}
+.ask-btn:hover { background: #fbe8dc; }
+.ask-btn.hidden { display: none; }
+/* 主按钮（提交回答）：主色实心 */
+.ask-btn.primary { border: none; background: #d97757; color: #fff; }
+.ask-btn.primary:hover { background: #c45f3f; }
+.ask-btn.primary.disabled { background: #c9bfb8; color: #fff; cursor: default; }
+.ask-btn.primary.disabled:hover { background: #c9bfb8; }
+/* 「去终端」是逃生通道，用深棕实心，跟 .peek-focus 一致 */
+.ask-term { flex: 0 0 auto; border: none; background: #5a3a2a; color: #fff; }
+.ask-term:hover { background: #6f4734; }
+.ask-term.hidden { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ask { animation: none; }
+  .ask-opt:hover { transform: none; }
+}
+
+/* ---------- 左键工作速览 ---------- */
+.peek {
+  width: min(320px, calc(100vw - 24px));
+  margin-bottom: 10px;
+  padding: 12px 13px 11px;
+  background: rgba(255, 252, 249, 0.985);
+  border: 1px solid rgba(217, 119, 87, 0.34);
+  border-radius: 16px;
+  box-shadow: 0 9px 26px rgba(120, 60, 35, 0.30);
+  color: #3a2a22;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  -webkit-app-region: no-drag;
+  animation: peekIn 0.2s ease;
+}
+.peek.hidden { display: none; }
+@keyframes peekIn {
+  from { opacity: 0; transform: translateY(7px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.peek-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.peek-state {
+  width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+  background: #8c8c92; box-shadow: 0 0 0 3px rgba(140, 140, 146, 0.12);
+}
+.peek-state.working, .peek-state.juggling, .peek-state.sweeping { background: #4a9eff; box-shadow: 0 0 0 3px rgba(74, 158, 255, 0.14); }
+.peek-state.thinking { background: #9a7fd6; box-shadow: 0 0 0 3px rgba(154, 127, 214, 0.14); }
+.peek-state.waiting, .peek-state.needsinput { background: #ffb020; box-shadow: 0 0 0 3px rgba(255, 176, 32, 0.16); }
+.peek-state.error { background: #ff5a52; box-shadow: 0 0 0 3px rgba(255, 90, 82, 0.15); }
+.peek-state.loafing { background: #8fb8e8; box-shadow: 0 0 0 3px rgba(143, 184, 232, 0.14); }
+.peek-heading { flex: 1 1 auto; min-width: 0; }
+.peek-title { font-size: 13.5px; line-height: 1.25; font-weight: 750; color: #3a2a22; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peek-subtitle { margin-top: 2px; font-size: 10.5px; line-height: 1.25; color: #a06d55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peek-close {
+  width: 24px; height: 24px; border: none; border-radius: 7px; flex: 0 0 auto;
+  background: rgba(217, 119, 87, 0.08); color: #a96b4d; cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.peek-close:hover { background: rgba(217, 119, 87, 0.18); color: #d15f3d; }
+.peek-list { display: flex; flex-direction: column; gap: 5px; }
+.peek-list:empty { display: none; }
+.peek-row {
+  width: 100%; border: 1px solid rgba(217, 119, 87, 0.18); border-radius: 10px;
+  background: rgba(255, 247, 242, 0.82); padding: 7px 9px; color: #3a2a22;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+  gap: 7px; text-align: left; cursor: pointer; -webkit-app-region: no-drag;
+}
+.peek-row:hover { background: #fff1e8; border-color: rgba(217, 119, 87, 0.38); }
+.peek-row-dot { width: 7px; height: 7px; border-radius: 50%; background: #8c8c92; }
+.peek-row-dot.working, .peek-row-dot.juggling, .peek-row-dot.sweeping { background: #4a9eff; }
+.peek-row-dot.thinking { background: #9a7fd6; }
+.peek-row-dot.waiting, .peek-row-dot.needsinput { background: #ffb020; }
+.peek-row-dot.error { background: #ff5a52; }
+.peek-row-dot.loafing { background: #8fb8e8; }
+.peek-row-main { min-width: 0; overflow: hidden; }
+.peek-row-project {
+  display: block; min-width: 0; font-size: 11.5px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.peek-row-detail {
+  display: block; min-width: 0; margin-top: 2px; font-size: 10.5px; color: #9b725f;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.peek-row-time {
+  max-width: 92px; overflow: hidden; text-overflow: ellipsis;
+  font-size: 10px; color: #b28a75; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.peek-summary {
+  padding: 7px 9px; border-radius: 9px; background: rgba(90, 58, 42, 0.055);
+  color: #8a6552; font-size: 10.5px; line-height: 1.35;
+}
+.peek-hint {
+  padding: 6px 9px; border-radius: 9px; background: rgba(217, 119, 87, 0.07);
+  color: #a06d55; font-size: 10.5px; line-height: 1.35;
+}
+.peek-hint.hidden { display: none; }
+.peek-actions { display: flex; gap: 7px; }
+.peek-actions button {
+  min-height: 30px; padding: 6px 10px; border-radius: 9px; font-size: 11px;
+  font-weight: 650; cursor: pointer; -webkit-app-region: no-drag;
+}
+.peek-focus { flex: 1.15; border: none; background: #5a3a2a; color: #fff; }
+.peek-focus:hover { background: #6f4734; }
+.peek-focus.hidden { display: none; }
+.peek-panel { flex: 1; border: 1px solid rgba(217, 119, 87, 0.34); background: #fff7f2; color: #7b4e38; }
+.peek-panel:hover { background: #fbe8dc; }
+
+@media (prefers-reduced-motion: reduce) {
+  .peek { animation: none; }
+}
+
+/* ---------- 记事本（行动中心入口） ---------- */
+.notepad {
+  position: absolute; right: 44px; bottom: 96px; z-index: 6;
+  width: 38px; height: 38px; cursor: pointer; -webkit-app-region: no-drag;
+  display: flex; align-items: center; justify-content: center;
+  background: #fff7f2; border: 1.5px solid #d97757; border-radius: 9px;
+  box-shadow: 0 4px 12px rgba(120, 60, 35, 0.3);
+  transform: rotate(-8deg); transition: transform 0.15s ease;
+  animation: npRaise 2.4s ease-in-out infinite;
+}
+.notepad:hover { transform: rotate(-8deg) scale(1.12); }
+.notepad.hidden { display: none; }
+.np-icon { font-size: 20px; line-height: 1; }
+.np-badge {
+  position: absolute; top: -7px; right: -7px; min-width: 17px; height: 17px;
+  padding: 0 4px; border-radius: 9px; background: #d97757; color: #fff;
+  font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.np-badge.urgent { background: #e5484d; } /* 有「需处理」事项时红色 */
+@keyframes npRaise { 0%, 100% { transform: rotate(-8deg) translateY(0); } 50% { transform: rotate(-8deg) translateY(-4px); } }
+
+/* ---------- 记事本行动中心：占一大块，不挤在月薪喵小范围 ---------- */
+.action-pop {
+  position: absolute; top: 14px; left: 12px; right: 12px;
+  max-height: calc(100vh - 120px); z-index: 30; -webkit-app-region: no-drag;
+  background: rgba(255, 255, 255, 0.985); border: 1px solid rgba(217, 119, 87, 0.45);
+  border-radius: 15px; box-shadow: 0 10px 30px rgba(120, 60, 35, 0.38);
+  padding: 11px 13px; display: flex; flex-direction: column; gap: 8px;
+  animation: askIn 0.22s ease;
+}
+.action-pop.hidden { display: none; }
+.ac-top { display: flex; align-items: center; gap: 8px; }
+.ac-title { font-size: 13px; font-weight: 700; color: #3a2a22; flex: 1; }
+.ac-close { cursor: pointer; color: #b06a48; font-size: 14px; padding: 0 4px; border: 0; background: transparent; -webkit-app-region: no-drag; }
+.ac-close:hover { color: #d97757; }
+.ac-scroll { overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.ac-sec.hidden { display: none; }
+.ac-sec-h { font-size: 10.5px; color: #c79b86; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
+/* 需要你处理的事项卡片 */
+.ac-act { background: #fff7f2; border: 1px solid rgba(217, 119, 87, 0.4); border-radius: 11px; padding: 8px 10px; margin-bottom: 7px; }
+.ac-act-proj { font-size: 10.5px; color: #b06a48; font-weight: 700; }
+.ac-act-q { font-size: 12.5px; color: #3a2a22; font-weight: 600; line-height: 1.4; margin: 3px 0 7px; white-space: pre-wrap; }
+.ac-act-opts { display: flex; flex-wrap: wrap; gap: 5px; }
+.ac-act-opts button {
+  font-size: 12px; padding: 6px 11px; border: 1px solid rgba(217, 119, 87, 0.4);
+  border-radius: 9px; background: #fff; color: #5a3a2a; cursor: pointer; -webkit-app-region: no-drag;
+}
+.ac-act-opts button:hover { background: #d97757; color: #fff; }
+/* 行动中心：对话类只读选项 + 「去回复」按钮 */
+.ac-act-ro { font-size: 12px; padding: 5px 10px; border-radius: 8px; background: #f4efe9; color: #7a6658; }
+.ac-act-opts .ac-act-go { font-size: 12px; padding: 6px 12px; border: none; border-radius: 9px; background: #5a3a2a; color: #fff; cursor: pointer; -webkit-app-region: no-drag; font-weight: 600; }
+.ac-act-opts .ac-act-go:hover { background: #6f4734; }
+.ac-ops { display: flex; gap: 6px; border-top: 1px solid rgba(217, 119, 87, 0.25); padding-top: 8px; flex-shrink: 0; }
+.ac-ops button {
+  flex: 1; font-size: 11px; padding: 7px 4px; border: 1px solid rgba(217, 119, 87, 0.35);
+  border-radius: 8px; background: #fff7f2; color: #5a3a2a; cursor: pointer; -webkit-app-region: no-drag;
+}
+.ac-ops button:hover { background: #d97757; color: #fff; }
+
+/* ---------- 气泡 ---------- */
+.bubble {
+  position: relative;
+  max-width: 340px;
+  margin-bottom: 8px;
+  padding: 9px 13px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #3a2a22;
+  font-size: 13px;
+  line-height: 1.45;
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(120, 60, 35, 0.22);
+  border: 1px solid rgba(217, 119, 87, 0.25);
+  -webkit-app-region: no-drag;
+  cursor: pointer;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  word-break: break-word;
+}
+.bubble::after {
+  content: "";
+  position: absolute;
+  bottom: -7px;
+  left: var(--tip-x, 50%);
+  transform: translateX(-50%);
+  border-width: 8px 7px 0 7px;
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.97) transparent transparent transparent;
+}
+.bubble.hidden {
+  /* Hidden bubbles used to remain a flex item. A long completion/reply
+     message therefore kept its old height after the popup window collapsed,
+     and the stage compressed the capsule vertically on pointerup. */
+  display: none;
+  opacity: 0;
+  transform: translateY(8px) scale(0.96);
+  pointer-events: none;
+}
+
+/* ---------- 订阅额度详情 ----------
+   额度不再依赖浏览器原生 title：只有点击 5h / 7d 指标时才展开，
+   并沿用弹层的边缘锚定与动态定高，避免无意间挡住后面的窗口。 */
+.quota-popover {
+  position: relative;
+  width: min(292px, calc(100vw - 24px));
+  margin-bottom: 10px;
+  padding: 11px 12px 10px;
+  box-sizing: border-box;
+  background: rgba(255, 252, 249, 0.985);
+  border: 1px solid rgba(217, 119, 87, 0.34);
+  border-radius: 15px;
+  box-shadow: 0 8px 24px rgba(120, 60, 35, 0.28);
+  color: #3a2a22;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+  animation: quotaPopoverIn 0.18s ease;
+}
+.quota-popover.hidden { display: none; }
+@keyframes quotaPopoverIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.quota-popover::after {
+  content: "";
+  position: absolute;
+  bottom: -7px;
+  left: var(--quota-tip-x, 50%);
+  transform: translateX(-50%);
+  border-width: 8px 7px 0 7px;
+  border-style: solid;
+  border-color: rgba(255, 252, 249, 0.985) transparent transparent transparent;
+}
+#stage.edge-below .quota-popover {
+  order: 4;
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+#stage.edge-below .quota-popover::after {
+  top: -7px;
+  bottom: auto;
+  border-width: 0 7px 8px 7px;
+  border-color: transparent transparent rgba(255, 252, 249, 0.985) transparent;
+}
+.quota-popover-head { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.quota-popover-heading { flex: 1 1 auto; min-width: 0; }
+.quota-popover-title { font-size: 13px; font-weight: 750; line-height: 1.25; }
+.quota-popover-status { margin-top: 2px; color: #a06d55; font-size: 10px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quota-popover-close {
+  width: 23px; height: 23px; flex: 0 0 auto; padding: 0; border: none; border-radius: 7px;
+  background: rgba(217, 119, 87, 0.08); color: #a96b4d; cursor: pointer; -webkit-app-region: no-drag;
+}
+.quota-popover-close:hover { background: rgba(217, 119, 87, 0.18); color: #d15f3d; }
+.quota-popover-rows { display: flex; flex-direction: column; gap: 6px; }
+.quota-pop-row {
+  display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 7px;
+  padding: 7px 8px; border-radius: 10px; background: rgba(90, 58, 42, 0.055);
+}
+.quota-pop-period { color: #7b4e38; font-size: 11px; font-weight: 750; }
+.quota-pop-main { min-width: 0; }
+.quota-pop-value { font-size: 11.5px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.quota-pop-reset { margin-top: 2px; color: #9b725f; font-size: 10px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quota-pop-bar { grid-column: 1 / -1; height: 3px; border-radius: 3px; background: rgba(90, 58, 42, 0.13); overflow: hidden; }
+.quota-pop-bar-fill { height: 100%; width: var(--quota-remaining, 0%); border-radius: inherit; background: #80c6a1; }
+.quota-pop-row[data-level="amber"] .quota-pop-bar-fill { background: #e8ab52; }
+.quota-pop-row[data-level="red"] .quota-pop-bar-fill { background: #dc6f68; }
+.quota-pop-row[data-level="unknown"] .quota-pop-bar-fill { background: #b9aaa1; opacity: .55; }
+.quota-pop-row[data-level="amber"] .quota-pop-value { color: #a2661a; }
+.quota-pop-row[data-level="red"] .quota-pop-value { color: #b44d47; }
+.quota-popover-updated { color: #a98773; font-size: 10px; line-height: 1.3; }
+.quota-popover-insight {
+  padding: 7px 8px;
+  border-radius: 9px;
+  background: rgba(217, 119, 87, 0.07);
+  color: #8a6552;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.quota-popover-insight[hidden] { display: none; }
+.quota-popover-hint { color: #b08a76; font-size: 10px; line-height: 1.3; }
+
+/* ---------- 今日用量小条 ---------- */
+.chip {
+  /* The capsule is part of the resting frame, never a flex-space to reclaim
+     when a stale popup leaves the stage temporarily over-constrained. */
+  flex: 0 0 auto;
+  min-height: 21px;
+  margin-top: 2px;
+  padding: 4px 12px;
+  background: rgba(61, 42, 32, 0.82);
+  color: #ffe9dc;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 11px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+  cursor: default;
+  opacity: 0.9;
+  transition: opacity 0.25s ease;
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+}
+#stage:hover .chip { opacity: 1; }
+.chip [hidden] { display: none !important; }
+.chip-quota {
+  display: flex; gap: 5px; flex: 0 0 auto; cursor: pointer; border-radius: 8px;
+  padding: 2px; margin: -2px; transition: background 0.15s ease;
+}
+.chip-quota:hover { background: rgba(255, 255, 255, 0.09); }
+.chip-quota:focus-visible { outline: 2px solid rgba(255, 233, 220, 0.9); outline-offset: 2px; }
+.quota-badge {
+  --quota-accent: #bce8d3;
+  position: relative;
+  display: inline-flex;
+  justify-content: space-between;
+  align-items: baseline;
+  box-sizing: border-box;
+  width: 62px;
+  padding: 3px 6px 5px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: 6px;
+  background: rgba(255,255,255,.055);
+  color: var(--quota-accent);
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.quota-badge::before {
+  content: attr(data-period);
+  color: #dfd3cb;
+  font-size: 9px;
+  font-weight: 500;
+}
+.quota-badge::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--quota-accent) var(--quota-remaining, 0%), rgba(255,255,255,.12) var(--quota-remaining, 0%));
+  opacity: .7;
+}
+.quota-badge[data-level="amber"] { --quota-accent: #ffce83; background: rgba(255,176,32,.09); }
+.quota-badge[data-level="red"] { --quota-accent: #ffaba3; background: rgba(255,90,82,.12); }
+.quota-badge[data-level="unknown"] { --quota-accent: #c9beb8; }
+.quota-badge[data-level="unknown"]::after { opacity: .3; }
+.chip-context {
+  /* The situation label is the primary signal. The frame grows with the
+     capsule, so it no longer needs to yield to a fixed viewport width. */
+  flex: 0 0 auto;
+  min-width: max-content;
+  max-width: none;
+  overflow: visible;
+  font-weight: 700;
+}
+.chip-tokens, .chip-cost {
+  font-size: 11px;
+  line-height: 1;
+  /* The resting BrowserWindow is measured from this intrinsic width. Keep
+     amount/token details intact instead of shrinking them into an ellipsis. */
+  flex: 0 0 auto;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
+}
+.chip[data-context="waiting"],
+.chip[data-context="needsinput"] {
+  box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.28), 0 4px 12px rgba(120, 60, 35, 0.28);
+}
+.chip[data-context="error"] {
+  box-shadow: 0 0 0 2px rgba(255, 90, 82, 0.3), 0 4px 12px rgba(120, 60, 35, 0.28);
+}
+.chip[data-context="purr"] {
+  color: #ffe9b5;
+  box-shadow: 0 0 0 2px rgba(255, 208, 102, 0.35), 0 4px 14px rgba(120, 60, 35, 0.3);
+}
+.chip-sep {
+  flex: 0 0 auto;
+  color: rgba(255, 233, 220, 0.5);
+  font-size: 10px;
+  line-height: 1;
+}
+/* ====================================================================
+   多会话状态点
+   ==================================================================== */
+.sessions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 3px;
+  min-height: 12px;
+}
+/* Keep the session dots centred on the visible pet, not on the transparent
+   BrowserWindow. At a left/right edge both boxes share the same outer edge,
+   so matching their widths also matches their centres. A large parallel
+   session set may itself need more than the default 120px. The compact row
+   overrides the minimum so its dots can sit tightly to the capsule. */
+.sessions { width: max-content; min-width: 120px; }
+.sess-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: #6f6f76;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  transition: transform 0.15s ease;
+}
+/* 会话状态点配色 */
+.sess-dot.working, .sess-dot.juggling, .sess-dot.sweeping { background: #4a9eff; }
+.sess-dot.loafing { background: #8fb8e8; }
+.sess-dot.waiting { background: #ffb020; animation: dotPulse 0.9s ease-in-out infinite; }
+.sess-dot.needsinput { background: #ffb020; box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.35); animation: dotPulse 1.4s ease-in-out infinite; }
+.sess-dot.error { background: #ff5a52; }
+.sess-dot.done { background: #34c759; }
+.sess-dot.idle, .sess-dot.sleeping { background: #6f6f76; }
+@keyframes dotPulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,176,46,0.6); }
+  50% { transform: scale(1.25); box-shadow: 0 0 0 4px rgba(255,176,46,0); }
+}
+
+/* ====================================================================
+   泡泡菜单（右键月薪喵弹出，围绕四周）
+   ==================================================================== */
+.radial { position: absolute; inset: 0; z-index: 20; }  /* 打开时充当点击遮罩 */
+.radial.hidden { display: none; }
+.radial-item {
+  position: absolute;
+  width: 52px; height: 52px;
+  margin: -26px 0 0 -26px;            /* 以 left/top 为中心 */
+  border-radius: 50%;
+  background: rgba(255, 252, 249, 0.98);
+  box-shadow: 0 7px 18px rgba(120, 60, 35, 0.25), 0 0 0 3px rgba(255, 255, 255, 0.34);
+  border: 1px solid rgba(217, 119, 87, 0.28);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transform: scale(0.3);
+  transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
+}
+.radial:not(.hidden) .radial-item { opacity: 1; transform: scale(1); }
+.radial-item .ri-ic { font-size: 19px; line-height: 1; color: #5a3a2a; }
+.radial-item:hover .ri-ic { color: #d97757; }
+.radial-item .ri-state {
+  color: #7b7f86; font-size: 11px; font-weight: 800; letter-spacing: 0.6px; line-height: 1;
+}
+.radial-item.radial-toggle[data-enabled="true"] .ri-state { color: #d46643; }
+.radial-item.radial-toggle[data-enabled="true"] {
+  border-color: rgba(217, 119, 87, 0.48);
+  background: rgba(255, 247, 242, 0.98);
+}
+.radial-item .ri-lb {
+  font-size: 8.5px; color: #8a5a44; line-height: 1;
+  /* 中文标签保持在圆形按钮内，避免菜单项彼此重叠。 */
+  max-width: 46px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.radial-item:hover { transform: scale(1.16); background: #fff; }
+.radial-item:active { transform: scale(0.95); }
+
+/* Hidden-cat menu ---------------------------------------------------------
+   The capsule is already a horizontal control, so keep its three secondary
+   actions in a compact toolbar instead of spreading circular buttons around
+   the capsule's old cat-shaped footprint. */
+.radial[data-layout="compact"] { pointer-events: none; }
+.radial[data-layout="compact"] .radial-compact {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100vw - 16px);
+  padding: 5px;
+  border: 1px solid rgba(217, 119, 87, 0.3);
+  border-radius: 15px;
+  background: rgba(255, 252, 249, 0.985);
+  box-shadow: 0 8px 20px rgba(120, 60, 35, 0.25), 0 0 0 3px rgba(255, 255, 255, 0.26);
+  white-space: nowrap;
+  pointer-events: auto;
+}
+.radial[data-layout="compact"] .radial-compact::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  transform: translateX(-50%);
+  border-width: 8px 7px 0 7px;
+  border-style: solid;
+  border-color: rgba(255, 252, 249, 0.985) transparent transparent transparent;
+}
+.radial[data-layout="compact"][data-direction="below"] .radial-compact::after {
+  top: -7px;
+  bottom: auto;
+  border-width: 0 7px 8px 7px;
+  border-color: transparent transparent rgba(255, 252, 249, 0.985) transparent;
+}
+.radial[data-layout="compact"] .radial-item {
+  position: relative;
+  left: auto !important;
+  top: auto !important;
+  width: auto;
+  min-width: 72px;
+  height: 34px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+  flex-direction: row;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(5px) scale(0.96);
+  transition: transform 0.2s ease, opacity 0.16s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.radial[data-layout="compact"]:not(.hidden) .radial-item {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.radial[data-layout="compact"] .radial-item:hover {
+  transform: translateY(-1px) scale(1.02);
+  background: #fff7f2;
+  border-color: rgba(217, 119, 87, 0.28);
+}
+.radial[data-layout="compact"] .radial-item:active { transform: translateY(0) scale(0.98); }
+.radial[data-layout="compact"] .radial-item .ri-ic { font-size: 16px; }
+.radial[data-layout="compact"] .radial-item .ri-lb {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  font-size: 11px;
+  font-weight: 650;
+  color: #6f4938;
+}
+.radial[data-layout="compact"] .radial-item .ri-state {
+  order: 2;
+  min-width: 25px;
+  padding: 3px 5px;
+  border-radius: 999px;
+  background: rgba(123, 127, 134, 0.12);
+  color: #7b7f86;
+  font-size: 9px;
+  letter-spacing: 0.4px;
+}
+.radial[data-layout="compact"] .radial-item.radial-toggle[data-enabled="true"] {
+  background: rgba(255, 247, 242, 0.82);
+  border-color: rgba(217, 119, 87, 0.24);
+}
+.radial[data-layout="compact"] .radial-item.radial-toggle[data-enabled="true"] .ri-state {
+  background: rgba(217, 119, 87, 0.14);
+  color: #d46643;
+}
+
+/* ====================================================================
+   思考中（thinking）：填补 Claude 在想、没输出的空档
+   ==================================================================== */
+.think {
+  display: none;
+  align-items: center; gap: 5px;
+  margin-bottom: 8px;
+  padding: 6px 11px;
+  background: rgba(247, 240, 255, 0.97);
+  border: 1px solid rgba(150, 120, 210, 0.3);
+  border-radius: 14px;
+  box-shadow: 0 5px 14px rgba(90, 70, 140, 0.2);
+  font-size: 12.5px; color: #5b4a7a;
+  pointer-events: none;
+}
+.think.on { display: flex; animation: thinkIn 0.25s ease; }
+@keyframes thinkIn { from { opacity: 0; transform: translateY(6px) scale(0.96); } to { opacity: 1; transform: none; } }
+
+.think .td { font-size: 14px; animation: thinkBob 2.2s ease-in-out infinite; }
+@keyframes thinkBob { 0%,100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-2px) rotate(4deg); } }
+.think .dots { display: inline-flex; gap: 3px; }
+.think .dots i {
+  width: 4px; height: 4px; border-radius: 50%; background: #8a6fc0; display: inline-block;
+  animation: thinkDots 1.4s ease-in-out infinite;
+}
+.think .dots i:nth-child(2) { animation-delay: 0.2s; }
+.think .dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes thinkDots { 0%, 60%, 100% { opacity: 0.25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+
+/* 会话点：思考态配色 */
+.sess-dot.thinking { background: #9a7fd6; animation: dotThink 1.6s ease-in-out infinite; }
+@keyframes dotThink { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+/* ====================================================================
+   睡觉：逐渐变大、往上飘的 z z Z（醒目）
+   ==================================================================== */
+.sleep {
+  position: absolute;
+  bottom: 122px;
+  left: 52%;
+  width: 84px;
+  height: 70px;
+  display: none;
+  pointer-events: none;
+  z-index: 15;
+}
+.sleep.on { display: block; }
+.sleep .z {
+  position: absolute;
+  bottom: 0;
+  font-family: -apple-system, "Helvetica Neue", sans-serif;
+  font-weight: 800;
+  color: #aac0f2;
+  text-shadow: 0 2px 4px rgba(40, 50, 90, 0.4);
+  opacity: 0;
+  animation: zRise 3s ease-in-out infinite;
+}
+.sleep .z1 { left: 0; font-size: 17px; animation-delay: 0s; }
+.sleep .z2 { left: 18px; font-size: 26px; animation-delay: 0.7s; }
+.sleep .z3 { left: 44px; font-size: 38px; animation-delay: 1.4s; }
+#stage.edge-below .sleep { top: 18px; bottom: auto; }
+@keyframes zRise {
+  0% { opacity: 0; transform: translateY(8px) rotate(-12deg); }
+  25% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-40px) translateX(14px) rotate(10deg); }
+}
+
+/* ---- 头顶道具 emoji ---- */
+.prop {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  border-radius: 50%;
+  background: rgba(255, 252, 249, 0.94);
+  border: 1px solid rgba(217, 119, 87, 0.28);
+  box-shadow: 0 4px 10px rgba(120, 60, 35, 0.22);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 16;
+  filter: drop-shadow(0 2px 3px rgba(80,50,30,0.4));
+}
+.prop.on { animation: propIn 0.3s ease forwards; }
+@keyframes propIn {
+  0% { opacity: 0; transform: translateY(8px) scale(0.4); }
+  60% { opacity: 1; transform: translateY(0) scale(1.15); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.prop.spin.on { animation: propIn 0.3s ease forwards, propSpin 1.1s linear infinite 0.3s; }
+@keyframes propSpin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+.prop.hunt.on { animation: propIn 0.3s ease forwards, propHunt 0.7s ease-in-out infinite 0.3s; }
+@keyframes propHunt { 0%,100% { transform: translate(0,0); } 50% { transform: translate(6px,-3px); } }
+.prop.jit.on { animation: propIn 0.3s ease forwards, propJit 0.2s ease-in-out infinite 0.3s; }
+@keyframes propJit { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+
+/* ---- 大任务完成彩带 ---- */
+.confetti {
+  position: absolute;
+  pointer-events: none;
+  z-index: 25;
+  opacity: 0;
+  animation: confettiFly 1.2s ease-out forwards;
+}
+@keyframes confettiFly {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.4) rotate(0); }
+  20% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(1.1) rotate(50deg); }
+}
+
+/* ====================================================================
+   月薪喵——猫咪状态 GIF
+   每个状态一张 GIF，本体动效由 GIF 自带；这里只加轻微浮动 + 醒目态强调。
+   ==================================================================== */
+#cat {
+  width: 120px; height: 120px;   /* GIF 原生 120×120，1:1 显示最清晰，放大会糊 */
+  flex: 0 0 auto;
+  display: flex;
+  cursor: grab; touch-action: none;
+  flex-direction: column; align-items: center;
+  filter: drop-shadow(0 6px 9px rgba(120, 90, 60, 0.28));
+}
+#cat img { width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; }
+
+#cat:focus-visible, .notepad:focus-visible, .ac-close:focus-visible,
+.radial-item:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.8);
+  outline-offset: 2px;
+}
+
+
+/* GIF 自带动效，容器不加任何位移动画；只保留「需要你出手」的发光提示 */
+#cat.waiting,
+#cat.needsinput {
+  filter: drop-shadow(0 0 10px rgba(255, 190, 80, 0.95)) drop-shadow(0 6px 9px rgba(120, 90, 60, 0.28));
+}
+#cat.error {
+  filter: drop-shadow(0 0 9px rgba(232, 80, 55, 0.85)) drop-shadow(0 6px 9px rgba(120, 90, 60, 0.28));
+}
+#cat.loved {
+  filter: drop-shadow(0 0 11px rgba(255, 202, 92, 0.95)) drop-shadow(0 6px 9px rgba(120, 90, 60, 0.28));
+}
+
+/* ---- 召唤小分身 ---- */
+.sidekick {
+  position: absolute;
+  bottom: 70px;
+  left: 50%;
+  width: 34px;
+  height: 34px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 14;
+}
+.sidekick img { width: 100%; height: 100%; object-fit: contain; }
+.sidekick.on { animation: sidekickPop 1.1s ease-out; }
+@keyframes sidekickPop {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.3); }
+  30% { opacity: 1; transform: translate(40px, -10px) scale(1); }
+  70% { opacity: 1; transform: translate(70px, -6px) scale(0.95); }
+  100% { opacity: 0; transform: translate(96px, 6px) scale(0.7); }
+}
+
+.ask-opt, .ask-btn, .ask-term, .ask-other input, .ac-close, .ac-ops button,
+.ac-act, #ask-text { -webkit-app-region: no-drag; }
+
+/* SVG icon (替代 emoji) 的内联样式：1em 大小、跟随文本颜色，垂直对齐文本 */
+.oi { display: inline-flex; align-items: center; justify-content: center; vertical-align: -0.18em; line-height: 1; }
+.oi svg { display: block; }
