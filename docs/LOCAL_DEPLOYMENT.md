@@ -30,7 +30,7 @@
 
 - Windows x64；
 - [Git](https://git-scm.com/)；
-- Node.js 22.12 或更高版本（与 Electron 43 的开发依赖要求一致；CI 覆盖 Node.js 22.12 和 24）；
+- Node.js 22.12 或更高版本（与 Electron 43 的开发依赖要求一致）；
 - Claude Code 和/或 OpenAI Codex。
 
 检查环境：

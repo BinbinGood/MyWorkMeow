@@ -143,7 +143,6 @@ async function run() {
   const root = path.join(__dirname, '..');
   const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
   const pkg = require('../package.json');
-  const workflow = read('.github/workflows/release.yml');
   const finalize = read('scripts/finalize-dist.js');
   const settings = read('renderer/settings.html');
   const preload = read('preload.js');
@@ -158,10 +157,9 @@ async function run() {
     'Windows packaging must target NSIS explicitly');
   assert.strictEqual(pkg.build.publish[0].provider, 'github');
   assert.strictEqual(pkg.build.publish[0].owner, 'vista-zhangg');
-  assert(!workflow.includes('dist/WorkMeow-*-Windows-x64.zip'),
-    'releases must not upload the retired portable ZIP');
-  assert(workflow.includes('dist/latest.yml') && workflow.includes('.exe.blockmap'),
-    'releases must upload updater metadata and the differential blockmap');
+  // 本分支已删掉 .github/workflows/release.yml（无 CI）。原来这里还断言 workflow
+  // 会上传 latest.yml / .exe.blockmap 且不上传已退役的 ZIP —— 那份契约现在由下面
+  // 的 finalize-dist 断言独自承担：产物齐不齐由本地打包脚本负责，上传是手动的。
   assert(finalize.includes("'latest.yml'") && finalize.includes('`${prefix}.exe.blockmap`')
     && !finalize.includes('.zip'),
     'distribution finalization must retain updater metadata without a portable ZIP');

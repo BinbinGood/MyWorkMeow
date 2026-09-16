@@ -33,8 +33,9 @@ assert(pkg.build.files.includes('LICENSE'), 'packaged app must retain the upstre
 assert.strictEqual(pkg.build.win.artifactName, 'WorkMeow-${version}-Windows-${arch}.${ext}');
 assert(/--publish never(?:\s|$)/.test(pkg.scripts['package:win']), 'Windows packaging must use the unified release job');
 assert.strictEqual(pkg.scripts.test, 'node test/run-all.js');
-assert(/name: workmeow-windows-x64/.test(read('.github/workflows/release.yml')), 'release artifact must use WorkMeow');
-assert(/WorkMeow \$\{GITHUB_REF_NAME#v\}/.test(read('.github/workflows/release.yml')), 'release title must follow the pushed version tag');
+// 原本这里还从 .github/workflows/release.yml 里断言产物名 workmeow-windows-x64 和
+// Release 标题跟随版本标签。本分支已删掉全部 workflow，这两项现在没有自动化载体：
+// 产物名由 pkg.build.win.artifactName（上面已断言）决定，Release 标题手动填。
 assert.strictEqual(lock.name, 'workmeow');
 assert.strictEqual(lock.packages[''].name, 'workmeow');
 assert(/app\.setName\(BRAND\.name\)/.test(main), 'Electron app name must come from the brand registry');
@@ -74,7 +75,7 @@ assert(/产品名称和所有对外发布物统一使用 \*\*打工喵（WorkMeo
 const publicFiles = [
   'README.md', 'README_EN.md', 'docs/介绍.md', 'docs/LOCAL_DEPLOYMENT.md', 'STATES.md',
   'main.js', 'renderer/pet.html', 'renderer/pet.js', 'renderer/panel.html',
-  'renderer/panel.js', '.github/workflows/release.yml',
+  'renderer/panel.js',
 ];
 for (const file of publicFiles) {
   const text = read(file)

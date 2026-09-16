@@ -10,9 +10,9 @@
 4. 运行 `npm run package:win`。该命令只构建 NSIS EXE，随后清理旧 `dist`、生成 SHA-256，并执行独立产物校验。
 5. 确认 `git diff --check` 和 `git status --short`，按明确路径暂存并提交。
 6. 先推送当前分支，再创建并推送同版本标签，例如 `v1.5.4`。
-7. 等待 `.github/workflows/release.yml` 完成，确认构建与发布两个任务均成功，并确认 GitHub 最新 Release 指向新标签。
+7. 本分支已移除全部 GitHub Actions workflow，标签不会触发任何自动构建或自动发布。EXE 与 `SHA256SUMS.txt` 就是第 4 步产出的本地产物；需要 Release 的话手动上传 `dist` 里的四个文件。
 
-不要在本地再次下载 Release 覆盖 `dist`。CI 包和本地包会因为构建时间戳而具有不同哈希，但它们各自的 `latest.yml` 和 `SHA256SUMS.txt` 都是自洽的。回下载会重复传输约 100 MB 数据，并可能把完整本地文件先截断为下载占位文件。
+本地包的 `latest.yml` 和 `SHA256SUMS.txt` 是自洽的，不要发布后再回下载 Release 覆盖 `dist` —— 那会重复传输约 100 MB 数据，并可能把完整本地文件先截断为下载占位文件。
 
 ## 正常产物
 
@@ -30,10 +30,10 @@
 - 停在 `building target=nsis` 且存在 `makensis.exe`：正常。等待安装器和 `.blockmap` 完成。
 - 出现 `downloading electron` 或下载到 100% 后长时间无活动：检查 `build.electronDist` 是否仍为 `node_modules/electron/dist`。本项目应复用 `npm ci` 已安装的 Electron，不应再次联网下载同一运行时。
 - 缺少 `latest.yml` 或 `.exe.blockmap`：检查 `build.publish` 和 GitHub 发布配置，不要绕过 `finalize-dist` 的失败。
-- 标签校验失败：标签必须严格等于 `v` 加 `package.json` 版本号。
+- 标签与版本号不一致：标签必须严格等于 `v` 加 `package.json` 版本号。已无 CI 做这项校验，推标签前自己核对。
 
 只有在超过十分钟、相关压缩/安装器子进程不存在、CPU 与磁盘均无活动时，才把打包视为卡死。中止前先保留旧 `dist`；发布脚本本身会在新产物齐全后再做换代清理。
 
 ## 减少自动化输出
 
-自动化执行时只保留测试最终结论、打包阶段变化和失败日志。监控 GitHub Actions 时优先间隔查询 `status`、`conclusion` 和 URL，不要持续输出完整任务树。Release 成功后只核对资产列表与远端校验结果，无需再回下载大文件。
+自动化执行时只保留测试最终结论、打包阶段变化和失败日志。Release 成功后只核对资产列表与远端校验结果，无需再回下载大文件。
