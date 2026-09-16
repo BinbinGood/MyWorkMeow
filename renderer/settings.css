@@ -168,6 +168,9 @@ main { padding: 10px 18px 0; flex: 1; }
 }
 .switch[aria-checked="true"] .switch-thumb { transform: translateX(20px); }
 .switch:disabled { cursor: wait; opacity: 0.56; }
+/* 永久禁用（这个 Agent 根本没有额度数据可显示）不同于「正在保存」：
+   cursor: wait 会暗示等一下就好了，而它永远不会变可用。 */
+.switch.switch-locked:disabled { cursor: not-allowed; opacity: 0.42; }
 .switch:focus-visible, .subtle-button:focus-visible, .done-button:focus-visible, .icon-button:focus-visible {
   outline: 3px solid rgba(37, 99, 235, 0.8); outline-offset: 2px;
 }

@@ -2312,9 +2312,12 @@ function renderContextCapsule(s) {
   stage.classList.toggle('cat-hidden', !showCat);
   cat.setAttribute('aria-hidden', String(!showCat));
   const showStatus = display.showStatus !== false;
-  // 额度不再是「一个总开关」——按 Agent 逐个开关，一个都没开才整段隐藏。
-  const visibleAgents = activeQuotaAgents(s);
-  const showQuota = visibleAgents.length > 0;
+  // 额度不再是「一个总开关」——按 Agent 逐个开关。可见性必须按**徽标数**判断，
+  // 不能按「开着的 Agent 数」：像 Claude 这种 quota 为 null 的 Agent 会被计入行数
+  // 却产不出任何徽标（见 activeAgentBadges 的 kind 分支），于是整段被显示成一个
+  // 只有 padding 的空格子 —— 用户看到的就是「开关打开了但什么也没有」。
+  const quotaBadges = activeAgentBadges(s);
+  const showQuota = quotaBadges.length > 0;
   const showTokens = display.showTokens === true;
   const showCost = display.showCost === true;
   chipContext.hidden = !showStatus;
@@ -2327,9 +2330,8 @@ function renderContextCapsule(s) {
   // or cost on their own.
   document.getElementById('chip-tokens-sep').hidden = !showTokens || !(showStatus || showQuota);
   document.getElementById('chip-cost-sep').hidden = !showCost || !(showStatus || showQuota || showTokens);
-  const quota = s.codexQuota || {};
   quotaEl.innerHTML = '';
-  for (const badge of activeAgentBadges(s)) quotaEl.appendChild(badge);
+  for (const badge of quotaBadges) quotaEl.appendChild(badge);
   quotaEl.setAttribute('aria-label', isCreditSlot(s) ? t('quota.creditOpen') : t('quota.open'));
   chip.removeAttribute('title');
   if (quotaPopoverOpen) {

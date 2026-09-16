@@ -60,17 +60,29 @@ function quotaAgentCard(agent) {
   description.textContent = t(`settings.quotaAgent${agent.quotaKind || 'None'}Description`);
   copy.append(title, description);
 
+  // 没有额度数据的 Agent（quotaKind === 'None'，如 Claude）：开关**锁死在关**。
+  // 这类 Agent 在底部栏产不出任何徽标，可开关会让人以为坏了 —— 这正是用户报的
+  // 「claude 按钮开了以后啥也没显示」。托盘另有「暂无数据」兜底行，不受此影响。
+  const locked = (agent.quotaKind || 'None') === 'None';
+
   const button = document.createElement('button');
   button.id = `quota-agent-${agent.id}-toggle`;
-  button.className = 'switch';
+  button.className = locked ? 'switch switch-locked' : 'switch';
   button.type = 'button';
   button.setAttribute('role', 'switch');
-  button.setAttribute('aria-checked', String(agent.enabled !== false));
+  button.setAttribute('aria-checked', String(!locked && agent.enabled !== false));
   button.setAttribute('aria-label', t('settings.quotaAgentToggle', { name: agent.label || agent.id }));
   const thumb = document.createElement('span');
   thumb.className = 'switch-thumb';
   thumb.setAttribute('aria-hidden', 'true');
   button.appendChild(thumb);
+
+  if (locked) {
+    button.disabled = true;
+    button.setAttribute('aria-disabled', 'true');
+    card.append(copy, button);
+    return card;
+  }
 
   button.addEventListener('click', async () => {
     button.disabled = true;

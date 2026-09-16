@@ -147,6 +147,34 @@ assert.strictEqual(w.elements('chip-quota').children.length, 2,
   'disabling WorkBuddy leaves the Codex 5h/7d pair');
 assert.strictEqual(w.elements('chip-quota').children[0].dataset.period, '5h');
 
+// ── 没有额度数据的 Agent（Claude / TRAE / opencode）─────────────────────────────
+// 2026-09-16 的回归靶子。这类 Agent 的 quota 恒为 null（source-registry 没给它们
+// creditQuota，trayAgentRows() 于是回 null），activeAgentBadges 会在
+// `if (kind !== 'codex') continue` 处直接跳过 —— 零徽标。
+// 旧代码的可见性按「开着的 Agent 数」算，把它计成 1，于是 #chip-quota 显示了
+// 但里面是空的：用户看到的就是「claude 按钮开了以后啥也没显示」，只剩 4px padding。
+// 可见性必须按**徽标数**算。
+const noQuotaAgent = { id: 'claude', label: 'Claude', quota: null };
+w.handlers.stats({ ...stats, quotaAgents: [noQuotaAgent],
+  chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: true, quotaAgents: {} } });
+assert.strictEqual(w.elements('chip-quota').children.length, 0,
+  'an agent with no quota data produces no badges');
+assert.strictEqual(w.elements('chip-quota').hidden, true,
+  'a quota block with zero badges must be hidden, not shown as an empty slot');
+// 分隔符跟着走：额度段整段不存在时，它后面那个分隔符不能挂在空气上。
+w.handlers.stats({ ...stats, quotaAgents: [noQuotaAgent],
+  chipDisplay: { showCat: true, showStatus: false, showTokens: false, showCost: true, quotaAgents: {} } });
+assert.strictEqual(w.elements('chip-quota').hidden, true);
+assert.strictEqual(w.elements('chip-cost-sep').hidden, true,
+  'with status off and the quota block empty, the cost separator has nothing to follow');
+// 混着来：没数据的 Agent 不该影响有数据的那个。
+w.handlers.stats({ ...stats, quotaAgents: [noQuotaAgent, codexAgent],
+  chipDisplay: { showCat: true, showStatus: true, showTokens: false, showCost: false, quotaAgents: {} } });
+assert.strictEqual(w.elements('chip-quota').hidden, false);
+assert.strictEqual(w.elements('chip-quota').children.length, 2,
+  'a quota-less agent must not crowd out or duplicate the Codex 5h/7d pair');
+assert.strictEqual(w.elements('chip-quota').children[0].dataset.period, '5h');
+
 // ── 积分型额度（接 WorkBuddy 这类余额只在服务端的 Agent）────────────────────────
 // 徽标左侧的标签由 pet.css 用 attr(data-period) 渲染。这里要防的正靶：上一版把
 // data-period 直接写成 'credit'，界面上出现的是「credit 1.8K」——一个英文单词，
