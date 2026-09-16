@@ -144,6 +144,10 @@ function createCore(options = {}) {
   //   · never bumps updatedAt (the session really has been idle that long)
   //   · never clears a genuine `notification` — an open elicitation dialog is
   //     idle by definition, so clearing it here would re-hide a real request.
+  //   · never clears a self-timed long operation (PreCompact → sweeping carries
+  //     stateTtlMs). 压缩上下文期间一个工具都不跑，宿主的 60s 空闲计时器必然
+  //     触发；把它当「卡死的忙碌态」软着陆，喵就会在压缩没完时显示「待命」。
+  //     该状态自带 TTL，到期自己会落回 idle，不需要空闲通知代劳。
   function applyIdleNotification(id, f) {
     const s = sessions.get(id);
     if (!s) return null;
@@ -151,7 +155,8 @@ function createCore(options = {}) {
     setField(s, 'model', f.model);
     if (f.contextUsage) s.contextUsage = f.contextUsage;
     s.idleNotifiedAt = Date.now();
-    if (BUSY_STATES.has(s.state) && !s.backgroundActive) {
+    const selfTimed = Number(s.stateTtlMs) > 0;
+    if (BUSY_STATES.has(s.state) && !s.backgroundActive && !selfTimed) {
       s.state = 'idle';
       onDirty();
     } else if (f.contextUsage) {
