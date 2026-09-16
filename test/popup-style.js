@@ -106,15 +106,33 @@ assert(/\.radial\[data-layout="compact"\] \.radial-compact\s*\{[\s\S]*?display:\
 assert(/\.sessions\s*\{[\s\S]*?min-width:\s*120px;/.test(css), 'session dots must retain a centred minimum width');
 assert(/#stage\.cat-hidden #compact-row \.sessions\s*\{[\s\S]*?min-width:\s*0;/.test(css),
   'compact session dots must shrink to their intrinsic width beside the capsule');
-// 2026-09-16：胶囊横向恒居中，不再有「贴边时把 chip 拉回中间」这条补丁规则。
-// 从前是 #stage.edge-left/.edge-right 把 #compact-row 改成 flex-start/flex-end
-// 贴边对齐，再单独给 .chip 补一个 justify-content: center 找回中心；判定贴边用的
-// 还是竖直方向的实测阈值（约 216px），横屏上几乎永远算贴边，胶囊被甩到猫侧面。
-// 现在整条链路都没了 —— #compact-row 的 align-items: center 就是唯一答案。
-assert(!/#stage\.edge-(?:left|right)/.test(css),
-  'horizontal edge alignment is gone: the capsule is always centred under the cat');
+// ── 横向贴边（左右）与胶囊的按需内缩 ────────────────────────────────────────
+// 这两条规则是「猫能真的贴到屏幕左右缘」的**唯一**实现：窗口 320 宽而猫只有 120
+// 宽，左右各约 100px 透明留白，主进程 applyPetSize 会把窗口钳进工作区 —— 只有把
+// 整列拉到窗口缘、让猫的窗内偏移变成 0，反解出的窗口原点才正好落在工作区缘上，
+// 那 100px 不会被钳掉。2026-09-16 我误判这套是纯胶囊样式而删掉，用户实测「往左右
+// 拖松开后自动处在比较靠中间的位置」，就是被钳走的那 100px。
+assert(/#stage\.edge-left\s*\{[^}]*align-items\s*:\s*flex-start\s*;/s.test(css),
+  'left-edge snapping must pull the column to the window edge');
+assert(/#stage\.edge-right\s*\{[^}]*align-items\s*:\s*flex-end\s*;/s.test(css),
+  'right-edge snapping must pull the column to the window edge');
+// 光有 #stage 那条不够：列宽由最宽的孩子（胶囊）决定，不加这条**猫**仍停在列中央。
+assert(/#stage\.edge-left:not\(\.cat-hidden\) #compact-row\s*\{[^}]*align-items\s*:\s*flex-start\s*;/s.test(css)
+  && /#stage\.edge-right:not\(\.cat-hidden\) #compact-row\s*\{[^}]*align-items\s*:\s*flex-end\s*;/s.test(css),
+  'the compact row must put the cat itself on the snapped side');
+// 胶囊比猫宽，整列贴边时它会被带出去。补偿走 --chip-shift（按需最小位移），
+// 且必须是 transform —— margin 会参与布局、量进 measuredRestingWidth，变成
+// 「变宽 → 位移 → 又变宽」的自激。
+assert(/\.chip\s*\{[\s\S]*?transform:\s*translateX\(var\(--chip-shift/.test(css),
+  'the capsule must be nudged by transform, never by layout-affecting margins');
+assert(/PetGeometry\.capsuleShift/.test(js) && /--chip-shift/.test(js),
+  'the renderer must compute the capsule shift from the pet post-move screen position');
+// 旧补丁不能回来：从前是贴边把整列甩过去、再给 .chip 补一个 justify-content: center
+// 找回中心。那条既解决不了溢出，也和 --chip-shift 抢同一件事。
+assert(!/#stage\.edge-(?:left|right)[^{]*\.chip\s*\{[^}]*justify-content/s.test(css),
+  'the superseded justify-content patch on .chip must not return');
 assert(/#compact-row\s*\{[\s\S]*?align-items:\s*center;/.test(css),
-  'the compact row itself centres the cat, dots and capsule on one axis');
+  'centred under the cat remains the default when not snapped to an edge');
 // 单宠时代（2026-08-07 起）：不再有 per-tool 名牌，agent-tag 样式必须整体移除
 assert(!/agent-tag/.test(css), 'per-tool agent tag styles must be gone (single unified pet)');
 assert(/function positionProp\(\)[\s\S]*propEl\.style\.left/.test(js), 'action prop must use the visible cat geometry');

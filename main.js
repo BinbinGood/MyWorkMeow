@@ -181,10 +181,10 @@ function validPetAnchor(anchor) {
 }
 
 // 从「桌宠本体在屏幕上的位置」反解窗口原点。
-// 2026-09-16 起渲染端的 xAlign 恒为 'center'（胶囊不再贴左/右缘，见
-// shared/pet-geometry.js 里 horizontal 的注释）。'left' / 'right' 两条分支
-// 故意留着：这里是 IPC 边界，渲染端送什么都得算得出一个合法原点，删掉分支
-// 就变成静默走 center、把本体挪到别处。上面的 xAlign 白名单已经挡住脏值。
+// 三条 xAlign 分支都是活的：渲染端贴左/右缘时把整列拉到窗口缘，本体的窗内偏移
+// 变成 0，反解出的原点正好落在工作区缘上，下面 applyPetSize 的钳制就不会吃掉那
+// ~100px 透明留白 —— 这正是「左右能真贴边」的实现方式（见 renderer/pet.css 里
+// #stage.edge-left / .edge-right 的注释）。上面的 xAlign 白名单挡住脏值。
 function anchoredPetOrigin(anchor, width, height) {
   let localX;
   if (anchor.xAlign === 'left') localX = anchor.xOffset;

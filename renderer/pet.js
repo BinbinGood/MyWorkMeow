@@ -506,6 +506,7 @@ const POPUP_BOTTOM = 200;
 const ASK_VIEWPORT_MAX_H = 520;
 const BASE_PET_FRAME_H = 340;
 const RESTING_FRAME_MAX_H = 360;
+const RESTING_FRAME_MAX_W = 360;
 let fitPopupSeq = 0;
 let edgeLayout = { vertical: 'above', horizontal: 'center' };
 
@@ -538,12 +539,14 @@ function setStageEdgeLayout(next) {
   const layout = next || edgeLayout;
   edgeLayout = {
     vertical: layout.vertical === 'below' ? 'below' : 'above',
-    // 横向恒居中：胶囊永远在猫正下方。窗口自己没有吸附逻辑，胶囊也不该有。
-    // 这里保留字段而不是删掉，是因为 anchoredLayoutPayload 要把 xAlign 发给主
-    // 进程做反解，主进程那侧的 'left'/'right' 分支仍在（防御渲染端脏值）。
-    horizontal: 'center',
+    horizontal: layout.horizontal === 'left' ? 'left' : layout.horizontal === 'right' ? 'right' : 'center',
   };
   stage.classList.toggle('edge-below', edgeLayout.vertical === 'below');
+  // 横向贴边：把整列拉到窗口缘，猫的窗内偏移变成 0，主进程反解出的窗口原点正好
+  // 落在工作区缘上，applyPetSize 的钳制不再吃掉那 ~100px 透明留白。胶囊被整列
+  // 带偏的部分由 --chip-shift 单独补（见 applyCapsuleShift）。
+  stage.classList.toggle('edge-left', edgeLayout.horizontal === 'left');
+  stage.classList.toggle('edge-right', edgeLayout.horizontal === 'right');
   if (propEl && propEl.classList.contains('on')) positionProp();
 }
 
@@ -555,20 +558,26 @@ function anchoredLayoutPayload(next) {
   if (!before) { setStageEdgeLayout(next); return null; }
   const oldPet = before.petRect;
   const wa = before.workArea;
+  const waRight = wa.x + wa.width;
   const waBottom = wa.y + wa.height;
   const wr = before.windowRect;
   const compactVerticalFrame = wr.height <= RESTING_FRAME_MAX_H;
-  const screenX = wr.x + oldPet.x;
+  const compactHorizontalFrame = wr.width <= RESTING_FRAME_MAX_W;
+  let screenX = wr.x + oldPet.x;
   let screenY = wr.y + oldPet.y;
 
   // A frame at the work-area edge plus a large transparent inset means the OS
   // stopped the BrowserWindow before the user's visible pet reached the edge.
   // Treat that as an explicit edge drag and snap the *pet body*, not the frame.
-  // 只做竖直方向：横向已经恒定居中，猫本体不再需要「贴齐左/右缘」。
   if (compactVerticalFrame && next.vertical === 'below' && wr.y <= wa.y + 3 && oldPet.y > 18) screenY = wa.y;
   if (compactVerticalFrame && next.vertical === 'above'
     && wr.y + wr.height >= waBottom - 3 && wr.height - oldPet.y - oldPet.height > 18) {
     screenY = waBottom - oldPet.height;
+  }
+  if (compactHorizontalFrame && next.horizontal === 'left' && wr.x <= wa.x + 3 && oldPet.x > 18) screenX = wa.x;
+  if (compactHorizontalFrame && next.horizontal === 'right'
+    && wr.x + wr.width >= waRight - 3 && wr.width - oldPet.x - oldPet.width > 18) {
+    screenX = waRight - oldPet.width;
   }
   setStageEdgeLayout(next);
   const rect = curSkinEl().getBoundingClientRect();
@@ -576,13 +585,43 @@ function anchoredLayoutPayload(next) {
   const viewportH = Math.max(1, window.innerHeight || 340);
   const xAlign = edgeLayout.horizontal;
   const yAlign = edgeLayout.vertical === 'below' ? 'top' : 'bottom';
-  const xOffset = rect.left + rect.width / 2 - viewportW / 2;
+  const xOffset = xAlign === 'left'
+    ? rect.left
+    : xAlign === 'right'
+      ? viewportW - rect.right
+      : rect.left + rect.width / 2 - viewportW / 2;
   const yOffset = yAlign === 'top' ? rect.top : viewportH - rect.bottom;
+  applyCapsuleShift(screenX, rect.width);
   return {
     screenX, screenY,
     width: rect.width, height: rect.height,
     xAlign, yAlign, xOffset, yOffset,
   };
+}
+
+// 胶囊的按需内缩。这里是唯一的计算点，因为这里（也只有这里）能拿到桌宠本体
+// **移动之后**的屏幕位置：screenX 就是主进程即将把本体放到的那一像素，整套
+// anchored payload 机制保证的就是这件事。窗口移动不会触发渲染端的 resize
+// 事件，所以指望事后重算是等不到的。
+//
+// 反复调用是幂等的：输入只有本体的屏幕位置和胶囊的**宽度**，translateX 不改宽度，
+// 也不参与布局，量不进 measuredRestingWidth，不存在「变宽→位移→又变宽」的自激。
+function applyCapsuleShift(petScreenX, petWidth) {
+  if (!stage || !stage.style) return;
+  const rect = chip && !chip.hidden && typeof chip.getBoundingClientRect === 'function'
+    ? chip.getBoundingClientRect()
+    : null;
+  const width = rect ? Number(rect.width) : 0;
+  // 隐藏猫身时胶囊本身就是锚点（curSkinEl() === chip），没有「居中在猫正下方」
+  // 这回事，整行交给 align-items 摆放即可。
+  const shift = (catVisible && width > 0 && window.PetGeometry)
+    ? window.PetGeometry.capsuleShift({
+      petCenterX: Number(petScreenX) + Number(petWidth) / 2,
+      capsuleWidth: width,
+      workArea: browserWorkArea(),
+    })
+    : 0;
+  stage.style.setProperty('--chip-shift', shift + 'px');
 }
 
 function restingEdgeLayout() {
@@ -606,6 +645,7 @@ function restingEdgeLayout() {
     ...snapshot,
     threshold: Math.max(24, topThreshold),
     inferVerticalFrameClamp: snapshot.windowRect.height <= RESTING_FRAME_MAX_H,
+    inferHorizontalFrameClamp: snapshot.windowRect.width <= RESTING_FRAME_MAX_W,
   });
 }
 
@@ -785,6 +825,8 @@ function movePetDuringDrag(gesture, e, targetX, targetY) {
     gesture.sx = pointerScreenX(e);
     gesture.sy = pointerScreenY(e);
   }
+  // 拖动途中也要跟着算：不算的话胶囊会一路挂着上次落点的位移，直到松手才回正。
+  applyCapsuleShift(petScreenX, after.width);
   window.pet.setWinPos(anchoredX, anchoredY, dragMeta());
 }
 
@@ -1615,9 +1657,13 @@ function positionProp() {
   const petLeft = petRect.left - stageRect.left;
   const petTop = petRect.top - stageRect.top;
   const petRight = petLeft + petRect.width;
-  // 猫在窗口左半边 → 道具放右侧，反之放左侧。从前这里还有一条
-  // `edgeLayout.horizontal === 'left'` 的前置分支，横向恒定居中后它永不成立。
-  const preferRight = petLeft + petRect.width / 2 < viewportW / 2;
+  // 贴左缘 → 道具只能放右侧（左边已经没有屏幕了），贴右缘反之；这条优先于
+  // 「猫在窗口哪半边」的估算，因为贴边时猫的窗内位置已经不代表屏幕上的余量。
+  const preferRight = edgeLayout.horizontal === 'left'
+    ? true
+    : edgeLayout.horizontal === 'right'
+      ? false
+      : petLeft + petRect.width / 2 < viewportW / 2;
   // In compact mode the row is [session dots][capsule]. The tool prop must
   // sit before that whole cluster, not between the dots and the capsule.
   // Read the live dots rect each time so a changing parallel-session count
@@ -3054,11 +3100,14 @@ function buildRadial(metrics = lastRadialMetrics) {
     width: Math.max(46, Math.min(viewportW - pad, wa.x + wa.width - winX - pad) - Math.max(pad, wa.x - winX + pad)),
     height: Math.max(46, Math.min(viewportH - pad, wa.y + wa.height - winY - pad) - Math.max(pad, wa.y - winY + pad)),
   };
-  // 只给竖直偏好。横向恒定居中后没有「贴左就往右展开」这回事了，
-  // cornerMenuLayout 自己按 roomLeft/roomRight 打分选象限，本来就有兜底。
+  // 竖直偏好在前、横向在后：贴顶/贴底比贴左/贴右更硬（气泡翻面靠它）。
+  // cornerMenuLayout 自己还会按 roomLeft/roomRight 打分，这里只是把贴边这个
+  // 已知事实喂进去 —— 贴左缘时左侧压根没有屏幕，别让它先试再退。
   const preferred = [];
   if (edgeLayout.vertical === 'below') preferred.push('below');
   else preferred.push('above');
+  if (edgeLayout.horizontal === 'left') preferred.push('right');
+  else if (edgeLayout.horizontal === 'right') preferred.push('left');
   preferred.push(edgeLayout.vertical === 'below' ? 'above' : 'below');
   const petLocalRect = { x: r.left - sr.left, y: r.top - sr.top, width: r.width, height: r.height };
   const layout = window.PetGeometry

@@ -20,17 +20,30 @@ html, body {
   justify-content: flex-end;
 }
 
-/* Top-edge anchoring -------------------------------------------------------
+/* Edge anchoring ------------------------------------------------------------
    The BrowserWindow stays fully inside the work area; the visible pet moves
-   to the top *inside* that transparent window. This is what lets a pet
-   genuinely touch the top edge without sacrificing room for a popup or
-   circular menu — the bubbles simply flip below it.
+   to the corresponding side *inside* that transparent window. This is what
+   lets a pet genuinely touch the screen edge without sacrificing room for a
+   popup or circular menu — the bubbles simply flip to the other side.
 
-   横向没有对应的规则：窗口自己不吸附（拖到哪停哪），所以胶囊也永远居中在猫
-   正下方。从前有一组 .edge-left / .edge-right 会在靠近屏幕左右缘时改成贴边
-   对齐，判定用的还是竖直方向的阈值（约 216px），于是横屏上几乎永远处于贴边
-   态，胶囊看着像被甩到猫的侧面。 */
+   横向为什么必须靠 align-items 而不是靠坐标：窗口 320 宽而猫只有 120 宽，左右
+   各约 100px 透明留白，主进程 applyPetSize 又会把**窗口**钳在工作区内。想让猫
+   本体走到屏幕边，唯一的办法就是把整列贴齐窗口缘、让猫的窗内偏移变成 0，这样
+   反解出的窗口原点正好落在工作区缘上、钳制不会触发。2026-09-16 那次「左右拖完
+   松手就弹回中间」的回归，就是删掉这两条规则、猫的窗内偏移回到 ~100px 之后被
+   钳掉的 100px。
+
+   代价是胶囊比猫宽，整列贴边时它会往内侧甩出去。那件事不在这里解决 —— 见
+   .chip 的 --chip-shift（按需最小位移）。 */
 #stage.edge-below { justify-content: flex-start; }
+#stage.edge-left { align-items: flex-start; }
+#stage.edge-right { align-items: flex-end; }
+/* 两条都要：#stage 那条把整列推到窗口缘，#compact-row 这条才让**猫**落在整列的
+   那一侧（列的宽度由最宽的孩子——胶囊——决定，不加这条猫仍停在列中央）。
+   :not(.cat-hidden) 是因为隐藏猫身后 #compact-row 变成 flex-direction: row，
+   align-items 的语义翻成竖直方向，贴边由 #stage 那条独自负责。 */
+#stage.edge-left:not(.cat-hidden) #compact-row { align-items: flex-start; }
+#stage.edge-right:not(.cat-hidden) #compact-row { align-items: flex-end; }
 
 #compact-row {
   display: flex;
@@ -526,6 +539,12 @@ html, body {
   width: max-content;
   max-width: none;
   overflow: visible;
+  /* 贴边时整列被 align-items 拉到窗口缘，胶囊比猫宽，光靠对齐就会甩到猫的侧面。
+     --chip-shift 由 pet.js 按「默认严格居中在猫正下方，只有会探出工作区时才往内
+     挪刚好够用的那点距离」算出来（shared/pet-geometry.js 的 capsuleShift）。
+     用 transform 而不是 margin：transform 不参与布局，量不到 measuredRestingWidth
+     里去，否则会变成「变宽 → 位移 → 又变宽」的自激。 */
+  transform: translateX(var(--chip-shift, 0px));
 }
 #stage:hover .chip { opacity: 1; }
 .chip [hidden] { display: none !important; }
@@ -630,10 +649,11 @@ html, body {
   min-height: 12px;
 }
 /* Keep the session dots centred on the visible pet, not on the transparent
-   BrowserWindow —— #compact-row 的 align-items: center 负责这件事，横向恒定
-   居中所以没有例外分支。A large parallel session set may itself need more than
-   the default 120px. The compact row overrides the minimum so its dots can sit
-   tightly to the capsule. */
+   BrowserWindow —— 点组的 120px 最小宽度与 #cat 的 120px 一样，所以 #compact-row
+   的 align-items（居中或贴边）会把它和猫一起摆，两者天然对齐，不需要 --chip-shift
+   那样的补偿。A large parallel session set may itself need more than the default
+   120px. The compact row overrides the minimum so its dots can sit tightly to
+   the capsule. */
 .sessions { width: max-content; min-width: 120px; }
 .sess-dot {
   width: 9px; height: 9px;

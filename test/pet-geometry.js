@@ -61,28 +61,67 @@ assert.deepStrictEqual(
   'a tall popup clamped to the screen top must not masquerade as a pet edge drag',
 );
 
-// ── 横向恒居中 ────────────────────────────────────────────────────────────────
-// 2026-09-16 的用户报告：「喵的底部展示栏，如果在靠近边缘的时候，会自动靠边，
-// 而不是局中放在喵的下面。」成因是横向和竖直共用同一个 threshold，而调用方传的
-// 是竖直方向的实测值（216/218px）—— 于是「离屏幕左/右缘 200 多像素」就算贴边，
-// 1440 宽的屏幕上猫几乎永远处于贴边态，胶囊被甩到猫的侧面。
-// 结论是横向压根不该贴边（窗口本身也没有吸附），下面三条钉住这一点：贴死左缘、
-// 贴死右缘、以及顺手把竖直 threshold 调到极大，都必须还是 center。
-for (const [name, windowRect, petRect] of [
-  ['贴死左缘', { x: 0, y: 400, width: 320, height: 340 }, { x: 0, y: 200, width: 120, height: 140 }],
-  ['贴死右缘', { x: 1120, y: 400, width: 320, height: 340 }, { x: 200, y: 200, width: 120, height: 140 }],
-  ['右下角', { x: 1120, y: 560, width: 320, height: 340 }, { x: 200, y: 200, width: 120, height: 140 }],
+// ── 横向贴边 ──────────────────────────────────────────────────────────────────
+// 2026-09-16 的回归：横向曾与竖直共用同一个 threshold，而调用方传的是竖直方向的
+// 实测值（216/218px）—— 于是「离屏幕左/右缘 200 多像素」就算贴边，回中还要 2×
+// ≈ 436px 的双侧余量，1440 宽的屏幕上猫待在右下角时永远处于贴边态。
+// 我第一版的修法是把横向整个删掉（恒 center），结果猫左右也不能贴边了：本体只有
+// 120 宽而窗口 320 宽，center 锚点下窗内偏移约 100px，主进程 applyPetSize 把窗口
+// 钳进工作区时正好把这 100px 吃掉，松手就弹回中间。
+// 所以横向判定必须回来，但问的是**真贴边了吗**（edgeGap，默认 3px），不是「离边
+// 缘两百来像素」。下面三条按「贴死 / 差一点 / 明显没贴」把边界钉住。
+for (const [name, windowRect, petRect, expected] of [
+  // 猫本体就在工作区左缘上
+  ['贴死左缘', { x: 0, y: 400, width: 320, height: 340 }, { x: 0, y: 200, width: 120, height: 140 }, 'left'],
+  // 窗口右缘吃满工作区，猫困在窗口里 100px（透明留白）—— inferHorizontalFrameClamp 的场景
+  ['贴死右缘', { x: 1120, y: 400, width: 320, height: 340 }, { x: 200, y: 200, width: 120, height: 140 }, 'right'],
+  // 这条才是真正堵住原 bug 的：离左缘 200px，旧代码（threshold 218）会判成 left
+  ['离左缘 200px', { x: 100, y: 400, width: 320, height: 340 }, { x: 100, y: 200, width: 120, height: 140 }, 'center'],
+  // 对称的右侧：猫右边缘离工作区右缘 200px
+  ['离右缘 200px', { x: 1020, y: 400, width: 320, height: 340 }, { x: 100, y: 200, width: 120, height: 140 }, 'center'],
 ]) {
   assert.strictEqual(
     geometry.chooseRestingLayout({ workArea, windowRect, petRect, threshold: 218 }).horizontal,
-    'center',
-    `${name}时胶囊仍要居中在猫正下方，横向不存在贴边态`,
+    expected,
+    `${name}：横向只认真贴边，不能借用竖直方向的阈值`,
   );
+  // 弹出卡片是 520 定宽窗口，横向靠 applyPetSize 兜底，不参与贴边。
   assert.strictEqual(
     geometry.choosePopupLayout({ workArea, windowRect, petRect, popupHeight: 360 }).horizontal,
     'center',
-    `${name}时弹出卡片也只有竖直方向会翻面`,
+    `${name}：弹出卡片只有竖直方向会翻面`,
   );
+}
+
+// ── 胶囊按需最小位移 ──────────────────────────────────────────────────────────
+// 胶囊比猫宽，「猫贴死边」和「胶囊完整可读且严格居中」不可能同时成立。用户定的
+// 口径是默认严格居中、只在会探出工作区时往内挪刚好够用的那点距离。
+{
+  const shift = (petCenterX, capsuleWidth) =>
+    geometry.capsuleShift({ petCenterX, capsuleWidth, workArea });
+
+  // 窄胶囊（比猫两侧余量还窄）在任何位置都不动。
+  assert.strictEqual(shift(60, 100), 0, '屏幕最左侧、装得下的胶囊不该有位移');
+  assert.strictEqual(shift(1380, 100), 0, '屏幕最右侧、装得下的胶囊不该有位移');
+  assert.strictEqual(shift(720, 520), 0, '屏幕中央的宽胶囊本来就居中，不该有位移');
+
+  // 猫贴死左缘（本体 120 宽 → 中心 60），胶囊 520 宽：
+  // 居中的左边缘 = 60 - 260 = -200，目标左边缘 = 0 + 4（margin）→ 需要右移 204。
+  assert.strictEqual(shift(60, 520), 204, '贴左缘时胶囊只右移刚好不出屏的距离');
+  // 对称：猫贴死右缘（中心 1440-60 = 1380）→ 左移 204。
+  assert.strictEqual(shift(1380, 520), -204, '贴右缘时胶囊只左移刚好不出屏的距离');
+
+  // 位移随宽度增长而非随位置跳变：同一个位置、更宽的胶囊要挪得更多。
+  assert(shift(60, 620) > shift(60, 520), '更宽的胶囊在同一位置需要更大的位移');
+
+  // 比整个工作区还宽：怎么挪都会被裁，宁可两侧对称溢出（中间那段还能读）。
+  assert.strictEqual(shift(60, 1600), 0, '宽过工作区的胶囊对称溢出，不往单侧甩');
+
+  // 脏输入不能变成 NaN 位移（会让 translateX 整条规则失效）。
+  assert.strictEqual(geometry.capsuleShift({ petCenterX: NaN, capsuleWidth: 520, workArea }), 0,
+    '无效中心点必须落回 0');
+  assert.strictEqual(geometry.capsuleShift({ petCenterX: 60, capsuleWidth: 0, workArea }), 0,
+    '没有胶囊时没有位移');
 }
 
 assert.strictEqual(
