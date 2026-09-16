@@ -106,7 +106,15 @@ assert(/\.radial\[data-layout="compact"\] \.radial-compact\s*\{[\s\S]*?display:\
 assert(/\.sessions\s*\{[\s\S]*?min-width:\s*120px;/.test(css), 'session dots must retain a centred minimum width');
 assert(/#stage\.cat-hidden #compact-row \.sessions\s*\{[\s\S]*?min-width:\s*0;/.test(css),
   'compact session dots must shrink to their intrinsic width beside the capsule');
-assert(/#stage\.edge-(?:left|right) \.chip[\s\S]*?justify-content:\s*center/.test(css), 'edge token chip must stay centred under the cat');
+// 2026-09-16：胶囊横向恒居中，不再有「贴边时把 chip 拉回中间」这条补丁规则。
+// 从前是 #stage.edge-left/.edge-right 把 #compact-row 改成 flex-start/flex-end
+// 贴边对齐，再单独给 .chip 补一个 justify-content: center 找回中心；判定贴边用的
+// 还是竖直方向的实测阈值（约 216px），横屏上几乎永远算贴边，胶囊被甩到猫侧面。
+// 现在整条链路都没了 —— #compact-row 的 align-items: center 就是唯一答案。
+assert(!/#stage\.edge-(?:left|right)/.test(css),
+  'horizontal edge alignment is gone: the capsule is always centred under the cat');
+assert(/#compact-row\s*\{[\s\S]*?align-items:\s*center;/.test(css),
+  'the compact row itself centres the cat, dots and capsule on one axis');
 // 单宠时代（2026-08-07 起）：不再有 per-tool 名牌，agent-tag 样式必须整体移除
 assert(!/agent-tag/.test(css), 'per-tool agent tag styles must be gone (single unified pet)');
 assert(/function positionProp\(\)[\s\S]*propEl\.style\.left/.test(js), 'action prop must use the visible cat geometry');

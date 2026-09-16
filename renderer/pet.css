@@ -20,14 +20,17 @@ html, body {
   justify-content: flex-end;
 }
 
-/* Screen-edge anchoring ----------------------------------------------------
+/* Top-edge anchoring -------------------------------------------------------
    The BrowserWindow stays fully inside the work area; the visible pet moves
-   to the relevant side *inside* that transparent window. This is what lets a
-   pet genuinely touch the top/left/right edge without sacrificing room for a
-   popup or circular menu. */
+   to the top *inside* that transparent window. This is what lets a pet
+   genuinely touch the top edge without sacrificing room for a popup or
+   circular menu — the bubbles simply flip below it.
+
+   横向没有对应的规则：窗口自己不吸附（拖到哪停哪），所以胶囊也永远居中在猫
+   正下方。从前有一组 .edge-left / .edge-right 会在靠近屏幕左右缘时改成贴边
+   对齐，判定用的还是竖直方向的阈值（约 216px），于是横屏上几乎永远处于贴边
+   态，胶囊看着像被甩到猫的侧面。 */
 #stage.edge-below { justify-content: flex-start; }
-#stage.edge-left { align-items: flex-start; }
-#stage.edge-right { align-items: flex-end; }
 
 #compact-row {
   display: flex;
@@ -37,8 +40,6 @@ html, body {
   width: max-content;
   max-width: none;
 }
-#stage.edge-left #compact-row { align-items: flex-start; }
-#stage.edge-right #compact-row { align-items: flex-end; }
 #stage.edge-below #compact-row .cat { order: 0; }
 #stage.edge-below #compact-row .sessions { order: 1; margin-top: 3px; margin-bottom: 0; }
 #stage.edge-below #compact-row .chip { order: 2; }
@@ -52,12 +53,6 @@ html, body {
   bottom: auto;
   border-width: 0 7px 8px 7px;
   border-color: transparent transparent rgba(255, 255, 255, 0.97) transparent;
-}
-
-/* 左右贴边时，token 条也按猫咪本体宽度居中，避免因自身较窄而偏向外侧。 */
-#stage.edge-left .chip,
-#stage.edge-right .chip {
-  justify-content: center;
 }
 
 /* Optional compact mode: keep the live session dots visible to the left of
@@ -635,10 +630,10 @@ html, body {
   min-height: 12px;
 }
 /* Keep the session dots centred on the visible pet, not on the transparent
-   BrowserWindow. At a left/right edge both boxes share the same outer edge,
-   so matching their widths also matches their centres. A large parallel
-   session set may itself need more than the default 120px. The compact row
-   overrides the minimum so its dots can sit tightly to the capsule. */
+   BrowserWindow —— #compact-row 的 align-items: center 负责这件事，横向恒定
+   居中所以没有例外分支。A large parallel session set may itself need more than
+   the default 120px. The compact row overrides the minimum so its dots can sit
+   tightly to the capsule. */
 .sessions { width: max-content; min-width: 120px; }
 .sess-dot {
   width: 9px; height: 9px;

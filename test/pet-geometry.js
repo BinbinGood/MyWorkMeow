@@ -12,7 +12,6 @@ assert.deepStrictEqual(
     workArea,
     windowRect: { x: 900, y: 24, width: 320, height: 340 },
     petRect: { x: 100, y: 160, width: 120, height: 140 },
-    current: { vertical: 'above', horizontal: 'center' },
   }),
   { vertical: 'below', horizontal: 'center' },
   'top-clamped legacy positions must move the visible pet to the window top',
@@ -23,7 +22,6 @@ assert.strictEqual(
     workArea,
     windowRect: { x: 900, y: 24, width: 320, height: 340 },
     petRect: { x: 100, y: 0, width: 120, height: 140 },
-    current: { vertical: 'below', horizontal: 'center' },
     popupHeight: 360,
   }).vertical,
   'below',
@@ -35,7 +33,6 @@ assert.strictEqual(
     workArea,
     windowRect: { x: 900, y: 280, width: 320, height: 340 },
     petRect: { x: 100, y: 0, width: 120, height: 140 },
-    current: { vertical: 'below', horizontal: 'center' },
   }).vertical,
   'above',
   'leaving the top zone must restore bubbles and status above the pet',
@@ -46,7 +43,6 @@ assert.strictEqual(
     workArea,
     windowRect: { x: 900, y: 190, width: 320, height: 340 },
     petRect: { x: 100, y: 0, width: 120, height: 140 },
-    current: { vertical: 'below', horizontal: 'center' },
     threshold: 216,
   }).vertical,
   'below',
@@ -58,14 +54,36 @@ assert.deepStrictEqual(
     workArea,
     windowRect: { x: 460, y: 24, width: 520, height: 760 },
     petRect: { x: 200, y: 480, width: 120, height: 120 },
-    current: { vertical: 'above', horizontal: 'center' },
     threshold: 218,
     inferVerticalFrameClamp: false,
-    inferHorizontalFrameClamp: false,
   }),
   { vertical: 'above', horizontal: 'center' },
   'a tall popup clamped to the screen top must not masquerade as a pet edge drag',
 );
+
+// ── 横向恒居中 ────────────────────────────────────────────────────────────────
+// 2026-09-16 的用户报告：「喵的底部展示栏，如果在靠近边缘的时候，会自动靠边，
+// 而不是局中放在喵的下面。」成因是横向和竖直共用同一个 threshold，而调用方传的
+// 是竖直方向的实测值（216/218px）—— 于是「离屏幕左/右缘 200 多像素」就算贴边，
+// 1440 宽的屏幕上猫几乎永远处于贴边态，胶囊被甩到猫的侧面。
+// 结论是横向压根不该贴边（窗口本身也没有吸附），下面三条钉住这一点：贴死左缘、
+// 贴死右缘、以及顺手把竖直 threshold 调到极大，都必须还是 center。
+for (const [name, windowRect, petRect] of [
+  ['贴死左缘', { x: 0, y: 400, width: 320, height: 340 }, { x: 0, y: 200, width: 120, height: 140 }],
+  ['贴死右缘', { x: 1120, y: 400, width: 320, height: 340 }, { x: 200, y: 200, width: 120, height: 140 }],
+  ['右下角', { x: 1120, y: 560, width: 320, height: 340 }, { x: 200, y: 200, width: 120, height: 140 }],
+]) {
+  assert.strictEqual(
+    geometry.chooseRestingLayout({ workArea, windowRect, petRect, threshold: 218 }).horizontal,
+    'center',
+    `${name}时胶囊仍要居中在猫正下方，横向不存在贴边态`,
+  );
+  assert.strictEqual(
+    geometry.choosePopupLayout({ workArea, windowRect, petRect, popupHeight: 360 }).horizontal,
+    'center',
+    `${name}时弹出卡片也只有竖直方向会翻面`,
+  );
+}
 
 assert.strictEqual(
   geometry.chooseDragVerticalLayout({

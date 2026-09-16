@@ -18,14 +18,20 @@
     return { x, y, width, height, right: x + width, bottom: y + height };
   }
 
+  // threshold 只服务竖直方向，语义是「猫本体上方还够不够放气泡」。
+  // 2026-09-16 之前它同时被拿去判横向贴边，而调用方传进来的是竖直实测值
+  //（约 216px）—— 于是「距屏幕左/右 200 多像素」就算贴边，回中还要 2× = 436px，
+  // 1440 宽的屏幕上猫几乎永远处于贴边态，胶囊被甩到一侧而不在猫正下方。
+  // 现在横向不再贴边（详见下方 horizontal 的说明），量纲总算对上了。
+  // 不收 current：竖直方向每次都由当前几何重新判定（"below" 只是贴顶时的临时
+  // 让位，不能作为粘性历史状态），横向恒居中。留着这个参数只会让调用方以为
+  // 历史方向有投票权。
   function chooseRestingLayout({
     workArea,
     windowRect,
     petRect,
-    current,
     threshold = 168,
     inferVerticalFrameClamp = true,
-    inferHorizontalFrameClamp = true,
   }) {
     const wa = normalizeRect(workArea);
     const wr = normalizeRect(windowRect);
@@ -39,36 +45,30 @@
     pet.right = pet.x + pet.width;
     pet.bottom = pet.y + pet.height;
 
-    const prior = current || { vertical: 'above', horizontal: 'center' };
     // "below" is exclusively a top-edge accommodation. Do not keep it as a
     // sticky historical state after the pet has returned to the desktop: all
-    // bubbles/status chips belong above the pet everywhere else.
+    // bubbles/status chips belong above the pet everywhere else. 所以这里不读
+    // current —— 历史方向对竖直方向没有投票权，横向也已经恒定居中。
     let vertical = 'above';
-    let horizontal = ['left', 'right'].includes(prior.horizontal) ? prior.horizontal : 'center';
 
-    // The second half of each test catches the old failure mode: the transparent
+    // The second half of the test catches the old failure mode: the transparent
     // window has already been clamped to the work-area edge, while the visible
     // pet is still stranded well inside that window.
     if (pet.y - wa.y <= threshold
       || (inferVerticalFrameClamp && wr.y <= wa.y + 3 && pr.y > 18)) vertical = 'below';
 
-    if (pet.x - wa.x <= threshold
-      || (inferHorizontalFrameClamp && wr.x <= wa.x + 3 && pr.x > 18)) horizontal = 'left';
-    else if (wa.right - pet.right <= threshold
-      || (inferHorizontalFrameClamp && wr.right >= wa.right - 3 && wr.width - pr.right > 18)) horizontal = 'right';
-    else if (pet.x - wa.x > threshold * 2 && wa.right - pet.right > threshold * 2) horizontal = 'center';
-
-    return { vertical, horizontal };
+    // 横向恒居中。窗口本身没有吸附逻辑（拖到哪就停在哪），胶囊却曾经会在靠近
+    // 屏幕左/右缘时改成贴边对齐 —— 于是「窗口不吸附、里面的胶囊却吸附」自相
+    // 矛盾，而且胶囊比猫宽，贴边后看着像被甩到了猫的侧面。
+    // 也不需要靠它防裁切：fitRestingFrame 会把窗口撑到「胶囊宽 + 24」。
+    return { vertical, horizontal: 'center' };
   }
 
   function choosePopupLayout({
     workArea,
     windowRect,
     petRect,
-    current,
     popupHeight = 140,
-    inferVerticalFrameClamp = true,
-    inferHorizontalFrameClamp = true,
   }) {
     const wa = normalizeRect(workArea);
     const wr = normalizeRect(windowRect);
@@ -76,19 +76,13 @@
     const petTop = wr.y + pr.y;
     const above = Math.max(0, petTop - wa.y);
     const need = Math.max(80, Number(popupHeight) || 0);
-    const resting = chooseRestingLayout({
-      workArea: wa,
-      windowRect: wr,
-      petRect: pr,
-      current,
-      inferVerticalFrameClamp,
-      inferHorizontalFrameClamp,
-    });
 
     // 单一规则：只有桌宠本体上方放不下完整卡片时才向下翻；除此之外
     // 一律向上。不要把下方剩余空间、历史方向或当前透明窗口高度掺进来。
+    // 这里不再借道 chooseRestingLayout —— 从前调用它只为拿 horizontal，
+    // 而横向已经恒定居中，多一次调用只是多一条要读的线。
     const vertical = above < need ? 'below' : 'above';
-    return { vertical, horizontal: resting.horizontal };
+    return { vertical, horizontal: 'center' };
   }
 
   function chooseDragVerticalLayout({

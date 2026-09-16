@@ -505,7 +505,6 @@ const POPUP_W = 520;
 const POPUP_BOTTOM = 200;
 const ASK_VIEWPORT_MAX_H = 520;
 const BASE_PET_FRAME_H = 340;
-const RESTING_FRAME_MAX_W = 360;
 const RESTING_FRAME_MAX_H = 360;
 let fitPopupSeq = 0;
 let edgeLayout = { vertical: 'above', horizontal: 'center' };
@@ -539,11 +538,12 @@ function setStageEdgeLayout(next) {
   const layout = next || edgeLayout;
   edgeLayout = {
     vertical: layout.vertical === 'below' ? 'below' : 'above',
-    horizontal: ['left', 'right'].includes(layout.horizontal) ? layout.horizontal : 'center',
+    // 横向恒居中：胶囊永远在猫正下方。窗口自己没有吸附逻辑，胶囊也不该有。
+    // 这里保留字段而不是删掉，是因为 anchoredLayoutPayload 要把 xAlign 发给主
+    // 进程做反解，主进程那侧的 'left'/'right' 分支仍在（防御渲染端脏值）。
+    horizontal: 'center',
   };
   stage.classList.toggle('edge-below', edgeLayout.vertical === 'below');
-  stage.classList.toggle('edge-left', edgeLayout.horizontal === 'left');
-  stage.classList.toggle('edge-right', edgeLayout.horizontal === 'right');
   if (propEl && propEl.classList.contains('on')) positionProp();
 }
 
@@ -555,26 +555,20 @@ function anchoredLayoutPayload(next) {
   if (!before) { setStageEdgeLayout(next); return null; }
   const oldPet = before.petRect;
   const wa = before.workArea;
-  const waRight = wa.x + wa.width;
   const waBottom = wa.y + wa.height;
   const wr = before.windowRect;
-  const compactHorizontalFrame = wr.width <= RESTING_FRAME_MAX_W;
   const compactVerticalFrame = wr.height <= RESTING_FRAME_MAX_H;
-  let screenX = wr.x + oldPet.x;
+  const screenX = wr.x + oldPet.x;
   let screenY = wr.y + oldPet.y;
 
   // A frame at the work-area edge plus a large transparent inset means the OS
   // stopped the BrowserWindow before the user's visible pet reached the edge.
   // Treat that as an explicit edge drag and snap the *pet body*, not the frame.
+  // 只做竖直方向：横向已经恒定居中，猫本体不再需要「贴齐左/右缘」。
   if (compactVerticalFrame && next.vertical === 'below' && wr.y <= wa.y + 3 && oldPet.y > 18) screenY = wa.y;
   if (compactVerticalFrame && next.vertical === 'above'
     && wr.y + wr.height >= waBottom - 3 && wr.height - oldPet.y - oldPet.height > 18) {
     screenY = waBottom - oldPet.height;
-  }
-  if (compactHorizontalFrame && next.horizontal === 'left' && wr.x <= wa.x + 3 && oldPet.x > 18) screenX = wa.x;
-  if (compactHorizontalFrame && next.horizontal === 'right'
-    && wr.x + wr.width >= waRight - 3 && wr.width - oldPet.x - oldPet.width > 18) {
-    screenX = waRight - oldPet.width;
   }
   setStageEdgeLayout(next);
   const rect = curSkinEl().getBoundingClientRect();
@@ -582,11 +576,7 @@ function anchoredLayoutPayload(next) {
   const viewportH = Math.max(1, window.innerHeight || 340);
   const xAlign = edgeLayout.horizontal;
   const yAlign = edgeLayout.vertical === 'below' ? 'top' : 'bottom';
-  const xOffset = xAlign === 'left'
-    ? rect.left
-    : xAlign === 'right'
-      ? viewportW - rect.right
-      : rect.left + rect.width / 2 - viewportW / 2;
+  const xOffset = rect.left + rect.width / 2 - viewportW / 2;
   const yOffset = yAlign === 'top' ? rect.top : viewportH - rect.bottom;
   return {
     screenX, screenY,
@@ -614,10 +604,8 @@ function restingEdgeLayout() {
   }
   return window.PetGeometry.chooseRestingLayout({
     ...snapshot,
-    current: edgeLayout,
     threshold: Math.max(24, topThreshold),
     inferVerticalFrameClamp: snapshot.windowRect.height <= RESTING_FRAME_MAX_H,
-    inferHorizontalFrameClamp: snapshot.windowRect.width <= RESTING_FRAME_MAX_W,
   });
 }
 
@@ -626,10 +614,7 @@ function popupEdgeLayout(height, popupHeight) {
   if (!snapshot || !window.PetGeometry) return edgeLayout;
   return window.PetGeometry.choosePopupLayout({
     ...snapshot,
-    current: edgeLayout,
     popupHeight: Math.max(80, Number(popupHeight) || (Number(height) || 340) - POPUP_BOTTOM),
-    inferVerticalFrameClamp: snapshot.windowRect.height <= RESTING_FRAME_MAX_H,
-    inferHorizontalFrameClamp: snapshot.windowRect.width <= RESTING_FRAME_MAX_W,
   });
 }
 
@@ -1630,8 +1615,9 @@ function positionProp() {
   const petLeft = petRect.left - stageRect.left;
   const petTop = petRect.top - stageRect.top;
   const petRight = petLeft + petRect.width;
-  const preferRight = edgeLayout.horizontal === 'left'
-    || (edgeLayout.horizontal === 'center' && petLeft + petRect.width / 2 < viewportW / 2);
+  // 猫在窗口左半边 → 道具放右侧，反之放左侧。从前这里还有一条
+  // `edgeLayout.horizontal === 'left'` 的前置分支，横向恒定居中后它永不成立。
+  const preferRight = petLeft + petRect.width / 2 < viewportW / 2;
   // In compact mode the row is [session dots][capsule]. The tool prop must
   // sit before that whole cluster, not between the dots and the capsule.
   // Read the live dots rect each time so a changing parallel-session count
@@ -3068,9 +3054,9 @@ function buildRadial(metrics = lastRadialMetrics) {
     width: Math.max(46, Math.min(viewportW - pad, wa.x + wa.width - winX - pad) - Math.max(pad, wa.x - winX + pad)),
     height: Math.max(46, Math.min(viewportH - pad, wa.y + wa.height - winY - pad) - Math.max(pad, wa.y - winY + pad)),
   };
+  // 只给竖直偏好。横向恒定居中后没有「贴左就往右展开」这回事了，
+  // cornerMenuLayout 自己按 roomLeft/roomRight 打分选象限，本来就有兜底。
   const preferred = [];
-  if (edgeLayout.horizontal === 'left') preferred.push('right');
-  else if (edgeLayout.horizontal === 'right') preferred.push('left');
   if (edgeLayout.vertical === 'below') preferred.push('below');
   else preferred.push('above');
   preferred.push(edgeLayout.vertical === 'below' ? 'above' : 'below');
