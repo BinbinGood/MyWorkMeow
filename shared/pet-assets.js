@@ -39,7 +39,7 @@
     if (!slot.id.startsWith('ambient-') && slot.id !== 'xiaban') out[slot.id] = slot.id;
     for (const alias of slot.aliases) out[alias] = slot.id;
     return out;
-  }, { sleeping: 'ambient-sleep' }));
+  }, { sleeping: 'ambient-sleep', done: 'happy' }));
 
   function slotForState(state) { return STATE_TO_SLOT[state] || 'idle'; }
   function builtinAsset(file) {

@@ -2672,6 +2672,11 @@ function applyStats(s) {
     // idleMs=null 表示已无任何活跃会话——什么都没发生就该睡觉；
     // 之前 null 落到 idle，桌宠永不入睡，睡着后会话被回收还会凭空惊醒。
     setState('sleeping');
+  } else if (s.doneCount > 0) {
+    // 完成常驻：有会话刚完成（badge=done）且还没到入睡阈值 → 保持「完成庆祝」
+    // 表情，直到下一条指令清除完成标志、或 6 分钟入睡。之前「完成」是 1.8s
+    // 短暂态，闪一下就被 talking/idle 盖掉，常用状态反而几乎看不到。
+    setState('done');
   } else {
     setState('idle');
   }

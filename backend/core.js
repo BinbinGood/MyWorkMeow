@@ -61,7 +61,11 @@ const DETACHED_REMOVE_MS = 30 * 1000;     // terminal pid dead → remove after 
 const SESSION_STALE_MS = 30 * 60 * 1000;  // no live terminal + this idle → remove; ended (sleeping) → remove
 const BACKFILL_MAX_AGE_MS = SESSION_STALE_MS; // on boot, seed sessions whose transcript changed within this
 const BACKFILL_MAX = 15;                  // cap seeded sessions
-const RESULT_BADGE_TTL_MS = 2 * 60 * 1000;
+const RESULT_BADGE_TTL_MS = 2 * 60 * 1000; // interrupted badge（中断）窗口
+// 「完成」是常用态，不该只闪一下就回待命：完成徽标 / requiresCompletionAck 的
+// 存活窗口拉长到与渲染层入睡阈值（IDLE_SLEEP_MS = 6 分钟）对齐，让桌宠的
+// 「完成庆祝」表情常驻到入睡、或被下一条指令打断为止（见 pet.js 的 done 聚合态）。
+const DONE_BADGE_TTL_MS = 6 * 60 * 1000;
 
 function positiveCount(value) {
   const count = Number(value);
@@ -118,7 +122,7 @@ function deriveBadge(s) {
   // 击穿 Stop 完成门：被抑制的 Stop（后台任务在跑 / stop-hook 续跑）也显示 done，
   // 且 ackCompletion 清了标志徽标仍在。
   if (s.requiresCompletionAck === true
-    && Date.now() - Number(s.completionAt || 0) <= RESULT_BADGE_TTL_MS) return 'done';
+    && Date.now() - Number(s.completionAt || 0) <= DONE_BADGE_TTL_MS) return 'done';
   return 'idle';
 }
 
@@ -564,7 +568,7 @@ function createCore(options = {}) {
         s.stateTtlMs = 0;
         changed = true;
       }
-      if (s.requiresCompletionAck && now - Number(s.completionAt || 0) > RESULT_BADGE_TTL_MS) {
+      if (s.requiresCompletionAck && now - Number(s.completionAt || 0) > DONE_BADGE_TTL_MS) {
         s.requiresCompletionAck = false;
         s.completionAt = 0;
         changed = true;

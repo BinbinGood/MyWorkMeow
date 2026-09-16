@@ -61,7 +61,7 @@
 
   // Renderer-only synthesized states + emotion tints (no backend priority entry).
   const RENDER_EXTRA = [
-    'loafing', 'happy', 'waiting', 'needsinput', 'greet', 'talking',
+    'loafing', 'happy', 'waiting', 'needsinput', 'greet', 'talking', 'done',
     'loved', 'sad', 'sorry', 'excited', 'puzzled',
   ];
 

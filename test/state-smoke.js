@@ -26,7 +26,7 @@ function baseStats(over = {}) {
   return {
     today: { cost: 0 }, sessions: [], bg: { zombie: 0 },
     waitingCount: 0, needsinputCount: 0, workingCount: 0, jugglingCount: 0,
-    sweepingCount: 0, thinkingCount: 0, loafingCount: 0, errorCount: 0, idleMs: 1000,
+    sweepingCount: 0, thinkingCount: 0, loafingCount: 0, errorCount: 0, doneCount: 0, idleMs: 1000,
     ...over,
   };
 }
@@ -163,6 +163,20 @@ async function main() {
     check('无活跃会话(idleMs=null) → sleeping 不惊醒', () => assert(cat.classList.contains('sleeping')));
     w.handlers.stats(baseStats({ idleMs: 1000 }));
     check('有近期活动 → idle', () => assert(cat.classList.contains('idle')));
+  }
+
+  console.log('[R6c] 完成常驻：done 在入睡之后、待命之前');
+  {
+    const w = world();
+    const cat = w.elements('cat');
+    w.handlers.stats(baseStats({ doneCount: 1, idleMs: 1000 }));
+    check('有完成会话且未入睡 → done（完成庆祝常驻，不再闪一下就回待命）', () =>
+      assert(cat.classList.contains('done')));
+    check('done 复用 happy 素材', () => assert(catSrc(w).endsWith('cat-happy.gif')));
+    w.handlers.stats(baseStats({ doneCount: 1, workingCount: 1, idleMs: 1000 }));
+    check('有新活干时 working 优先于 done', () => assert(cat.classList.contains('working')));
+    w.handlers.stats(baseStats({ doneCount: 1, idleMs: 7 * 60 * 1000 }));
+    check('完成很久后（超入睡阈值）→ 入睡优先于 done', () => assert(cat.classList.contains('sleeping')));
   }
 
   console.log('[R6b] 闲时作息：无任务时画面轮换，但语义仍是 sleeping');

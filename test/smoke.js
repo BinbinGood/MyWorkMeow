@@ -587,8 +587,8 @@ async function main() {
     assert.notStrictEqual(core.buildSnapshot().active.sessionId, 'new-idle'));
 
   const oldDone = core.updateSession('old-done', 'attention', 'Stop', { cwd: '/old-done' });
-  oldDone.completionAt = Date.now() - 3 * 60 * 1000;
-  oldDone.updatedAt = Date.now() - 3 * 60 * 1000;
+  oldDone.completionAt = Date.now() - 7 * 60 * 1000; // 越过 DONE_BADGE_TTL_MS（6 分钟）
+  oldDone.updatedAt = Date.now() - 7 * 60 * 1000;
   core.cleanStaleSessions();
   check('completion badge expires instead of persisting for the terminal lifetime', () => {
     const entry = core.buildSnapshot().sessions.find((s) => s.id === 'old-done');
@@ -829,6 +829,10 @@ async function main() {
   await post('/state', { state: 'attention', event: 'Stop', session_id: cmpSid, stop_hook_active: false });
   check('回合结束后徽标是「刚完成」', () => {
     assert.strictEqual(deriveBadge(core.getSession(cmpSid)), 'done');
+  });
+  check('完成会话计入 doneCount（驱动桌宠完成常驻）', () => {
+    const st = adapter.buildPetStats(core.buildSnapshot(), [], null);
+    assert(st.doneCount >= 1, '刚完成的会话应让 doneCount 至少为 1');
   });
 
   await post('/state', preBody);

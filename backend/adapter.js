@@ -374,6 +374,8 @@ function buildPetStats(snapshot, pendingPermissions, metering, opts) {
   const thinkingCount = counted.filter((s) => s.state === 'thinking').length;
   const loafingCount = counted.filter((s) => s.state === 'loafing').length;
   const errorCount = counted.filter((s) => s.state === 'error').length;
+  // 「完成」聚合态：badge=done 的可见会话数（会话 settle 到 idle、但完成标志还在）。
+  const doneCount = counted.filter((s) => s.badge === 'done').length;
 
   // Context usage of the active session (supplements the now-pricing-less chips).
   let context = null;
@@ -448,6 +450,7 @@ function buildPetStats(snapshot, pendingPermissions, metering, opts) {
     thinkingCount,
     loafingCount,
     errorCount,
+    doneCount,
     hourly: m.hourly || new Array(24).fill(0),
     hourlyTok: m.hourlyTok || new Array(24).fill(0),
     daily: m.daily || {},
