@@ -37,7 +37,9 @@ assert(/PET_ASSETS: 'pet-assets:changed'/.test(preload), 'live asset changes mus
 // Agent 拆开：**检测到几个就渲染几个开关**，位置和名字都固定。
 assert(html.includes('id="quota-agent-list"'), 'settings must host a per-agent quota list');
 assert(html.includes('data-i18n="settings.quotaAgentsKicker"'), 'the per-agent list needs its section kicker');
-assert(!html.includes('showQuota-toggle'), 'the single dynamic quota slot toggle is gone');
+// 注意锚在 id=" 上，不能用裸子串：菜单栏那组开关叫 menuBar-showQuota-toggle，
+// 裸子串会把它误判成复活的旧槽位。
+assert(!html.includes('id="showQuota-toggle"'), 'the single dynamic quota slot toggle is gone');
 assert(!/quota-slot-title|quota-slot-description/.test(html), 'the renamed slot title/description placeholders are gone');
 assert(/quotaAgentList\s*=\s*\$\('quota-agent-list'\)/.test(js), 'the renderer must drive the list container');
 assert(/window\.pet\.getQuotaAgents\(\)/.test(js), 'the list is populated from the main process agent roster');
@@ -49,6 +51,28 @@ assert(!/creditQuotaSection\.hidden/.test(js),
 for (const key of ['settings.quotaAgentsKicker', 'settings.quotaAgentCodexDescription',
   'settings.quotaAgentCreditDescription', 'settings.quotaAgentNoneDescription',
   'settings.quotaAgentToggle', 'settings.quotaAgentsLoading']) {
+  assert(require('../shared/i18n').t(key) !== key, `i18n has ${key}`);
+}
+
+// ── 屏幕顶部菜单栏（macOS）────────────────────────────────────────────────────
+// 2026-09-16 新增。三条容易回归的性质：
+//   1. 四个开关必须都在，且 id 前缀 menuBar- 不能和底部展示栏那四个撞
+//   2. 走现成的 SET_CHIP_DISPLAY 通道（新开 channel 要改 preload.js 手抄副本）
+//   3. 非 macOS 必须把整段移除 —— Electron 在 Windows/Linux 上 setTitle 是
+//      no-op，留着四个点了没反应的开关比没有更糟
+assert(html.includes('id="menu-bar-section"'), 'settings must host the menu-bar section');
+for (const key of ['showStatus', 'showQuota', 'showTokens', 'showCost']) {
+  assert(html.includes(`id="menuBar-${key}-toggle"`), `the menu bar needs a ${key} toggle`);
+}
+assert(/setChipDisplay\(\{ menuBar:/.test(js), 'the menu bar rides the existing chip-display channel');
+assert(/menuBar:\s*\{\s*\[key\]/.test(js), 'toggling must patch one key, never rewrite the whole object');
+assert(/section\.remove\(\)/.test(js), 'non-macOS must drop the whole section, not show dead toggles');
+assert(/patch\.menuBar = merged/.test(main), 'the main process must merge menu-bar keys instead of overwriting');
+assert(/refreshTrayTitle\(\)/.test(main), 'saving must refresh the menu bar right away');
+assert(/title === lastTrayTitle/.test(main),
+  'setTitle must short-circuit on unchanged text — emitStats runs every 4s');
+for (const key of ['settings.menuBarSection', 'settings.menuBarShowStatus', 'settings.menuBarShowQuota',
+  'settings.menuBarShowTokens', 'settings.menuBarShowCost', 'settings.menuBarHint', 'settings.menuBarSaved']) {
   assert(require('../shared/i18n').t(key) !== key, `i18n has ${key}`);
 }
 

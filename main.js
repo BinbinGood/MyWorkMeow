@@ -779,6 +779,9 @@ function emitStats() {
   lastStats = buildStats('all', snapshot, cachedMeter);
   for (const st of petStates()) sendWin(st.win, IPC.PET_STATS, lastStats);
   sendPanel(IPC.PANEL_STATS, lastStats);
+  // 菜单栏挂在这条**快**通道上，不挂 refreshTrayMenu 的 20s 节奏：那个慢是因为
+  // 重建原生菜单贵，而 setTitle 只是一个字符串，且它自己有「文本没变就 return」。
+  refreshTrayTitle();
 }
 
 function scheduleEmit() {
@@ -1084,8 +1087,21 @@ function registerIpc() {
       }
       if (touched) patch.quotaAgents = merged;
     }
+    // 菜单栏开关同样 merge 不覆盖：设置页一次只点一个按钮，整表覆盖会把另外
+    // 三个写回默认值。
+    if (value && value.menuBar && typeof value.menuBar === 'object' && !Array.isArray(value.menuBar)) {
+      const merged = { ...(config.get().menuBar || {}) };
+      let touched = false;
+      for (const key of ['showStatus', 'showQuota', 'showTokens', 'showCost']) {
+        if (typeof value.menuBar[key] !== 'boolean') continue;
+        merged[key] = value.menuBar[key];
+        touched = true;
+      }
+      if (touched) patch.menuBar = merged;
+    }
     config.save(patch);
     refreshTrayMenu();
+    refreshTrayTitle();
     emitStats();
     return { ok: true, ...getChipDisplay() };
   });
@@ -1270,7 +1286,8 @@ function reconcilePets() {
 function buildTray() {
   let img;
   try {
-    // 托盘始终使用月薪喵头像；额度只在右键菜单里展示。
+    // 托盘图标始终是月薪喵头像。图标右边的**文字**（macOS 菜单栏）由
+    // refreshTrayTitle() 按设置页的开关渲染；额度细节仍只在右键菜单里。
     img = nativeImage.createFromPath(path.join(__dirname, 'assets', 'salary-cat-tray.png'));
     if (img && !img.isEmpty()) {
       img = img.resize({ width: 32, height: 32 });
@@ -1279,6 +1296,10 @@ function buildTray() {
   tray = new Tray(img || nativeImage.createEmpty());
   tray.setToolTip(t('tray.tooltip'));
   refreshTrayMenu();
+  // 首帧：此时 lastStats 通常还是 null，buildTrayTitle 会给出空闲态那个字符。
+  // 不这么做的话菜单栏在第一次 emitStats（最多 4s 后）之前是空的，
+  // 看着像「开关打开了但没生效」。
+  refreshTrayTitle();
   tray.on('click', () => { showPet(); });
 }
 
@@ -1470,8 +1491,15 @@ function setPrivacyMode(enabled) {
 }
 
 function getChipDisplay() {
-  const { showCat, showStatus, showTokens, showCost, quotaAgents } = config.get();
-  return { showCat, showStatus, showTokens, showCost, quotaAgents: { ...quotaAgents } };
+  const { showCat, showStatus, showTokens, showCost, quotaAgents, menuBar } = config.get();
+  // menuBar 一起走这个通道：设置页那两组开关（底部栏 / 菜单栏）是同一次读取、
+  // 同一次写入，不为了四个布尔再开一对 IPC channel（preload.js 是 ipc-channels.js
+  // 的手抄副本，新开一条要改三处并过 test/ipc-contract.js）。
+  return {
+    showCat, showStatus, showTokens, showCost,
+    quotaAgents: { ...quotaAgents },
+    menuBar: { ...menuBar },
+  };
 }
 
   // 手填「每期积分总量」并落盘。monthly 传成非正数/空 = 清掉这一项 —— 清掉之后
@@ -1629,6 +1657,50 @@ function refreshTrayMenu() {
     { label: t('tray.quit'), click: () => app.quit() },
   ];
   tray.setContextMenu(Menu.buildFromTemplate(items));
+}
+
+// ── macOS 屏幕顶部菜单栏 ───────────────────────────────────────────────────────
+//
+// 「休息中」的门槛。和 renderer/pet.js:1466 的 IDLE_SLEEP_MS 是同一个数 ——
+// 菜单栏和猫必须同时进入休息态，否则用户会看到「猫睡了但菜单栏说待命」。
+// 没抽成共享常量：pet.js 那个是渲染层的，主进程 require 不到，抽一个 shared
+// 常量文件只为一个数字不值当，这里用注释锁住关系。
+const TRAY_TITLE_SLEEP_MS = 6 * 60 * 1000;
+
+// 上一次真正写进菜单栏的文本。用来短路：emitStats 每 4s 跑一次，文本大多数时候
+// 没变，白调一次原生 API 没有收益（setTitle 会触发菜单栏重排）。
+let lastTrayTitle = null;
+
+function refreshTrayTitle() {
+  // 只有 macOS 有「屏幕顶部菜单栏」这个位置。Windows/Linux 的托盘不支持 setTitle
+  // （Electron 在这些平台上直接是 no-op），提前退出省掉整段计算。
+  if (process.platform !== 'darwin' || !tray) return;
+  const s = lastStats && typeof lastStats === 'object' ? lastStats : {};
+  const n = (value) => {
+    const v = Number(value);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  };
+  const title = trayStatus.buildTrayTitle({
+    agents: trayAgents(),
+    display: config.get().menuBar,
+    status: {
+      waiting: n(s.waitingCount),
+      needsinput: n(s.needsinputCount),
+      error: n(s.errorCount),
+      // 「在干活」= 五个忙态求和，和胶囊的 activeCount 同口径
+      //（shared/pet-insights.js:67）。
+      active: n(s.workingCount) + n(s.jugglingCount) + n(s.sweepingCount)
+        + n(s.thinkingCount) + n(s.loafingCount),
+      sleeping: s.idleMs == null || Number(s.idleMs) > TRAY_TITLE_SLEEP_MS,
+    },
+    // 只取聚合数字。项目名/会话名一律不进来 —— 菜单栏是**全局可见**的，
+    // 而 privacy.protectStats() 恰好脱敏 active.project 而不脱敏这些数字。
+    totals: { tokens: n(s.today && s.today.tokens), cost: n(s.today && s.today.cost) },
+    t,
+  });
+  if (title === lastTrayTitle) return;
+  lastTrayTitle = title;
+  try { tray.setTitle(title); } catch {}
 }
 
 // ── lifecycle ─────────────────────────────────────────────────────────────────

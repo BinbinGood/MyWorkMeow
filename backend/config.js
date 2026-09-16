@@ -34,12 +34,20 @@ const DEFAULTS = Object.freeze({
   //   { workbuddy: true, codex: false }
   // 缺省（没写）= 打开。只有显式 false 才是关掉。
   quotaAgents: {},
+  // macOS 屏幕顶部菜单栏（Tray.setTitle）显示哪些片段。形状故意和底部展示栏
+  // 一一对应（用户原话「仿照喵底部栏」），不新造概念。
+  // 只有 showStatus 默认开：菜单栏预算 16 列，默认全开会立刻超宽被裁尾。
+  // 「显示哪个 Agent 的额度」不在这里 —— 复用上面的 quotaAgents，一处开关两处生效。
+  menuBar: { showStatus: true, showQuota: false, showTokens: false, showCost: false },
   xiabanTimes: DEFAULT_XIABAN_TIMES,
   // 按数据源手填的「每期积分总量」，用于反推剩余额度：
   //   { workbuddy: { monthly: 3600, resetDay: 1 } }
   // null 表示一个都没填 —— 此时托盘不显示「剩余」那一段（不是显示 0）。
   creditQuota: null,
 });
+
+const MENU_BAR_KEYS = Object.freeze(['showStatus', 'showQuota', 'showTokens', 'showCost']);
+const DEFAULT_MENU_BAR = DEFAULTS.menuBar;
 
 let cache = null;
 
@@ -48,9 +56,14 @@ function isClockTime(value) {
 }
 
 function sanitize(raw) {
-  // quotaAgents 是**可变**的映射，必须每次新建 —— DEFAULTS 顶层 Object.freeze
-  // 冻不住里面的对象，直接展开会把用户的开关写回默认值，跨实例串味。
-  const out = { ...DEFAULTS, xiabanTimes: { ...DEFAULT_XIABAN_TIMES }, quotaAgents: {} };
+  // quotaAgents / menuBar 都是**可变**的对象，必须每次新建 —— DEFAULTS 顶层
+  // Object.freeze 冻不住里面的对象，直接展开会把用户的开关写回默认值，跨实例串味。
+  const out = {
+    ...DEFAULTS,
+    xiabanTimes: { ...DEFAULT_XIABAN_TIMES },
+    quotaAgents: {},
+    menuBar: { ...DEFAULT_MENU_BAR },
+  };
   if (!raw || typeof raw !== 'object') return out;
   if (raw.petPosition && Number.isFinite(raw.petPosition.x) && Number.isFinite(raw.petPosition.y)) {
     out.petPosition = { x: Math.round(raw.petPosition.x), y: Math.round(raw.petPosition.y) };
@@ -75,6 +88,11 @@ function sanitize(raw) {
       out.quotaAgents[id] = enabled;
     }
   }
+  if (raw.menuBar && typeof raw.menuBar === 'object' && !Array.isArray(raw.menuBar)) {
+    for (const key of MENU_BAR_KEYS) {
+      if (typeof raw.menuBar[key] === 'boolean') out.menuBar[key] = raw.menuBar[key];
+    }
+  }
   if (raw.creditQuota && typeof raw.creditQuota === 'object' && !Array.isArray(raw.creditQuota)) {
     const quota = {};
     for (const [id, row] of Object.entries(raw.creditQuota)) {
@@ -96,12 +114,15 @@ function sanitize(raw) {
   return out;
 }
 
+// 读不到/坏了 → 走 sanitize({}) 而不是 `{ ...DEFAULTS }`：后者的 quotaAgents /
+// menuBar / xiabanTimes 是**和 DEFAULTS 共享的同一个对象**（顶层 freeze 冻不住
+// 内嵌对象），谁往里写一下就污染了全进程的默认值。
 function readDisk() {
   try {
     const value = sanitize(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')));
     try { fs.chmodSync(CONFIG_PATH, 0o600); } catch {}
     return value;
-  } catch { return { ...DEFAULTS }; }
+  } catch { return sanitize({}); }
 }
 
 function load() {

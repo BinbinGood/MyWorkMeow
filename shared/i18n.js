@@ -46,6 +46,18 @@
     'tray.rowCost': '费用 {cost}',
     'tray.rowNoData': '暂无数据',
     'tray.noSources': '尚未接入任何 AI 工具',
+    // macOS 屏幕顶部菜单栏（Tray.setTitle）的片段。预算只有 16 列，是右键菜单的
+    // 一半，所以这里全部用「图标 + 数字」，不写名词 —— 「✋3」比「等你 3 件」
+    // 省 4 列，而图标本身已经把语义说清楚了（和胶囊用的是同一套图标）。
+    // 千万别在这些文案里加项目名之类会被 privacy 脱敏的内容：菜单栏全局可见。
+    'tray.titleWaiting': '✋{count}',
+    'tray.titleNeedsinput': '💬{count}',
+    'tray.titleError': '😵{count}',
+    'tray.titleActive': '⚙️{count}',
+    'tray.titleIdle': '🌿',
+    'tray.titleSleeping': '💤',
+    'tray.titleQuotaWindow': '{label}{percent}%',
+    'tray.titleCredit': '{left}分',
     'tray.settings': '设置',
     'tray.quit': '退出',
 
@@ -110,6 +122,21 @@
     'settings.quotaAgentNoneDescription': '已接入，但这个 Agent 不提供额度数据；托盘仍会为它保留一行',
     'settings.quotaAgentToggle': '在底部展示栏显示 {name} 的额度',
     'settings.quotaAgentsLoading': '正在检查接入的 Agent…',
+
+    // 屏幕顶部菜单栏（macOS 的 Tray.setTitle）。文案刻意和上面 chip* 一组保持
+    // 平行，用户原话是「仿照喵底部栏」；差别只在描述里说清「宽度有限」这件事。
+    // 这一组只在 macOS 显示（settings.js 里按平台隐藏整个 section）。
+    'settings.menuBarSection': '屏幕顶部菜单栏',
+    'settings.menuBarShowStatus': '任务状态',
+    'settings.menuBarShowStatusDescription': '用图标加数字表示，例如「✋3」表示 3 件等你处理',
+    'settings.menuBarShowQuota': '订阅额度',
+    'settings.menuBarShowQuotaDescription': '只显示一个：上面「订阅额度」里第一个开着且有数据的 Agent',
+    'settings.menuBarShowTokens': '今日 Tokens',
+    'settings.menuBarShowTokensDescription': '全部工具今日累计，例如「1.2M」',
+    'settings.menuBarShowCost': '今日 API 等价费用',
+    'settings.menuBarShowCostDescription': '按 API 价格估算，不代表订阅实际扣费',
+    'settings.menuBarHint': '菜单栏位置有限，放不下的会从后往前省掉；细节请看托盘右键菜单。',
+    'settings.menuBarSaved': '已保存，顶部菜单栏已更新',
 
     // 积分额度（手填）。WorkBuddy 的余额只在服务端、本机无副本，所以由用户填每期
     // 总量、本机用已用反推剩余。见 backend/credit-cycle.js。

@@ -29,6 +29,49 @@ async function initializeChipDisplay() {
 }
 initializeChipDisplay();
 
+// ── 屏幕顶部菜单栏（只有 macOS 有这个位置）────────────────────────────────────
+// 和上面 initializeChipDisplay 同一个套路（读取 → 渲染 → 点一下写回 → 用返回值
+// 重渲染），差别有两处：
+//   1. 非 macOS 直接把整个 section 移除。Electron 在 Windows/Linux 上 setTitle
+//      是 no-op，留着四个点了没反应的开关比没有更糟。
+//   2. 写回时包一层 { menuBar: {...} } —— 走的是同一条 SET_CHIP_DISPLAY 通道，
+//      主进程按 key merge，不会碰底部展示栏那四个。
+async function initializeMenuBar() {
+  const section = $('menu-bar-section');
+  if (!section) return;
+  if (!/mac/i.test((window.navigator && window.navigator.platform) || '')) {
+    section.remove();
+    return;
+  }
+  const keys = ['showStatus', 'showQuota', 'showTokens', 'showCost'];
+  const status = $('menu-bar-status');
+  const button = (key) => $(`menuBar-${key}-toggle`);
+  const render = (value) => {
+    const menuBar = (value && value.menuBar) || {};
+    keys.forEach((key) => button(key).setAttribute('aria-checked', String(menuBar[key] === true)));
+  };
+  keys.forEach((key) => { button(key).disabled = true; });
+  try {
+    render(await window.pet.getChipDisplay());
+    keys.forEach((key) => {
+      const el = button(key);
+      el.disabled = false;
+      el.addEventListener('click', async () => {
+        el.disabled = true;
+        try {
+          const next = el.getAttribute('aria-checked') !== 'true';
+          const result = await window.pet.setChipDisplay({ menuBar: { [key]: next } });
+          if (!result || !result.ok) throw new Error('save failed');
+          render(result);
+          status.textContent = t('settings.menuBarSaved');
+        } catch { status.textContent = '保存失败，请重试'; }
+        finally { el.disabled = false; }
+      });
+    });
+  } catch { status.textContent = '展示设置加载失败，请重新打开设置'; }
+}
+initializeMenuBar();
+
 // ── 每个 Agent 一个额度开关 ─────────────────────────────────────────────────
 // 以前是一个会动态改名的「额度槽位」（接 Codex 就叫 Codex、否则叫 WorkBuddy），
 // 于是出现「设置页写 Codex、托盘写 WorkBuddy」的自相矛盾。2026-09-15 改成
