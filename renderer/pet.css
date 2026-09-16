@@ -919,7 +919,22 @@ html, body {
   display: flex;
   cursor: grab; touch-action: none;
   flex-direction: column; align-items: center;
-  filter: drop-shadow(0 6px 9px rgba(120, 90, 60, 0.28));
+  /* 滤镜链的**层数恒定为 2**：第一层是「需要你出手」的发光，静息态给它
+     0 0 0 transparent（零模糊 + 全透明 = 不画、不外扩），只有下面那四个
+     状态才真上色。
+     为什么不是 2026-09-16 之前的「静息一层、醒目两层」：切进/切出这四个状态时
+     滤镜链的**结构**变了，Chromium 要重建整个 #cat 子树的滤镜缓冲，而这与同一次
+     setState() 里的 catImg.src 赋值撞在一帧里 —— macOS 的 WindowServer 对透明
+     窗口的重排容忍度远低于 Windows，表现出来就是猫周围一圈拖影。层数固定后
+     只剩参数变化，不再重建。
+     也没改成兄弟层 + box-shadow：drop-shadow 按 GIF 的 alpha 描边（光晕贴着猫的
+     轮廓），box-shadow 只能描 120×120 的方框，换过去是把猫形光晕降级成方块光晕。 */
+  filter: drop-shadow(0 0 0 transparent) drop-shadow(0 6px 9px rgba(120, 90, 60, 0.28));
+  /* 让 #cat 常驻自己的合成层。发光的模糊区会溢出 120×120 的盒子，不独立成层时
+     Chromium 按脏矩形补画、而 WindowServer 清的是另一块区域，两者不一致 ——
+     这正是「残影只在猫周围一圈」的形态。独立层整块重合成，没有对不上的余地。
+     代价是一张 120×120 的纹理，可以忽略。 */
+  will-change: filter;
 }
 #cat img { width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; }
 
@@ -930,7 +945,9 @@ html, body {
 }
 
 
-/* GIF 自带动效，容器不加任何位移动画；只保留「需要你出手」的发光提示 */
+/* GIF 自带动效，容器不加任何位移动画；只保留「需要你出手」的发光提示。
+   这四条只换第一层的颜色/模糊半径，层数与上面的静息态一致（都是 2 层），
+   所以切换时滤镜链只改参数、不重建。第二层的落地阴影四处完全相同。 */
 #cat.waiting,
 #cat.needsinput {
   filter: drop-shadow(0 0 10px rgba(255, 190, 80, 0.95)) drop-shadow(0 6px 9px rgba(120, 90, 60, 0.28));

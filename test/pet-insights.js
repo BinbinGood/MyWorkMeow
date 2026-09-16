@@ -119,4 +119,23 @@ assert(/function fitRestingFrame\(/.test(petJs) && /fitRestingFrame\(\);/.test(p
 assert(/function positionProp\(\)[\s\S]*sessionRect[\s\S]*sessionRect\.left/.test(petJs),
   'compact mode must position the live tool icon before the status dots');
 
+// ── #cat 的滤镜链层数必须恒定 ────────────────────────────────────────────────
+// 2026-09-16 的回归靶子。切进/切出 waiting/needsinput/error/loved 时如果滤镜链的
+// **结构**变了（静息 1 层 → 醒目 2 层），Chromium 要重建整个 #cat 子树的滤镜缓冲，
+// 而这与同一次 setState() 里的 catImg.src 赋值撞在一帧 —— macOS 上表现为猫周围
+// 一圈拖影。所以静息态也得占位一层 drop-shadow(0 0 0 transparent)，
+// 四个醒目态只改参数。
+// 这条不测「好不好看」，只测层数一致 —— 光晕颜色随便调，层数不能变。
+const catFilters = [...petCss.matchAll(/#cat(?:\.[a-z]+)?(?:,\s*\n#cat\.[a-z]+)?\s*\{[^}]*?filter:\s*([^;]+);/g)]
+  .map((m) => m[1].match(/drop-shadow/g).length);
+assert(catFilters.length >= 4,
+  `every #cat state rule must declare a filter (found ${catFilters.length})`);
+assert(new Set(catFilters).size === 1,
+  `#cat's filter must keep a constant number of drop-shadow layers across states (got ${catFilters.join('/')})`);
+assert(catFilters[0] === 2, `the chain is two layers: glow + ground shadow (got ${catFilters[0]})`);
+// 透明窗口的全透明底色。缺省是不透明白，macOS 合成器靠它判断该清哪块。
+assert(/transparent:\s*true,[\s\S]{0,400}?backgroundColor:\s*'#00000000'/.test(
+  fs.readFileSync(path.join(root, 'main.js'), 'utf8')),
+'the transparent pet window must declare a fully transparent backgroundColor');
+
 console.log('pet insight checks passed');

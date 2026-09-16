@@ -263,6 +263,10 @@ function makePetWindow(agent) {
     x, y,
     frame: false,
     transparent: true,
+    // 透明窗口也要显式给一个全透明底色。缺省时 Electron 用不透明白，macOS 上
+    // 合成器要靠它判断「这块该不该清」；面板窗口（:322）和设置窗口（:371）
+    // 都设了各自的背景色，只有桌宠没设。八位十六进制的末两位是 alpha。
+    backgroundColor: '#00000000',
     hasShadow: false,
     resizable: false,
     alwaysOnTop: true,
