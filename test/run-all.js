@@ -45,6 +45,7 @@ const TESTS = Object.freeze([
   'codex-integration.js',
   'i18n.js',
   'pet-geometry.js',
+  'pet-edge-cycle.js',
   'pet-insights.js',
   'chip-display.js',
   'popup-style.js',

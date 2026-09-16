@@ -108,11 +108,49 @@
     return 0;
   }
 
+  // 弹窗路径的横向对齐：挑一个能让猫**停在当前这个屏幕像素上**的对齐方式。
+  //
+  // 问的不是「猫贴边了吗」（那是 chooseRestingLayout 的问题），而是「窗口要涨到
+  // popupWidth 这么宽，哪种对齐能让它既装进工作区、又不必挪动猫」。原因：猫的屏幕
+  // 位置 = 窗口原点 + 窗内偏移，而窗内偏移完全由对齐方式决定（left→0，center→
+  // (帧宽-猫宽)/2，right→帧宽-猫宽）。主进程 applyPetSize 会把**窗口**钳进工作区，
+  // 所以只有当「猫位置 − 窗内偏移」这个窗口原点本来就在工作区内时，猫才不会被挪。
+  // 把这个条件解成窗内偏移的可行区间 [lo, hi]，再按偏好挑第一个落在区间里的。
+  //
+  // 偏好顺序 center → left → right 不是随手排的：center 必须在最前，否则屏幕中间
+  // 的猫会在 center/left 之间摆动（实测猫x=200/201 处来回跳）。
+  //
+  // 不借道 chooseRestingLayout。2026-09-16 之前那版借了（只为拿 horizontal），
+  // 于是「猫是否贴边」和「弹窗放得下吗」两个不同的问题共用一个答案，实测两种改法
+  // 都会漏：直接沿用静息方向时屏幕中间的猫净漂 ±200px。
+  function popupHorizontal({ workArea, popupWidth, petScreenX, petWidth }) {
+    const wa = normalizeRect(workArea);
+    const width = Number(popupWidth) || 0;
+    const petW = Number(petWidth) || 0;
+    const petX = Number(petScreenX);
+    // 拿不到弹窗宽度（早期调用/测试）时不做判断，保持居中。
+    if (!(width > 0) || !Number.isFinite(petX)) return 'center';
+    const lo = petX - (wa.right - width);
+    const hi = petX - wa.x;
+    // 弹窗比工作区还宽：怎么放都会被钳，对称溢出。
+    if (lo > hi) return 'center';
+    const offsets = {
+      center: (width - petW) / 2,
+      left: 0,
+      right: width - petW,
+    };
+    for (const key of ['center', 'left', 'right']) {
+      if (offsets[key] >= lo && offsets[key] <= hi) return key;
+    }
+    return 'center';
+  }
+
   function choosePopupLayout({
     workArea,
     windowRect,
     petRect,
     popupHeight = 140,
+    popupWidth = 0,
   }) {
     const wa = normalizeRect(workArea);
     const wr = normalizeRect(windowRect);
@@ -123,13 +161,14 @@
 
     // 单一规则：只有桌宠本体上方放不下完整卡片时才向下翻；除此之外
     // 一律向上。不要把下方剩余空间、历史方向或当前透明窗口高度掺进来。
-    //
-    // horizontal 恒为 'center'：弹出卡片是 520 宽的定宽窗口，横向靠
-    // applyPetSize 的工作区钳制兜底就够了，不参与贴边。这里不借道
-    // chooseRestingLayout —— 从前调用它只为拿 horizontal，而那条路现在会
-    // 返回真的 left/right，卡片跟着贴边反而会把猫挪走。
     const vertical = above < need ? 'below' : 'above';
-    return { vertical, horizontal: 'center' };
+    const horizontal = popupHorizontal({
+      workArea,
+      popupWidth,
+      petScreenX: wr.x + pr.x,
+      petWidth: pr.width,
+    });
+    return { vertical, horizontal };
   }
 
   function chooseDragVerticalLayout({

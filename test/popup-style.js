@@ -141,14 +141,34 @@ assert(/function measuredRestingWidth\(\)[\s\S]*?\n\}/.test(js), 'resting width 
   assert(/\[chip, sessionsEl\]/.test(fn),
     'resting width must come from the capsule and session dots themselves');
 }
-// 横向贴边判定不能再按帧宽开关。静息帧宽是内容内蕴的（额度徽标全开时胶囊 480 宽
-// → 帧宽 504），拿固定像素数去卡它维度上就是错的；竖直方向的帧高门必须保留。
+// 横向贴边判定不能再按**静息**帧宽开关：静息帧宽是内容内蕴的（额度徽标全开时胶囊
+// 480 宽 → 帧宽 504），拿固定像素数去卡它维度上就是错的。竖直方向的帧高门必须保留。
 assert(!/RESTING_FRAME_MAX_W/.test(js),
   'the horizontal snapping gate must not be reinstated as a fixed frame-width cap');
-assert(/inferHorizontalFrameClamp:\s*true/.test(js),
-  'horizontal edge inference must stay on regardless of the capsule-driven frame width');
+// 但它也不能恒开。2026-09-16：关闭弹窗时 restingEdgeLayout 会在窗口**还是 520 宽**
+// 的时候先跑一次（closePeek → resetPetSize → fitRestingFrame），此时透明留白有
+// 200px，而 infer 分支认的是静息帧那 ~100px —— 于是屏幕中间的猫被误判成贴边，实测
+// x=200 被搬到 0、x=1180 被搬到 1320，且**关掉气泡也回不来**（永久位移）。
+// 判据必须是「当前帧有没有比静息帧宽」这个相对量，且两边共用同一个 restingFrameWidth()
+// 定义（否则贴边判定会和实际帧宽错位）。这和上面禁止的「固定像素上限」是两回事：
+// 那问的是「静息帧能有多宽」，这问的是「当前帧还是静息帧吗」。
+assert(/inferHorizontalFrameClamp:\s*snapshot\.windowRect\.width <= restingFrameWidth\(\)/.test(js),
+  'horizontal edge inference must be gated on the frame still being a resting frame, not on a fixed width cap');
+assert(/function restingFrameWidth\(\)/.test(js),
+  'the resting frame width must have a single shared definition');
+{
+  const fn = js.match(/function fitRestingFrame\([\s\S]*?\n\}/)?.[0] || '';
+  assert(/restingFrameWidth\(\)/.test(fn),
+    'fitRestingFrame must use the same resting-width definition as the edge gate');
+}
 assert(/inferVerticalFrameClamp:\s*snapshot\.windowRect\.height <= RESTING_FRAME_MAX_H/.test(js),
   'the vertical frame-height gate must remain: a tall popup clamped to the screen top would masquerade as a top-edge drag');
+// 弹窗横向必须按**目标**帧宽判定（窗口要涨到 520），不能用 snapshot 里的当前帧宽 ——
+// 否则 fitPopup 第一拍（还是 320）会判错一次再自我纠正，猫闪一下。
+assert(/popupEdgeLayout\(height, options\.popupHeight, width\)/.test(js),
+  'the popup layout must be decided from the target frame width, not the current one');
+assert(/popupWidth:\s*Math\.max\(0, Number\(popupWidth\) \|\| 0\)/.test(js),
+  'popupEdgeLayout must forward the popup width to the geometry helper');
 // 旧补丁不能回来：从前是贴边把整列甩过去、再给 .chip 补一个 justify-content: center
 // 找回中心。那条既解决不了溢出，也和 --chip-shift 抢同一件事。
 assert(!/#stage\.edge-(?:left|right)[^{]*\.chip\s*\{[^}]*justify-content/s.test(css),

@@ -572,9 +572,12 @@ function anchoredLayoutPayload(next) {
     screenY = waBottom - oldPet.height;
   }
   // 横向没有「紧凑帧」这个前提。竖直方向需要它：高弹窗被钳到屏顶时会伪装成
-  // 顶部拖拽，必须按帧高排除。横向不存在这个风险 —— choosePopupLayout 横向恒
-  // 返回 center，弹窗根本走不到这里；而静息帧宽是内容内蕴的（320～900，光额度
-  // 徽标全开胶囊就 480 宽 → 帧宽 504），拿一个固定像素数去卡它维度上就是错的。
+  // 顶部拖拽，必须按帧高排除。横向的等价风险由**上游**挡掉了，不在这里挡：
+  // choosePopupLayout 只会挑「不需要挪猫」的对齐（见那边的 popupHorizontal），
+  // restingEdgeLayout 则在当前帧比静息帧宽时关掉 infer 分支。等这两个分支真跑
+  // 到时（弹窗贴边打开是会跑到的），猫本来就该待在那条边上。
+  // 而且这里也不能按帧宽卡：静息帧宽是内容内蕴的（320～900，光额度徽标全开胶囊
+  // 就 480 宽 → 帧宽 504），拿一个固定像素数去卡它维度上就是错的。
   if (next.horizontal === 'left' && wr.x <= wa.x + 3 && oldPet.x > 18) screenX = wa.x;
   if (next.horizontal === 'right'
     && wr.x + wr.width >= waRight - 3 && wr.width - oldPet.x - oldPet.width > 18) {
@@ -647,17 +650,29 @@ function restingEdgeLayout() {
     ...snapshot,
     threshold: Math.max(24, topThreshold),
     inferVerticalFrameClamp: snapshot.windowRect.height <= RESTING_FRAME_MAX_H,
-    // 横向恒开，理由见 anchoredLayoutPayload 里同一件事的注释。
-    inferHorizontalFrameClamp: true,
+    // infer 分支的作用是「窗口已被钳到工作区缘，而猫还困在窗口里的透明留白中」——
+    // 它认的是**静息帧**那点留白（帧宽 320 时约 100px）。关闭弹窗时本函数会在窗口
+    // **还是 520 宽**的时候先跑一次（closePeek → resetPetSize → fitRestingFrame），
+    // 那时留白有 200px，这个分支就会把「屏幕中间的猫」误判成贴边：实测猫 x=200 被
+    // 搬到 0、x=1180 被搬到 1320，而且关掉气泡也回不来（是永久位移）。
+    //
+    // 所以判据是「当前帧有没有比静息帧宽」。注意不能写成固定像素上限（比如 ≤322）：
+    // 额度徽标全开时静息帧本身就有 504 宽，那样会重新弄坏横向贴边 —— 那种按静息帧宽
+    // 卡的固定上限正是上一个回归的成因，已经删掉了，别用另一个常数把它请回来。
+    inferHorizontalFrameClamp: snapshot.windowRect.width <= restingFrameWidth() + 2,
   });
 }
 
-function popupEdgeLayout(height, popupHeight) {
+function popupEdgeLayout(height, popupHeight, popupWidth) {
   const snapshot = petGeometrySnapshot();
   if (!snapshot || !window.PetGeometry) return edgeLayout;
   return window.PetGeometry.choosePopupLayout({
     ...snapshot,
     popupHeight: Math.max(80, Number(popupHeight) || (Number(height) || 340) - POPUP_BOTTOM),
+    // 必须传**目标**帧宽，不是 snapshot 里的当前帧宽：横向对齐要按窗口涨到 520
+    // 之后的几何来判，用当前宽度算会在第一拍（还是 320）判错一次再自我纠正，
+    // 猫就闪一下。fitPopup 两拍传的都是 POPUP_W，两拍的判定因此一致。
+    popupWidth: Math.max(0, Number(popupWidth) || 0),
   });
 }
 
@@ -665,7 +680,7 @@ function setRequestedPetSize(w, h, options = {}) {
   const width = Number(w) || 0;
   const height = Number(h) || 0;
   const nextLayout = options.popup
-    ? popupEdgeLayout(height, options.popupHeight)
+    ? popupEdgeLayout(height, options.popupHeight, width)
     : restingEdgeLayout();
   const anchor = anchoredLayoutPayload(nextLayout);
   try { window.pet.setPetSize(width, height, anchor, options.popup ? 'popup' : 'resting'); } catch {}
@@ -701,16 +716,22 @@ function measuredRestingWidth() {
   return widths.length ? Math.max(...widths) : CAPSULE_FRAME_MIN_W;
 }
 
+// 静息帧该有多宽。fitRestingFrame 用它决定真实帧宽，restingEdgeLayout 用它判断
+// 「当前帧是不是已经比静息帧宽了」（即身处弹窗残留帧）。两处必须是同一个定义，
+// 否则关闭弹窗时的贴边判定会和实际帧宽错位。
+function restingFrameWidth() {
+  return Math.min(
+    CAPSULE_FRAME_MAX_W,
+    Math.max(CAPSULE_FRAME_MIN_W, Math.ceil(measuredRestingWidth() + CAPSULE_FRAME_GUTTER)),
+  );
+}
+
 function fitRestingFrame(force = false, allowOverlays = false) {
   if (restingFitFrame) cancelAnimationFrame(restingFitFrame);
   restingFitFrame = requestAnimationFrame(() => {
     restingFitFrame = null;
     if (!allowOverlays && (askActive || actionPopOpen || peekOpen || quotaPopoverOpen || radialOpen)) return;
-    const measured = measuredRestingWidth();
-    const width = Math.min(
-      CAPSULE_FRAME_MAX_W,
-      Math.max(CAPSULE_FRAME_MIN_W, Math.ceil(measured + CAPSULE_FRAME_GUTTER)),
-    );
+    const width = restingFrameWidth();
     const current = Number(window.innerWidth) || CAPSULE_FRAME_MIN_W;
     // 宽**和**高都得比。只比宽的话，胶囊本身已经宽到接近 520（多会话 + 额度全开）
     // 时从气泡态收回来会在这里提前返回，窗口高度就卡在气泡的 600 下不来 ——

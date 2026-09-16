@@ -85,11 +85,85 @@ for (const [name, windowRect, petRect, expected] of [
     expected,
     `${name}：横向只认真贴边，不能借用竖直方向的阈值`,
   );
-  // 弹出卡片是 520 定宽窗口，横向靠 applyPetSize 兜底，不参与贴边。
+}
+
+// ── 弹窗的横向对齐 ────────────────────────────────────────────────────────────
+// 2026-09-16 的第三个回归：我曾让 choosePopupLayout 横向恒返回 'center'，注释里的
+// 理由（「卡片跟着贴边反而会把猫挪走」）正好说反了 —— 恒 center 才会把猫挪走。
+// 窗口要从 320 涨到 520，center 对齐下猫的窗内偏移变成 200；主进程 applyPetSize
+// 把窗口钳回工作区时正好吃掉这 200px。用户实测：「喵在靠边的位置，点击以后弹出来
+// 的气泡会自动把喵移动到靠中间，关了气泡以后又回到边缘」。
+//
+// 正确的判据不是「猫贴边了吗」，而是「哪种对齐能让 520 的窗口装进工作区、同时不必
+// 挪动猫」。下面按猫的**屏幕像素**钉住这件事。
+{
+  const popupW = 520;
+  const petWidth = 120;
+  // 猫在屏幕上的位置 → 期望的对齐。左侧 200px 内只有 left 能让窗口不出屏；
+  // 右侧对称；中间 center 可行就必须选 center（否则会在两种对齐间摆动）。
+  for (const [petScreenX, expected, why] of [
+    [0, 'left', '贴死左缘：center 会让窗口原点落到 -200，必须靠左对齐'],
+    [199, 'left', '离左缘 199px：center 仍会把窗口顶出屏幕'],
+    [200, 'center', '离左缘刚好 200px：center 恰好可行，必须选 center'],
+    [660, 'center', '屏幕正中：center 可行'],
+    [1120, 'center', '猫右缘离工作区右缘刚好 200px：center 恰好可行'],
+    [1121, 'right', '再往右 1px：center 会把窗口顶出右边'],
+    [1320, 'right', '贴死右缘'],
+  ]) {
+    assert.strictEqual(
+      geometry.choosePopupLayout({
+        workArea,
+        windowRect: { x: petScreenX, y: 400, width: petWidth, height: 340 },
+        petRect: { x: 0, y: 200, width: petWidth, height: 120 },
+        popupHeight: 360,
+        popupWidth: popupW,
+      }).horizontal,
+      expected,
+      `猫在屏幕 x=${petScreenX}：${why}`,
+    );
+  }
+
+  // 选中的对齐必须真的让 520 窗口既装进工作区、又不挪猫 —— 这条比上面的逐点期望
+  // 更本质，逐 3px 全扫一遍。
+  for (let petScreenX = 0; petScreenX <= workArea.width - petWidth; petScreenX += 3) {
+    const h = geometry.choosePopupLayout({
+      workArea,
+      windowRect: { x: petScreenX, y: 400, width: petWidth, height: 340 },
+      petRect: { x: 0, y: 200, width: petWidth, height: 120 },
+      popupHeight: 360,
+      popupWidth: popupW,
+    }).horizontal;
+    const inset = h === 'left' ? 0 : h === 'right' ? popupW - petWidth : (popupW - petWidth) / 2;
+    const winX = petScreenX - inset;
+    assert(
+      winX >= workArea.x && winX + popupW <= workArea.x + workArea.width,
+      `猫在屏幕 x=${petScreenX} 选了 ${h}：520 的弹窗帧必须完整落在工作区内（窗口原点 ${winX}）`,
+    );
+  }
+
+  // 没有宽度信息（早期调用、旧测试）时保持居中，不要瞎猜。
   assert.strictEqual(
-    geometry.choosePopupLayout({ workArea, windowRect, petRect, popupHeight: 360 }).horizontal,
+    geometry.choosePopupLayout({
+      workArea,
+      windowRect: { x: 0, y: 400, width: 320, height: 340 },
+      petRect: { x: 0, y: 200, width: 120, height: 120 },
+      popupHeight: 360,
+    }).horizontal,
     'center',
-    `${name}：弹出卡片只有竖直方向会翻面`,
+    '拿不到 popupWidth 时横向保持居中',
+  );
+
+  // 弹窗比整个工作区还宽：怎么放都会被钳，对称溢出而不是甩到一侧。
+  assert.strictEqual(
+    geometry.choosePopupLayout({
+      workArea,
+      windowRect: { x: 0, y: 400, width: 320, height: 340 },
+      petRect: { x: 0, y: 200, width: 120, height: 120 },
+      popupHeight: 360,
+      popupWidth: 1600,
+    }).horizontal,
+    'center',
+    '宽过工作区的弹窗对称溢出',
   );
 }
 
