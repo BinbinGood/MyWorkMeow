@@ -108,6 +108,41 @@
     return 0;
   }
 
+  // 胶囊（底部展示栏）的按需内缩——按「贴边对齐」修正版。
+  //
+  // 和 capsuleShift 的区别：capsuleShift 假设胶囊的 flex 位置本来就在猫正下方
+  // （居中模式成立），只算「会不会探出工作区」那点内缩。但贴边（edge-left/right）
+  // 时整列被 align-items 拉到窗口缘、猫又贴到胶囊那一侧，胶囊的 flex 中心已经不在
+  // 猫下方了（差 (胶囊宽-猫宽)/2）。这个函数先按 horizontal 把胶囊的 flex 中心
+  // 算出来，再让它「尽量居中在猫下方、但整条不出工作区」，返回需要补的位移。
+  //
+  // 纯算术、不碰 DOM：入参只有猫的屏幕位置、猫宽、胶囊宽、工作区和当前对齐，
+  // 所以拖动途中、窗口 resize 前后都能算对（不依赖胶囊此刻在哪个旧窗口里）。
+  function capsuleShiftFromEdge({ catScreenX, catWidth, capsuleWidth, workArea, horizontal = 'center', margin = 4 }) {
+    const wa = normalizeRect(workArea);
+    const width = Math.max(0, Number(capsuleWidth) || 0);
+    const catW = Math.max(0, Number(catWidth) || 0);
+    const catX = Number(catScreenX);
+    const catCenterX = catX + catW / 2;
+    if (!width || !Number.isFinite(catCenterX)) return 0;
+
+    // 胶囊 flex 中心（屏幕坐标）：居中=猫中心；贴右=胶囊右缘贴猫右缘（中心往左半宽）；
+    // 贴左=胶囊左缘贴猫左缘（中心往右半宽）。
+    let flexCenterX = catCenterX;
+    if (horizontal === 'right') flexCenterX = catX + catW - width / 2;
+    else if (horizontal === 'left') flexCenterX = catX + width / 2;
+
+    const pad = Math.max(0, Number(margin) || 0);
+    const half = width / 2;
+    const minCenter = wa.x + pad + half;
+    const maxCenter = wa.right - pad - half;
+    // 胶囊比整个工作区还宽：挪不出结果，宁可对称溢出也不单侧甩。
+    const desiredCenterX = (maxCenter < minCenter)
+      ? catCenterX
+      : Math.min(Math.max(catCenterX, minCenter), maxCenter);
+    return Math.round(desiredCenterX - flexCenterX);
+  }
+
   // 弹窗路径的横向对齐：挑一个能让猫**停在当前这个屏幕像素上**的对齐方式。
   //
   // 问的不是「猫贴边了吗」（那是 chooseRestingLayout 的问题），而是「窗口要涨到
@@ -335,5 +370,5 @@
     return { direction: chosen.dir, points };
   }
 
-  return { chooseRestingLayout, choosePopupLayout, chooseDragVerticalLayout, capsuleShift, radialLayout, cornerMenuLayout };
+  return { chooseRestingLayout, choosePopupLayout, chooseDragVerticalLayout, capsuleShift, capsuleShiftFromEdge, radialLayout, cornerMenuLayout };
 });

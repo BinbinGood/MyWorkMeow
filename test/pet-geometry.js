@@ -240,6 +240,52 @@ for (const frame of [320, 338, 360, 361, 381, 504, 688, 900]) {
     '没有胶囊时没有位移');
 }
 
+// ── 胶囊按需内缩（贴边对齐修正版）────────────────────────────────────────────
+// capsuleShift 假设胶囊本来就居中在猫下方（只在 center 对齐成立）。贴边时整列被
+// align-items 拉到窗口缘，胶囊的 flex 中心偏到了猫的一侧（差 (胶囊宽-猫宽)/2），
+// 再拿 capsuleShift 算位移就会把「没真贴边的猫」的胶囊也甩到边上（用户报的第二个
+// bug）。capsuleShiftFromEdge 先按对齐把 flex 中心算出来，再让它尽量回到猫下方、
+// 但整条不出工作区。猫本体 120 宽、胶囊 520 宽 → 半宽 260。
+{
+  const shift = (catScreenX, horizontal) =>
+    geometry.capsuleShiftFromEdge({ catScreenX, catWidth: 120, capsuleWidth: 520, workArea, horizontal });
+
+  // 居中对齐下退化成 capsuleShift：flex 中心=猫中心，贴死左缘时只右移刚好不出屏。
+  assert.strictEqual(shift(0, 'center'), 204, 'center 对齐贴死左缘：只右移刚好不出屏的距离');
+  assert.strictEqual(shift(1320, 'center'), -204, 'center 对齐贴死右缘：只左移刚好不出屏的距离');
+  assert.strictEqual(shift(660, 'center'), 0, 'center 对齐屏幕中央：本来就居中，不动');
+
+  // 核心回归：猫没真贴边、但弹窗贴右打开（horizontal=right）时，胶囊要回到猫正下方，
+  // 而不是被甩到边上。flex 中心在右对齐下 = 猫右缘 - 半宽 = 460，猫中心 660 → 补 +200。
+  assert.strictEqual(shift(600, 'right'), 200, 'right 对齐、猫离右缘还有 240px：胶囊回到猫中心');
+  assert.strictEqual(shift(600, 'left'), -200, 'left 对齐、猫离左缘还有 600px：胶囊回到猫中心');
+
+  // 真贴边时：胶囊和猫一起贴边，位移只把胶囊往内收刚好不出屏的 4px（margin），协调不甩。
+  assert.strictEqual(shift(1320, 'right'), -4, 'right 对齐真贴死右缘：只往内收 4px，协调贴边');
+  assert.strictEqual(shift(0, 'left'), 4, 'left 对齐真贴死左缘：只往内收 4px，协调贴边');
+
+  // 窄胶囊（比猫还窄）：居中对齐下任何位置都不动；贴边对齐下只做「回到猫正下方」
+  // 的小位移（(猫宽-胶囊宽)/2 = 10px），绝不会被甩到屏外。
+  const narrow = (catScreenX, horizontal) =>
+    geometry.capsuleShiftFromEdge({ catScreenX, catWidth: 120, capsuleWidth: 100, workArea, horizontal });
+  assert.strictEqual(narrow(0, 'center'), 0, '窄胶囊居中对齐贴死左缘也不动');
+  assert.strictEqual(narrow(1320, 'center'), 0, '窄胶囊居中对齐贴死右缘也不动');
+  assert.strictEqual(narrow(0, 'left'), 10, '窄胶囊贴左对齐只补 10px 回到猫正下方');
+  assert.strictEqual(narrow(1320, 'right'), -10, '窄胶囊贴右对齐只补 10px 回到猫正下方');
+
+  // 脏输入不能变成 NaN 位移。
+  assert.strictEqual(
+    geometry.capsuleShiftFromEdge({ catScreenX: NaN, catWidth: 120, capsuleWidth: 520, workArea, horizontal: 'right' }),
+    0,
+    '无效猫位置必须落回 0',
+  );
+  assert.strictEqual(
+    geometry.capsuleShiftFromEdge({ catScreenX: 600, catWidth: 120, capsuleWidth: 0, workArea, horizontal: 'right' }),
+    0,
+    '没有胶囊时没有位移',
+  );
+}
+
 assert.strictEqual(
   geometry.chooseDragVerticalLayout({
     current: 'above', workArea, targetWindowY: 24, petScreenY: 204, abovePetOffset: 180,

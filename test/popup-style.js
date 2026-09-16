@@ -124,7 +124,7 @@ assert(/#stage\.edge-left:not\(\.cat-hidden\) #compact-row\s*\{[^}]*align-items\
 // 且必须是 transform —— margin 会挤压兄弟节点、把整列的布局宽度推出去。
 assert(/\.chip\s*\{[\s\S]*?transform:\s*translateX\(var\(--chip-shift/.test(css),
   'the capsule must be nudged by transform, never by layout-affecting margins');
-assert(/PetGeometry\.capsuleShift/.test(js) && /--chip-shift/.test(js),
+assert(/PetGeometry\.capsuleShiftFromEdge/.test(js) && /--chip-shift/.test(js),
   'the renderer must compute the capsule shift from the pet post-move screen position');
 // 2026-09-16：上一版注释在这里断言「transform 量不到 measuredRestingWidth 里去」，
 // 那句话是错的。transform 不参与**布局**，但会把祖先的 scrollWidth 撑大：实测

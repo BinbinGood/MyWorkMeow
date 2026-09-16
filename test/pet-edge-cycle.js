@@ -36,9 +36,10 @@ const catInset = (frameW, horizontal) => (
       : (frameW - CAT) / 2
 );
 
-// renderer/pet.js:592-596 —— 注意 viewportW 是**当前**帧宽（窗口还没 resize），
-// 而 main.js:189-192 反解时用的是**目标**帧宽。这个不对称是真实存在的，模型必须
-// 照抄，不能图省事两边都用目标帧宽。
+// renderer/pet.js anchoredLayoutPayload 的 xOffset 三条分支 —— 注意 viewportW 是
+// **当前**帧宽（窗口还没 resize），而 main.js 反解时用的是**目标**帧宽。这个不对称
+// 是真实存在的，模型必须照抄，不能图省事两边都用目标帧宽。测量用 measureEdgeRect
+// 临时切到目标对齐再恢复，rect.left 就是目标对齐下猫在当前帧宽的窗内偏移（catInset）。
 function anchorXOffset(frameNow, horizontal) {
   const left = catInset(frameNow, horizontal);
   if (horizontal === 'left') return left;
@@ -277,10 +278,14 @@ assert(/localX = anchor\.xOffset;/.test(mainJs)
   'anchoredPetOrigin 的三条 localX 分支变了，本 suite 的反解模型需要同步');
 assert(/x = Math\.min\(Math\.max\(x, wa\.x\), wa\.x \+ wa\.width - width\);/.test(mainJs),
   'applyPetSize 的横向钳制变了，本 suite 的钳制模型需要同步');
-assert(/\? rect\.left\s*\n\s*:\s*xAlign === 'right'\s*\n\s*\? viewportW - rect\.right\s*\n\s*:\s*rect\.left \+ rect\.width \/ 2 - viewportW \/ 2;/.test(petJs),
-  'anchoredLayoutPayload 的 xOffset 三条分支变了，本 suite 的锚点模型需要同步');
-assert(/if \(next\.horizontal === 'left' && wr\.x <= wa\.x \+ 3 && oldPet\.x > 18\) screenX = wa\.x;/.test(petJs),
-  'anchoredLayoutPayload 的左缘 infer 分支变了，本 suite 需要同步');
+assert(/xAlign === 'left'\s*\?\s*rect\.left/.test(petJs)
+  && /xAlign === 'right'\s*\?\s*viewportW - rect\.right/.test(petJs)
+  && /rect\.left \+ rect\.width \/ 2 - viewportW \/ 2/.test(petJs)
+  && /yOffset = yAlign === 'top' \? rect\.top : viewportH - rect\.bottom/.test(petJs),
+  'anchoredLayoutPayload 的 xOffset/yOffset 三条分支变了，本 suite 的锚点模型需要同步');
+assert(/allowSnap && next\.horizontal === 'left' && wr\.x <= wa\.x \+ 3 && oldPet\.x > 18\) screenX = wa\.x;/.test(petJs)
+  && /anchoredLayoutPayload\(nextLayout, !options\.popup\)/.test(petJs),
+  'anchoredLayoutPayload 的左缘 infer 分支变了（弹窗路径禁用吸附），本 suite 需要同步');
 assert(/wr\.x \+ wr\.width >= waRight - 3 && wr\.width - oldPet\.x - oldPet\.width > 18/.test(petJs),
   'anchoredLayoutPayload 的右缘 infer 分支变了，本 suite 需要同步');
 assert(/inferHorizontalFrameClamp:\s*snapshot\.windowRect\.width <= restingFrameWidth\(\) \+ 2/.test(petJs),

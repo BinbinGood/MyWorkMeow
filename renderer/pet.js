@@ -507,6 +507,9 @@ const BASE_PET_FRAME_H = 340;
 const RESTING_FRAME_MAX_H = 360;
 let fitPopupSeq = 0;
 let edgeLayout = { vertical: 'above', horizontal: 'center' };
+// 待应用的贴边布局：窗口尺寸真的变了时，flex 变更延后到 resize 事件里、和窗口
+// 重排同帧落地（否则猫会先往一边挪一帧再弹回来，看着卡）。无尺寸变化时不走这里。
+let pendingEdgeLayout = null;
 
 function browserWorkArea() {
   const s = window.screen || {};
@@ -551,7 +554,7 @@ function setStageEdgeLayout(next) {
 // Changing the flex anchor moves the pet inside the transparent BrowserWindow.
 // This payload lets the main process move/resize that window in the opposite
 // direction, so the visible pet stays on exactly the same screen pixel.
-function anchoredLayoutPayload(next) {
+function anchoredLayoutPayload(next, allowSnap = true) {
   const before = petGeometrySnapshot();
   if (!before) { setStageEdgeLayout(next); return null; }
   const oldPet = before.petRect;
@@ -566,41 +569,69 @@ function anchoredLayoutPayload(next) {
   // A frame at the work-area edge plus a large transparent inset means the OS
   // stopped the BrowserWindow before the user's visible pet reached the edge.
   // Treat that as an explicit edge drag and snap the *pet body*, not the frame.
-  if (compactVerticalFrame && next.vertical === 'below' && wr.y <= wa.y + 3 && oldPet.y > 18) screenY = wa.y;
-  if (compactVerticalFrame && next.vertical === 'above'
+  //
+  // allowSnap=false 于弹窗路径（setRequestedPetSize 传 !options.popup）：吸附的
+  // 语义是「兑现拖拽意图」，只在拖拽松手/静息复位时合法。弹窗打开时没有拖拽意图，
+  // choosePopupLayout 本来就只挑「不需要挪猫」的对齐——但这个分支不看对齐是怎么
+  // 来的：猫离边 ~200px、弹窗被迫停靠 left/right 时窗口恰好贴在工作区缘上，吸附
+  // 就把 screenX 强改到屏幕边缘，猫被永久搬到边上（2026-09-16 用户实测：点击后
+  // 喵被移动到边缘，气泡消失后一直停在边缘）。
+  if (compactVerticalFrame && allowSnap && next.vertical === 'below' && wr.y <= wa.y + 3 && oldPet.y > 18) screenY = wa.y;
+  if (compactVerticalFrame && allowSnap && next.vertical === 'above'
     && wr.y + wr.height >= waBottom - 3 && wr.height - oldPet.y - oldPet.height > 18) {
     screenY = waBottom - oldPet.height;
   }
   // 横向没有「紧凑帧」这个前提。竖直方向需要它：高弹窗被钳到屏顶时会伪装成
   // 顶部拖拽，必须按帧高排除。横向的等价风险由**上游**挡掉了，不在这里挡：
   // choosePopupLayout 只会挑「不需要挪猫」的对齐（见那边的 popupHorizontal），
-  // restingEdgeLayout 则在当前帧比静息帧宽时关掉 infer 分支。等这两个分支真跑
-  // 到时（弹窗贴边打开是会跑到的），猫本来就该待在那条边上。
+  // restingEdgeLayout 则在当前帧比静息帧宽时关掉 infer 分支。
   // 而且这里也不能按帧宽卡：静息帧宽是内容内蕴的（320～900，光额度徽标全开胶囊
   // 就 480 宽 → 帧宽 504），拿一个固定像素数去卡它维度上就是错的。
-  if (next.horizontal === 'left' && wr.x <= wa.x + 3 && oldPet.x > 18) screenX = wa.x;
-  if (next.horizontal === 'right'
+  if (allowSnap && next.horizontal === 'left' && wr.x <= wa.x + 3 && oldPet.x > 18) screenX = wa.x;
+  if (allowSnap && next.horizontal === 'right'
     && wr.x + wr.width >= waRight - 3 && wr.width - oldPet.x - oldPet.width > 18) {
     screenX = waRight - oldPet.width;
   }
-  setStageEdgeLayout(next);
-  const rect = curSkinEl().getBoundingClientRect();
+  // 测「目标布局」下猫的窗内偏移。临时切 class、同步测 rect、立刻恢复：整段在一个
+  // 同步块里跑完，浏览器不会在中间 paint，所以不产生「先挪一帧再弹回」的抖动；flex
+  // 的真正落地仍由调用方延后到 resize 事件（pendingEdgeLayout），与窗口重排同帧。
+  // offset 必须实测、不能归零 —— 尤其垂直方向：贴窗口底的是胶囊而不是猫（猫在它
+  // 上方、隔一个胶囊高），yOffset 就是那段胶囊高；横向三条对齐猫才精确贴边（≈0）。
+  const rect = measureEdgeRect(next);
   const viewportW = Math.max(1, window.innerWidth || 320);
   const viewportH = Math.max(1, window.innerHeight || 340);
-  const xAlign = edgeLayout.horizontal;
-  const yAlign = edgeLayout.vertical === 'below' ? 'top' : 'bottom';
-  const xOffset = xAlign === 'left'
-    ? rect.left
-    : xAlign === 'right'
-      ? viewportW - rect.right
-      : rect.left + rect.width / 2 - viewportW / 2;
+  const xAlign = next.horizontal;
+  const yAlign = next.vertical === 'below' ? 'top' : 'bottom';
+  const xOffset = xAlign === 'left' ? rect.left
+    : xAlign === 'right' ? viewportW - rect.right
+    : rect.left + rect.width / 2 - viewportW / 2;
   const yOffset = yAlign === 'top' ? rect.top : viewportH - rect.bottom;
-  applyCapsuleShift(screenX, rect.width);
   return {
     screenX, screenY,
     width: rect.width, height: rect.height,
     xAlign, yAlign, xOffset, yOffset,
   };
+}
+
+// 临时把 stage 的贴边 class 切到 next、测出猫在新布局下的窗内偏移、再立刻恢复。
+// 不经过 setStageEdgeLayout：那会改 edgeLayout 全局量、还会触发 positionProp 等
+// 副作用，这里只需要纯布局测量。同步块内完成，不会 paint 出中间态。
+function measureEdgeRect(next) {
+  const set = (name, on) => stage.classList.toggle(name, !!on);
+  const vb = next.vertical === 'below';
+  const hl = next.horizontal === 'left';
+  const hr = next.horizontal === 'right';
+  const prevVb = edgeLayout.vertical === 'below';
+  const prevHl = edgeLayout.horizontal === 'left';
+  const prevHr = edgeLayout.horizontal === 'right';
+  set('edge-below', vb);
+  set('edge-left', hl);
+  set('edge-right', hr);
+  const rect = curSkinEl().getBoundingClientRect();
+  set('edge-below', prevVb);
+  set('edge-left', prevHl);
+  set('edge-right', prevHr);
+  return rect;
 }
 
 // 胶囊的按需内缩。这里是唯一的计算点，因为这里（也只有这里）能拿到桌宠本体
@@ -611,6 +642,12 @@ function anchoredLayoutPayload(next) {
 // 反复调用是幂等的：输入只有本体的屏幕位置和胶囊的**宽度**，translateX 不改宽度。
 // 但要小心 —— transform 虽然不参与布局，却**会**把祖先的 scrollWidth 撑大，所以
 // measuredRestingWidth 必须绕开 #compact-row（见那里的注释），否则位移会喂回帧宽。
+//
+// 贴边（edge-left/right）时整列被 align-items 拉到窗口缘，胶囊比猫宽，它的 flex
+// 中心已经不在猫正下方了。所以这里用 capsuleShiftFromEdge（按对齐把 flex 中心先
+// 算出来），而不是旧的 capsuleShift（它假设胶囊天然居中）。这样：
+//   - 猫真贴死屏幕缘：胶囊仍「贴边形态」（居中会出屏，只能往内让刚好够用的那点）；
+//   - 猫只是离边近、弹窗被迫停靠到一边：胶囊仍严格居中在猫下方，不再跟着甩过去。
 function applyCapsuleShift(petScreenX, petWidth) {
   if (!stage || !stage.style) return;
   const rect = chip && !chip.hidden && typeof chip.getBoundingClientRect === 'function'
@@ -620,10 +657,12 @@ function applyCapsuleShift(petScreenX, petWidth) {
   // 隐藏猫身时胶囊本身就是锚点（curSkinEl() === chip），没有「居中在猫正下方」
   // 这回事，整行交给 align-items 摆放即可。
   const shift = (catVisible && width > 0 && window.PetGeometry)
-    ? window.PetGeometry.capsuleShift({
-      petCenterX: Number(petScreenX) + Number(petWidth) / 2,
+    ? window.PetGeometry.capsuleShiftFromEdge({
+      catScreenX: Number(petScreenX),
+      catWidth: Number(petWidth),
       capsuleWidth: width,
       workArea: browserWorkArea(),
+      horizontal: edgeLayout.horizontal,
     })
     : 0;
   stage.style.setProperty('--chip-shift', shift + 'px');
@@ -682,8 +721,32 @@ function setRequestedPetSize(w, h, options = {}) {
   const nextLayout = options.popup
     ? popupEdgeLayout(height, options.popupHeight, width)
     : restingEdgeLayout();
-  const anchor = anchoredLayoutPayload(nextLayout);
+  // 弹窗路径禁用贴边吸附（allowSnap=false）：吸附的语义是「兑现拖拽意图」，
+  // 弹窗打开时没有拖拽意图，误触发会把没贴边的猫吸到屏幕边缘（2026-09-16 实测）。
+  const anchor = anchoredLayoutPayload(nextLayout, !options.popup);
+  // 尺寸真的要变 → resize 事件会来，flex 变更延后到那里跟窗口重排同帧落地，
+  // 消除「先挪一帧再弹回」的抖动。尺寸没变（拖动贴边/复位锚点，主进程只动位置
+  // 不动尺寸，不会发 resize）→ 就地应用，否则贴边状态会一直卡住。
+  const willResize = Math.abs(width - (window.innerWidth || 0)) > 2
+    || Math.abs(height - (window.innerHeight || 0)) > 2;
+  if (willResize && anchor) {
+    pendingEdgeLayout = { next: nextLayout, screenX: anchor.screenX, width: anchor.width };
+  } else if (!willResize && anchor) {
+    setStageEdgeLayout(nextLayout);
+    applyCapsuleShift(anchor.screenX, anchor.width);
+  }
   try { window.pet.setPetSize(width, height, anchor, options.popup ? 'popup' : 'resting'); } catch {}
+}
+
+// 尺寸变化落地后，把延后了的 flex 变更和胶囊内缩一次性补上。放在 resize 事件里
+// 同步调用（而非 rAF）：resize 是在主进程 setBounds 之后、下一次 paint 之前触发，
+// 此刻改 flex 不会产生「先挪一帧再弹回」的中间帧。
+function applyPendingEdgeLayout() {
+  if (!pendingEdgeLayout) return;
+  const { next, screenX, width } = pendingEdgeLayout;
+  pendingEdgeLayout = null;
+  setStageEdgeLayout(next);
+  applyCapsuleShift(screenX, width);
 }
 
 // The resting pet window used to stay at BASE_W even when the capsule grew
@@ -719,10 +782,21 @@ function measuredRestingWidth() {
 // 静息帧该有多宽。fitRestingFrame 用它决定真实帧宽，restingEdgeLayout 用它判断
 // 「当前帧是不是已经比静息帧宽了」（即身处弹窗残留帧）。两处必须是同一个定义，
 // 否则关闭弹窗时的贴边判定会和实际帧宽错位。
+//
+// 下限取「弹窗帧宽」而不是基础 320：开关气泡时窗口就只动高度、横向几何（宽度+
+// 原点+对齐）完全不变。这是对 2026-09-16 那两个横向 bug 的根治：
+//   · 抖动（「关气泡猫往左挪一下再弹回」）：窗口横向「宽度+原点」的变更在 macOS
+//     WindowServer 里是两笔事务（先变宽、后挪原点，各触发一次 resize），中间帧猫
+//     必然可见地跳一下。横向不动，抖动在物理上不可能发生。
+//   · 误吸附/形态切换（「点击后猫被搬到边缘、胶囊跟着切贴边形态」）：静息 320 /
+//     弹窗 520 两种帧宽下贴边判定的输入不同，开关一轮气泡可能换对齐换帧宽。横向
+//     几何恒定后这条链路整个消失，气泡和胶囊的形态天然协调。
+// 弹窗帧本来就是 520 宽的透明窗，静息态也用 520 并不会多挡任何东西（命中测试
+// 按元素而不是按窗口矩形），代价为零。
 function restingFrameWidth() {
   return Math.min(
     CAPSULE_FRAME_MAX_W,
-    Math.max(CAPSULE_FRAME_MIN_W, Math.ceil(measuredRestingWidth() + CAPSULE_FRAME_GUTTER)),
+    Math.max(POPUP_W, Math.ceil(measuredRestingWidth() + CAPSULE_FRAME_GUTTER)),
   );
 }
 
@@ -3278,10 +3352,13 @@ window.addEventListener('mousemove', (e) => {
 setMouseIgnore(true);
 
 // 气泡和窗口自适应都可能改变本体在透明窗里的局部位置。
-window.addEventListener('resize', () => requestAnimationFrame(() => {
-  positionBubbleTip();
-  positionQuotaPopoverTip();
-  if (propEl && propEl.classList.contains('on')) positionProp();
-  if (radialOpen && !catVisible) positionCompactRadial();
-  if (!askActive && !actionPopOpen && !peekOpen && !quotaPopoverOpen && !radialOpen) fitRestingFrame();
-}));
+window.addEventListener('resize', () => {
+  applyPendingEdgeLayout();
+  requestAnimationFrame(() => {
+    positionBubbleTip();
+    positionQuotaPopoverTip();
+    if (propEl && propEl.classList.contains('on')) positionProp();
+    if (radialOpen && !catVisible) positionCompactRadial();
+    if (!askActive && !actionPopOpen && !peekOpen && !quotaPopoverOpen && !radialOpen) fitRestingFrame();
+  });
+});
