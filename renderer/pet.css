@@ -274,7 +274,7 @@ html, body {
 .peek-row {
   width: 100%; border: 1px solid rgba(217, 119, 87, 0.18); border-radius: 10px;
   background: rgba(255, 247, 242, 0.82); padding: 7px 9px; color: #3a2a22;
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center;
   gap: 7px; text-align: left; cursor: pointer; -webkit-app-region: no-drag;
 }
 .peek-row:hover { background: #fff1e8; border-color: rgba(217, 119, 87, 0.38); }
@@ -284,6 +284,12 @@ html, body {
 .peek-row-dot.waiting, .peek-row-dot.needsinput { background: #ffb020; }
 .peek-row-dot.error { background: #ff5a52; }
 .peek-row-dot.loafing { background: #8fb8e8; }
+/* Agent 标识图标：.peek-row 网格的第 2 格（点 / 图标 / 正文 / 时间）。
+   13px 抄的是 panel.css 的 .sess-agent —— 两处速览看着要一样大。
+   flex-shrink: 0 是关键：正文那格是 minmax(0, 1fr)，长项目名会一路挤到
+   auto 格上；不锁住的话图标会被压成一条线。 */
+.peek-row-agent { width: 13px; height: 13px; flex-shrink: 0; display: inline-flex; }
+.peek-row-agent svg { width: 100%; height: 100%; display: block; }
 .peek-row-main { min-width: 0; overflow: hidden; }
 .peek-row-project {
   display: block; min-width: 0; font-size: 11.5px; font-weight: 700;

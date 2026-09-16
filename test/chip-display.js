@@ -48,7 +48,7 @@ config.sanitize({ menuBar: { showCost: true } });
 assert.strictEqual(config.sanitize({}).menuBar.showCost, false,
   'sanitize never leaks the callers menu-bar toggle into the shared defaults');
 
-const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/pet-insights.js', 'renderer/pet.js']);
+const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/agents.js', 'shared/pet-insights.js', 'renderer/icons.js', 'renderer/pet.js']);
 // 底部展示栏现在是「每个检测到的 Agent 一份额度」，所以渲染揣包里必须带上
 // quotaAgents 列表 —— 它同时驱动胶囊徽标、托盘行、设置页的开关。
 const codexAgent = { id: 'codex', label: 'Codex', quota: { kind: 'codex', ready: true, status: null } };

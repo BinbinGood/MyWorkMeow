@@ -436,7 +436,9 @@
     'peek.errorTitle': '{count} 个任务遇到问题',
     'peek.multiSub': '点击任务可定位到对应会话',
     'peek.multiSubDetails': '部分任务没有窗口定位信息，可点击查看详情',
-    'peek.sessionSub': '{agent} · {project}',
+    // 2026-09-16：去掉了 {agent} 前缀。Agent 由速览行首的彩色图标表示，
+    // 标题这里只留项目名（这一支只在单会话时出现，下面那行已经有图标了）。
+    'peek.sessionSub': '{project}',
     'peek.today': '今日 {rounds} 轮 · {tokens} tokens · API 等价 {cost}',
     'peek.running': '运行中 {running} · 等待你 {waiting} · 今日 {rounds} 轮',
     'peek.more': '另有 {count} 个任务，可在详情中查看',

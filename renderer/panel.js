@@ -314,14 +314,19 @@ const STATE_META = {
   talking: { key: 'state.talking', cls: 'st-talking' },
 };
 
-const AGENT_ICON = {
-  claude: '<svg viewBox="0 0 24 24" fill="#d97757"><path d="M12 1l2.2 6.3L20.5 5l-4 5.4 6.5 1.6-6.5 1.6 4 5.4-6.3-2.3L12 23l-2.2-6.3L3.5 19l4-5.4L1 12l6.5-1.6-4-5.4 6.3 2.3z"/></svg>',
-  codex: '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5" fill="#3b82f6"/><path d="M7 8l4 4-4 4" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 16.5h4.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>',
-  trae: '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5" fill="#16b8a6"/><path d="M7 17L17 7M17 7H9M17 7V15" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  workbuddy: '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5" fill="#6d5efc"/><path d="M12 6l1.35 3.65L17 11l-3.65 1.35L12 16l-1.35-3.65L7 11l3.65-1.35z" fill="#fff"/></svg>',
-  opencode: '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5" fill="#17181c"/><path d="M8.5 6.5v11L17.5 12z" fill="#ff5f1f"/></svg>',
-};
-const AGENT_NAME = { claude: 'Claude', codex: 'Codex', trae: 'TRAE', workbuddy: 'WorkBuddy', opencode: 'opencode' };
+// Agent 图标与名字都来自共享代码：图标在 renderer/icons.js 的 agentIcon()，
+// 名字在 shared/agents.js 的 shortLabel()（panel.html 两个都加载了）。
+// 2026-09-16 之前这里各有一份私有副本，速览那边要用同样的图标时只能再抄一遍。
+// 两个 window.* 都带兜底：脚本加载顺序坏掉时宁可少个图标，不要整块会话列表炸掉。
+function agentIcon(key) {
+  const icons = window.WorkMeowIcons;
+  return icons && typeof icons.agentIcon === 'function' ? icons.agentIcon(key) : '';
+}
+
+function agentName(key) {
+  const agents = window.WorkMeowAgents;
+  return agents && typeof agents.shortLabel === 'function' ? agents.shortLabel(key) : (key || 'Claude');
+}
 
 function renderSessList(sessions) {
   const el = $('sess-list');
@@ -358,8 +363,8 @@ function renderSessList(sessions) {
         : escapeHtml(t(m.key));
       const context = contextLabel(s.contextPercent);
       const contextSuffix = context ? ` · ${context}` : '';
-      const icon = AGENT_ICON[s.agent] || AGENT_ICON.claude;
-      const who = AGENT_NAME[s.agent] || 'Claude';
+      const icon = agentIcon(s.agent);
+      const who = escapeHtml(agentName(s.agent));
       const proj = escapeHtml(s.project || '');
       const detailTitle = `${detail}${contextSuffix}`;
       return `<div class="row sess"><span class="badge ${m.cls}">${escapeHtml(t(m.key))}</span><span class="sess-agent" title="${who}">${icon}</span><span class="sess-proj" title="${proj}">${proj}</span><span class="sess-op" title="${detailTitle}">${detail}${escapeHtml(contextSuffix)}</span></div>`;

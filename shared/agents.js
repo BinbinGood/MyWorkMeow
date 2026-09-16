@@ -77,7 +77,7 @@ function shortLabel(key) {
   return AGENTS[key] ? AGENTS[key].short : (key || 'Claude');
 }
 
-module.exports = {
+const api = {
   AGENTS,
   SHORT_KEYS,
   shortKey,
@@ -88,4 +88,12 @@ module.exports = {
   shortLabel,
 };
 
-if (typeof window !== 'undefined') window.WorkMeowAgents = module.exports;
+// UMD 守卫必须两边都判（照 shared/states.js:16 的写法）。
+// 2026-09-16 修：这里原来是裸的 `module.exports = {...}`，渲染进程开着
+// sandbox: true（main.js:266/327/376），根本没有 module —— 于是整个文件在第一
+// 行 module.exports 处抛 ReferenceError，下面那句 window.WorkMeowAgents 永远
+// 执行不到。pet.html 明明加载了它，可 pet.js:1226 的 try/catch 一直在走硬编码
+// 的兜底表，谁也没发现。同目录的 states.js / i18n.js / pet-assets.js 都有守卫，
+// 只有这个文件漏了。
+if (typeof module !== 'undefined' && module.exports) module.exports = api;
+if (typeof window !== 'undefined') window.WorkMeowAgents = api;

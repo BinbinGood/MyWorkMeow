@@ -23,6 +23,20 @@ class ClassList {
   get list() { return [...this._set]; }
 }
 
+// innerHTML → textContent 的近似：剥掉标签，再把 renderer/icons.js 的
+// escapeHtml() 写进去的实体还原成字符。
+// &amp; 必须放最后一个解 —— 先解它的话，`&amp;lt;`（原文是字面量 "&lt;"）会先
+// 变成 `&lt;` 再被下一条解成 `<`，等于把转义又拆开了。
+function stripTags(html) {
+  return String(html)
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
 function makeElement(tag, id) {
   const el = {
     tagName: String(tag || 'div').toUpperCase(),
@@ -54,9 +68,18 @@ function makeElement(tag, id) {
     get() { return el._attrs.src || ''; },
     set(v) { el._attrs.src = String(v); },
   });
+  // 真实浏览器里给 innerHTML 赋值会连带改写 textContent（整棵子树被新标记替换，
+  // 文本自然变成新标记的纯文本）。这个 stub 原来只写 _innerHTML，textContent 停在
+  // 旧值不动 —— 于是 pet.js 的 setTextWithIcons()（emoji → 内联 SVG，走 innerHTML）
+  // 在测试里看着像「气泡里啥也没有」，生产环境却完全正常。
+  // 2026-09-16 补上派生：剥标签 + 还原 escapeHtml 写进去的那 5 个实体。
   Object.defineProperty(el, 'innerHTML', {
     get() { return el._innerHTML; },
-    set(v) { el._innerHTML = String(v); if (!v) el.children = []; },
+    set(v) {
+      el._innerHTML = String(v);
+      if (!v) el.children = [];
+      el.textContent = stripTags(el._innerHTML);
+    },
   });
   el.getAttribute = (k) => (k in el._attrs ? el._attrs[k] : (k === 'class' ? el.className : null));
   el.setAttribute = (k, v) => { el._attrs[k] = String(v); };

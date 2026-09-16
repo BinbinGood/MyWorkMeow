@@ -1223,6 +1223,18 @@ let peekTimer = null;
 let peekLayoutSig = '';
 let peekPrimarySessionId = '';
 
+// s.agent 已经是短 key（claude / codex / …），但历史数据里可能是完整的
+// agentId（'claude-code'）。shortKey() 两种都吃，未知值回落 'claude'。
+function peekAgentKey(agent) {
+  try {
+    if (window.WorkMeowAgents && typeof window.WorkMeowAgents.shortKey === 'function') {
+      if (window.WorkMeowAgents.isKnownKey(agent)) return agent;
+      return window.WorkMeowAgents.shortKey(agent);
+    }
+  } catch {}
+  return agent || 'claude';
+}
+
 function peekAgentLabel(agent) {
   try {
     if (window.WorkMeowAgents && typeof window.WorkMeowAgents.shortLabel === 'function') {
@@ -1230,6 +1242,17 @@ function peekAgentLabel(agent) {
     }
   } catch {}
   return ({ claude: 'Claude', codex: 'Codex', trae: 'TRAE', workbuddy: 'WorkBuddy', opencode: 'opencode' })[agent] || 'AI';
+}
+
+// 图标来自 renderer/icons.js（pet.html:148 已加载）。拿不到就回空串：
+// .peek-row-agent 那一格会塌成 0 宽，行还是完整的 —— 比整个速览炸掉好。
+function peekAgentSvg(agent) {
+  try {
+    if (window.WorkMeowIcons && typeof window.WorkMeowIcons.agentIcon === 'function') {
+      return window.WorkMeowIcons.agentIcon(agent);
+    }
+  } catch {}
+  return '';
 }
 
 function peekTime(ms) {
@@ -1297,12 +1320,28 @@ function makePeekRow(s) {
   dot.className = 'peek-row-dot ' + effective;
   dot.setAttribute('aria-hidden', 'true');
 
+  // Agent 用图标而不是文字前缀。原来这里是「Codex · WorkMeow」，固定前缀在
+  // 180px 出头的标题列里能吃掉 ~65px，真正的项目名反而先被省略号截掉。
+  // 2026-09-16 换成图标，全名只进 title / aria-label（读屏和悬停仍拿得到）。
+  //
+  // 图标是 .peek-row 网格的第 2 格，**不塞进 .peek-row-main** —— 后者靠
+  // min-width:0 + overflow:hidden 撑省略号，往里加同级元素会把那套约束搅乱。
+  // 单独一格还能和状态点对齐成一条竖线。
+  const agentKey = peekAgentKey(s.agent);
+  const agentIcon = document.createElement('span');
+  agentIcon.className = 'peek-row-agent';
+  agentIcon.innerHTML = peekAgentSvg(agentKey);
+  // 图标本身对读屏无意义（SVG 里已经 aria-hidden），名字挂在容器的 label 上。
+  agentIcon.setAttribute('aria-label', peekAgentLabel(agentKey));
+  agentIcon.title = peekAgentLabel(agentKey);
+
   const main = document.createElement('span');
   main.className = 'peek-row-main';
   const project = document.createElement('span');
   project.className = 'peek-row-project';
-  project.textContent = `${peekAgentLabel(s.agent)} · ${s.project || t('peek.unknownProject')}`;
-  project.title = project.textContent;
+  project.textContent = s.project || t('peek.unknownProject');
+  // title 仍带上 Agent 名：图标认不出来时，悬停能问出「这是哪个」。
+  project.title = `${peekAgentLabel(agentKey)} · ${project.textContent}`;
   const detail = document.createElement('span');
   detail.className = 'peek-row-detail';
   detail.textContent = peekSessionDetail(s);
@@ -1314,6 +1353,7 @@ function makePeekRow(s) {
   time.textContent = peekSessionTime(s);
 
   row.appendChild(dot);
+  row.appendChild(agentIcon);
   row.appendChild(main);
   row.appendChild(time);
   row.addEventListener('click', (e) => {
@@ -1351,8 +1391,9 @@ function renderPeek(stats) {
       : t('peek.multiSub');
   }
   else if (primary && PEEK_BUSY_STATES.has(primary.state)) {
+    // 只剩项目名，不再带 Agent 前缀 —— 这一支只在**单会话**时走到，下面那唯一
+    // 一行里已经有 Agent 图标了，标题再重复一遍纯属挤地方。
     peekSubtitle.textContent = t('peek.sessionSub', {
-      agent: peekAgentLabel(primary.agent),
       project: primary.project || t('peek.unknownProject'),
     });
   } else {

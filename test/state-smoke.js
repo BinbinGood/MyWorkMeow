@@ -32,12 +32,20 @@ function baseStats(over = {}) {
 }
 
 function world() {
-  const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/pet-insights.js', 'renderer/pet.js']);
+  const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/agents.js', 'shared/pet-insights.js', 'renderer/icons.js', 'renderer/pet.js']);
   return w;
 }
 const stateClasses = (el) => el.classList.list.filter((c) => STATE_WORDS.includes(c));
 const catSrc = (w) => w.elements('cat-img').getAttribute('src');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 气泡文案里被 renderer/icons.js 收录的 emoji（✅💬✋💤📊📄🔔）会被 showBubble()
+// 换成内联 SVG，所以读 textContent 时那个字符已经不在了 —— 生产环境本来就这样。
+// 想断言「选中了哪一句」而不是「图标怎么渲染的」，就把两边都归一化掉再比。
+// 2026-09-16：测试世界开始加载 icons.js 之后才需要这一步（在那之前
+// window.WorkMeowIcons 是 undefined，showBubble 一直走 textContent 那一支）。
+const MAPPED_EMOJI_RE = /[✅💬✋💤📊📄🔔]\s*/g;
+const bubbleLine = (text) => String(text == null ? '' : text).replace(MAPPED_EMOJI_RE, '').trim();
 function clickCat(w, x = 10, y = 10) {
   const cat = w.elements('cat');
   cat.dispatch('pointerdown', { button: 0, pointerId: 1, screenX: x, screenY: y });
@@ -209,7 +217,8 @@ async function main() {
       '🥢 到饭点啦，代码不会趁你吃饭时长腿跑掉的。',
     ];
     const bubbleText = w.elements('bubble-text');
-    check('午饭窗口同步播报干饭气泡', () => assert(lunchLines.includes(bubbleText.textContent), bubbleText.textContent));
+    check('午饭窗口同步播报干饭气泡', () =>
+      assert(lunchLines.map(bubbleLine).includes(bubbleLine(bubbleText.textContent)), bubbleText.textContent));
     bubbleText.textContent = '__same_window__';
     w.handlers.stats(baseStats({ idleMs: 1000 }));
     check('同一下班窗口的快照刷新不重复播报', () => assert.strictEqual(bubbleText.textContent, '__same_window__'));
@@ -223,7 +232,8 @@ async function main() {
       '🌃 工位已由喵接管，放心下班，记得按时吃饭！',
       '🔔 收工收工！再不走，晚饭就要开始等你回复了。',
     ];
-    check('晚间窗口使用下班主题文案', () => assert(eveningLines.includes(bubbleText.textContent), bubbleText.textContent));
+    check('晚间窗口使用下班主题文案', () =>
+      assert(eveningLines.map(bubbleLine).includes(bubbleLine(bubbleText.textContent)), bubbleText.textContent));
     setLocalTime(17, 5);
     w.handlers.stats(baseStats({ idleMs: null }));
     check('下班窗口结束后退出 cat-xiaban', () => assert(!catSrc(w).endsWith('cat-xiaban.gif')));
@@ -281,7 +291,7 @@ async function main() {
 
   console.log('[R9] 启动不闪 idle');
   {
-    const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/pet-insights.js', 'renderer/pet.js']);
+    const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/agents.js', 'shared/pet-insights.js', 'renderer/icons.js', 'renderer/pet.js']);
     // 模拟 init 拿到快照（getStats stub 返回 null，这里直接补推快照 + 确认不被覆盖）
     w.handlers.stats(baseStats({ workingCount: 1 }));
     await sleep(30); // 让 init 的 async IIFE 走完（getStats→null→setState('idle') 只在无快照时）
@@ -350,14 +360,33 @@ async function main() {
     check('单击干活中的喵打开速览', () => assert(!peek.classList.contains('hidden')));
     check('速览展示状态、Agent、项目和当前操作', () => {
       assert.strictEqual(w.elements('peek-title').textContent, '干活中');
-      assert.strictEqual(w.elements('peek-subtitle').textContent, 'Codex · WorkMeow');
+      // 2026-09-16：Agent 从文字前缀改成行首图标，副标题只剩项目名。
+      // 原来这里是 'Codex · WorkMeow'，固定前缀在窄弹窗里吃掉一大截标题列。
+      assert.strictEqual(w.elements('peek-subtitle').textContent, 'WorkMeow');
       const row = w.elements('peek-list').children[0];
-      assert(row && row.children[1].children[1].textContent === '编辑文件');
+      // .peek-row 现在是四格：点 / Agent 图标 / 正文 / 时间。
+      // 图标插在索引 1，所以正文那格从 children[1] 挪到了 children[2]。
+      assert.strictEqual(row.children.length, 4, '一行是「点 / 图标 / 正文 / 时间」四格');
+      assert.strictEqual(row.children[1].className, 'peek-row-agent');
+      assert.strictEqual(row.children[2].className, 'peek-row-main');
+      assert.strictEqual(row.children[2].children[0].textContent, 'WorkMeow',
+        '项目名独占标题行，前面不再顶着 Agent 名');
+      assert.strictEqual(row.children[2].children[1].textContent, '编辑文件');
+      // 图标是内联 SVG + 品牌色，全名只走 title / aria-label。
+      // 这里同时守住 shared/agents.js 的 UMD：那个文件到 2026-09-16 都是裸的
+      // module.exports，在无 module 的沙箱里（渲染进程 sandbox: true，以及这个
+      // vm 上下文）第一行就抛 ReferenceError，window.WorkMeowAgents 根本没被赋值。
+      assert(/<svg/.test(row.children[1].innerHTML), 'Agent 那格是内联 SVG');
+      assert(/#3b82f6/.test(row.children[1].innerHTML), 'Codex 用它自己的品牌蓝');
+      assert.strictEqual(row.children[1].title, 'Codex', '悬停能问出这是哪个 Agent');
+      assert.strictEqual(row.children[1].getAttribute('aria-label'), 'Codex', '读屏拿得到 Agent 名');
+      assert.strictEqual(row.children[2].children[0].title, 'Codex · WorkMeow',
+        '全名进 title —— 图标认不出来时还有退路');
     });
     w.handlers.stats({ ...working, sessions: [{ ...working.sessions[0], op: '运行命令', idleMs: 2000 }] });
     check('速览打开期间快照就地刷新', () => {
       const row = w.elements('peek-list').children[0];
-      assert.strictEqual(row.children[1].children[1].textContent, '运行命令');
+      assert.strictEqual(row.children[2].children[1].textContent, '运行命令');
     });
     w.elements('peek-focus').dispatch('click');
     check('主按钮聚焦当前会话', () => {
