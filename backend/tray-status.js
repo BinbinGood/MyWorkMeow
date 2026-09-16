@@ -21,7 +21,7 @@
 //   · 不再截断（有几个显示几个）
 //   · 不再有「额度槽位归谁」的概念（每个 agent 各显示自己的额度）
 //   · 每个 agent 的信息拼成一行；超过宽度上限就在片段边界折行，
-//     续行用全角空格做悬挂缩进（同一行的**片段内部**不做断字，
+//     续行顶格（同一行的**片段内部**不做断字，
 //     一个片段本身超宽就让它独占一行，宁可溢出也不把词切两半）
 //   · 没有数字时不删行，写一行状态文字（例如「积分未设置每期总量」）
 //
@@ -34,9 +34,6 @@ const ROW_WIDTH_LIMIT = 32;
 
 // 片段之间的分隔符。沿用 v3 的全角空格 + 中点，和托盘其它地方一致。
 const PART_SEP = '　·　';
-// 折行后的续行缩进。全角空格 = 2 列，正好让续行挂在名字下面。
-const CONTINUATION_INDENT = '　';
-
 // 令牌数量级缩写。桌宠托盘是速览场景，1,234,567 不如 1.2M 好读。
 function num(value) {
   const n = Number(value);
@@ -156,7 +153,9 @@ function agentParts(agent, t) {
   return parts;
 }
 
-// 一个 agent → 1..N 行。第一行以名字开头，续行用全角空格悬挂缩进。
+// 一个 agent → 1..N 行。第一行以名字开头，续行顶格（跟第一行左对齐）——
+// 之前用全角空格做「悬挂缩进」，但缩进量是固定的 2 列，跟名字宽度对不上，
+// 名字一长（WorkBuddy = 9 列）续行就莫名其妙凹进去 2 列，用户看着像没对齐。
 // 折行只在片段边界发生：宁可让一个超长片段独占一行（轻微溢出），
 // 也不把「正在自动重试」这种词从中间切开。
 function agentLines(agent, t, limit = ROW_WIDTH_LIMIT) {
@@ -179,7 +178,7 @@ function agentLines(agent, t, limit = ROW_WIDTH_LIMIT) {
       line += PART_SEP + part;
     } else {
       lines.push(line);
-      line = CONTINUATION_INDENT + part;
+      line = part;
     }
   }
   lines.push(line);

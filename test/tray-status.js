@@ -89,7 +89,7 @@ const workbuddy = {
 const rows = tray.buildStatusRows({ agents: [workbuddy], t });
 assert(rows.length === 2, `a single agent wraps into 2 lines (got ${rows.length})`);
 assert(rows[0].label === 'WorkBuddy　积分剩余 1696', `first line starts with the name (got ${rows[0].label})`);
-assert(rows[1].label.startsWith('　'), 'continuation lines hang under the name');
+assert(rows[1].label.startsWith('Token'), 'continuation lines are flush-left (no indent)');
 assert(tray.displayWidth(rows[1].label) <= tray.ROW_WIDTH_LIMIT,
   `continuation stays within the width budget (got ${tray.displayWidth(rows[1].label)})`);
 assertTranslated(rows, 'the agent block renders');
@@ -138,8 +138,8 @@ assert(!longStatus[0].endsWith('　') && !/　$/.test(longStatus[0]), 'no traili
 
 // limit 真的生效
 const narrow = tray.agentLines(workbuddy, t, 10);
-assert(narrow.every((line, i) => i === 0 || line.startsWith('　')),
-  'every continuation line is indented');
+assert(narrow.every((line, i) => i === 0 || !line.startsWith('　')),
+  'every continuation line is flush-left (no indent)');
 assert(narrow.length > 2, `a tight limit forces more lines (got ${narrow.length})`);
 
 // 片段顺序固定：额度 → Token → 费用
