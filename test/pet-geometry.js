@@ -93,6 +93,48 @@ for (const [name, windowRect, petRect, expected] of [
   );
 }
 
+// 帧宽不能影响横向贴边判定。2026-09-16 的回归就死在这里：胶囊的 --chip-shift
+// （transform）撑大了 #compact-row.scrollWidth，measuredRestingWidth 把它当内容宽
+// 量了进去，帧宽从 320 被顶到 381 —— 一脚跨过当时 360 的 inferHorizontalFrameClamp
+// 上限，横向判定被关掉，猫被 applyPetSize 钳到离边缘 130px。用户实测：「出现调用
+// 工具的尺寸/思考中，图标自动往中间移动了一点，不靠边了」。
+// 而且额度徽标全开时胶囊本身就 480 宽（帧宽 504），根本不用泄漏也早就过 360 —— 那
+// 个上限在横向维度上从来就不成立。这组把「任何帧宽下都得认贴边」钉死。
+for (const frame of [320, 338, 360, 361, 381, 504, 688, 900]) {
+  // 窗口右缘/左缘吃满工作区，猫本体困在窗口里 100px 透明留白 —— 只有 infer 分支能救。
+  assert.strictEqual(
+    geometry.chooseRestingLayout({
+      workArea,
+      windowRect: { x: 0, y: 400, width: frame, height: 340 },
+      petRect: { x: 100, y: 200, width: 120, height: 120 },
+      threshold: 218,
+    }).horizontal,
+    'left',
+    `帧宽 ${frame}：窗口贴左缘、猫内缩 100px 必须仍判成 left`,
+  );
+  assert.strictEqual(
+    geometry.chooseRestingLayout({
+      workArea,
+      windowRect: { x: 1440 - frame, y: 400, width: frame, height: 340 },
+      petRect: { x: frame - 220, y: 200, width: 120, height: 120 },
+      threshold: 218,
+    }).horizontal,
+    'right',
+    `帧宽 ${frame}：窗口贴右缘、猫内缩 100px 必须仍判成 right`,
+  );
+  // 真的在屏幕中间：任何帧宽下都不能误判成贴边。
+  assert.strictEqual(
+    geometry.chooseRestingLayout({
+      workArea,
+      windowRect: { x: 500, y: 400, width: frame, height: 340 },
+      petRect: { x: 100, y: 200, width: 120, height: 120 },
+      threshold: 218,
+    }).horizontal,
+    'center',
+    `帧宽 ${frame}：屏幕中间不能误判成贴边`,
+  );
+}
+
 // ── 胶囊按需最小位移 ──────────────────────────────────────────────────────────
 // 胶囊比猫宽，「猫贴死边」和「胶囊完整可读且严格居中」不可能同时成立。用户定的
 // 口径是默认严格居中、只在会探出工作区时往内挪刚好够用的那点距离。

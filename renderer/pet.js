@@ -416,7 +416,6 @@ const chipCost = document.getElementById('chip-cost');
 const chipTokens = document.getElementById('chip-tokens');
 const chipContext = document.getElementById('chip-context');
 const chip = document.getElementById('chip');
-const compactRow = document.getElementById('compact-row');
 const quotaEl = document.getElementById('chip-quota');
 const quotaPopover = document.getElementById('quota-popover');
 const quotaPopoverTitle = document.getElementById('quota-popover-title');
@@ -506,7 +505,6 @@ const POPUP_BOTTOM = 200;
 const ASK_VIEWPORT_MAX_H = 520;
 const BASE_PET_FRAME_H = 340;
 const RESTING_FRAME_MAX_H = 360;
-const RESTING_FRAME_MAX_W = 360;
 let fitPopupSeq = 0;
 let edgeLayout = { vertical: 'above', horizontal: 'center' };
 
@@ -562,7 +560,6 @@ function anchoredLayoutPayload(next) {
   const waBottom = wa.y + wa.height;
   const wr = before.windowRect;
   const compactVerticalFrame = wr.height <= RESTING_FRAME_MAX_H;
-  const compactHorizontalFrame = wr.width <= RESTING_FRAME_MAX_W;
   let screenX = wr.x + oldPet.x;
   let screenY = wr.y + oldPet.y;
 
@@ -574,8 +571,12 @@ function anchoredLayoutPayload(next) {
     && wr.y + wr.height >= waBottom - 3 && wr.height - oldPet.y - oldPet.height > 18) {
     screenY = waBottom - oldPet.height;
   }
-  if (compactHorizontalFrame && next.horizontal === 'left' && wr.x <= wa.x + 3 && oldPet.x > 18) screenX = wa.x;
-  if (compactHorizontalFrame && next.horizontal === 'right'
+  // 横向没有「紧凑帧」这个前提。竖直方向需要它：高弹窗被钳到屏顶时会伪装成
+  // 顶部拖拽，必须按帧高排除。横向不存在这个风险 —— choosePopupLayout 横向恒
+  // 返回 center，弹窗根本走不到这里；而静息帧宽是内容内蕴的（320～900，光额度
+  // 徽标全开胶囊就 480 宽 → 帧宽 504），拿一个固定像素数去卡它维度上就是错的。
+  if (next.horizontal === 'left' && wr.x <= wa.x + 3 && oldPet.x > 18) screenX = wa.x;
+  if (next.horizontal === 'right'
     && wr.x + wr.width >= waRight - 3 && wr.width - oldPet.x - oldPet.width > 18) {
     screenX = waRight - oldPet.width;
   }
@@ -604,8 +605,9 @@ function anchoredLayoutPayload(next) {
 // anchored payload 机制保证的就是这件事。窗口移动不会触发渲染端的 resize
 // 事件，所以指望事后重算是等不到的。
 //
-// 反复调用是幂等的：输入只有本体的屏幕位置和胶囊的**宽度**，translateX 不改宽度，
-// 也不参与布局，量不进 measuredRestingWidth，不存在「变宽→位移→又变宽」的自激。
+// 反复调用是幂等的：输入只有本体的屏幕位置和胶囊的**宽度**，translateX 不改宽度。
+// 但要小心 —— transform 虽然不参与布局，却**会**把祖先的 scrollWidth 撑大，所以
+// measuredRestingWidth 必须绕开 #compact-row（见那里的注释），否则位移会喂回帧宽。
 function applyCapsuleShift(petScreenX, petWidth) {
   if (!stage || !stage.style) return;
   const rect = chip && !chip.hidden && typeof chip.getBoundingClientRect === 'function'
@@ -645,7 +647,8 @@ function restingEdgeLayout() {
     ...snapshot,
     threshold: Math.max(24, topThreshold),
     inferVerticalFrameClamp: snapshot.windowRect.height <= RESTING_FRAME_MAX_H,
-    inferHorizontalFrameClamp: snapshot.windowRect.width <= RESTING_FRAME_MAX_W,
+    // 横向恒开，理由见 anchoredLayoutPayload 里同一件事的注释。
+    inferHorizontalFrameClamp: true,
   });
 }
 
@@ -677,9 +680,17 @@ const CAPSULE_FRAME_MAX_W = 900;
 const CAPSULE_FRAME_GUTTER = 24;
 let restingFitFrame = null;
 
+// 只量**内容**元素，绝不量 #compact-row。
+// .chip 带 transform: translateX(--chip-shift)：transform 不参与布局，但它**会**把
+// 祖先的 scrollWidth 撑大（实测 shift=204px 时 compact-row.scrollWidth 275 → 479，
+// 正好 +204，而 chip 自己仍是 275）。一旦把 compactRow 量进来，位移量就原封不动
+// 喂回帧宽 → 帧宽过 360 → 横向贴边判定被关掉 → 猫被主进程钳离边缘一百多像素，
+// 也就是「出现工具图标/思考中就自动往中间移动」。
+// compactRow 本来也是纯冗余：猫可见（column）和猫隐藏（row）两种模式下它都恰好
+// 等于 chip 的宽度，去掉零损失。
 function measuredRestingWidth() {
   const widths = [];
-  for (const el of [compactRow, chip, sessionsEl]) {
+  for (const el of [chip, sessionsEl]) {
     if (!el || el.hidden) continue;
     const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
     const rectWidth = rect && Number(rect.width);

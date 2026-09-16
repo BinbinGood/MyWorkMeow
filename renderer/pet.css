@@ -542,8 +542,11 @@ html, body {
   /* 贴边时整列被 align-items 拉到窗口缘，胶囊比猫宽，光靠对齐就会甩到猫的侧面。
      --chip-shift 由 pet.js 按「默认严格居中在猫正下方，只有会探出工作区时才往内
      挪刚好够用的那点距离」算出来（shared/pet-geometry.js 的 capsuleShift）。
-     用 transform 而不是 margin：transform 不参与布局，量不到 measuredRestingWidth
-     里去，否则会变成「变宽 → 位移 → 又变宽」的自激。 */
+     用 transform 而不是 margin：margin 会挤压兄弟节点、把整列的布局宽度推出去。
+     但 transform **不是**「完全量不到」—— 它不参与布局，却会把祖先的 scrollWidth
+     撑大（实测 shift=204px 时 #compact-row 的 scrollWidth 275 → 479）。所以
+     pet.js 的 measuredRestingWidth 只量 .chip / .sessions，绝不量 #compact-row，
+     否则位移会喂回帧宽，变成「变宽 → 位移 → 又变宽」的自激。 */
   transform: translateX(var(--chip-shift, 0px));
 }
 #stage:hover .chip { opacity: 1; }

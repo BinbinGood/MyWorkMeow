@@ -121,12 +121,34 @@ assert(/#stage\.edge-left:not\(\.cat-hidden\) #compact-row\s*\{[^}]*align-items\
   && /#stage\.edge-right:not\(\.cat-hidden\) #compact-row\s*\{[^}]*align-items\s*:\s*flex-end\s*;/s.test(css),
   'the compact row must put the cat itself on the snapped side');
 // 胶囊比猫宽，整列贴边时它会被带出去。补偿走 --chip-shift（按需最小位移），
-// 且必须是 transform —— margin 会参与布局、量进 measuredRestingWidth，变成
-// 「变宽 → 位移 → 又变宽」的自激。
+// 且必须是 transform —— margin 会挤压兄弟节点、把整列的布局宽度推出去。
 assert(/\.chip\s*\{[\s\S]*?transform:\s*translateX\(var\(--chip-shift/.test(css),
   'the capsule must be nudged by transform, never by layout-affecting margins');
 assert(/PetGeometry\.capsuleShift/.test(js) && /--chip-shift/.test(js),
   'the renderer must compute the capsule shift from the pet post-move screen position');
+// 2026-09-16：上一版注释在这里断言「transform 量不到 measuredRestingWidth 里去」，
+// 那句话是错的。transform 不参与**布局**，但会把祖先的 scrollWidth 撑大：实测
+// --chip-shift 从 0 到 204px，#compact-row.scrollWidth 从 275 变成 479（正好 +204），
+// 而 .chip 自己仍是 275。measuredRestingWidth 读的就是 scrollWidth，于是位移原封
+// 不动喂回帧宽 → 帧宽长过横向贴边判定的旧上限 → 猫被主进程钳离边缘一百多像素。
+// 用户实测：「出现调用工具的尺寸/思考中，图标自动往中间移动了一点，不靠边了」。
+// compactRow 本来就是冗余项（猫可见/隐藏两种模式下都恰等于 chip 宽度），移除零损失。
+assert(/function measuredRestingWidth\(\)[\s\S]*?\n\}/.test(js), 'resting width measurement must remain');
+{
+  const fn = js.match(/function measuredRestingWidth\(\)[\s\S]*?\n\}/)[0];
+  assert(!/compactRow/.test(fn),
+    'measuredRestingWidth must not read #compact-row: .chip transform inflates its scrollWidth and feeds the shift back into the frame width');
+  assert(/\[chip, sessionsEl\]/.test(fn),
+    'resting width must come from the capsule and session dots themselves');
+}
+// 横向贴边判定不能再按帧宽开关。静息帧宽是内容内蕴的（额度徽标全开时胶囊 480 宽
+// → 帧宽 504），拿固定像素数去卡它维度上就是错的；竖直方向的帧高门必须保留。
+assert(!/RESTING_FRAME_MAX_W/.test(js),
+  'the horizontal snapping gate must not be reinstated as a fixed frame-width cap');
+assert(/inferHorizontalFrameClamp:\s*true/.test(js),
+  'horizontal edge inference must stay on regardless of the capsule-driven frame width');
+assert(/inferVerticalFrameClamp:\s*snapshot\.windowRect\.height <= RESTING_FRAME_MAX_H/.test(js),
+  'the vertical frame-height gate must remain: a tall popup clamped to the screen top would masquerade as a top-edge drag');
 // 旧补丁不能回来：从前是贴边把整列甩过去、再给 .chip 补一个 justify-content: center
 // 找回中心。那条既解决不了溢出，也和 --chip-shift 抢同一件事。
 assert(!/#stage\.edge-(?:left|right)[^{]*\.chip\s*\{[^}]*justify-content/s.test(css),
