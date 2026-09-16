@@ -235,11 +235,12 @@ function createServer(deps) {
         agentId: isKnownAgentId(data.agent_id) ? data.agent_id : 'claude-code',
       };
 
-      // Only terminal session events that prove the request is stale (currently
-      // SessionEnd) may clear permission cards. Parallel tool events share a
-      // session_id and must not sweep another agent's live request.
+      // 权限卡片的清理证据分三种（见 permission.js 的长注释）：SessionEnd 整会话清；
+      // PostToolUse(+Failure) 带 tool_name，是「终端点了允许」的请求级铁证，精确撤一张；
+      // Stop 只是候选证据，进静默期观察。并行 agent 共用 session_id，所以绝不做
+      // 无条件的会话级清扫。
       try {
-        permissions.sweepForSessionEvent(sid, event);
+        permissions.sweepForSessionEvent(sid, event, fields.toolName);
         core.updateSession(sid, state, event, fields);
         res.writeHead(200, serverHeaders());
         res.end('ok');

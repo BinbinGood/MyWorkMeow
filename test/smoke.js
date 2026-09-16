@@ -23,6 +23,8 @@ const core = createCore({
 const permissions = createPermissions({
   onAdded: (entry) => { events.push({ kind: 'waiting', permId: entry.id, sessionId: entry.sessionId }); },
   onChange: () => {},
+  // 「终端抢答」的静默期缩短到 300ms：真实值是 10s，测试没必要真等。
+  quietSweepMs: 300,
 });
 const server = createServer({ core, permissions });
 
@@ -177,10 +179,12 @@ async function main() {
   const ptResp = await post('/permission', { tool_name: 'TaskCreate', tool_input: {}, session_id: 'pt' });
   check('TaskCreate auto-allow', () => assert.strictEqual(JSON.parse(ptResp.body).hookSpecificOutput.decision.behavior, 'allow'));
 
-  console.log('\n[7] 并行事件保留权限卡；只在 SessionEnd 无裁决清理');
+  console.log('\n[7] 并行事件保留权限卡；终端抢答按请求级证据精确清理');
   const sweepSid = 'sweep-session-dddd';
-  const bashP = post('/permission', { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: sweepSid });
-  const writeP = post('/permission', { tool_name: 'Write', tool_input: { file_path: '/tmp/parallel.txt' }, session_id: sweepSid });
+  const bashA = postAbortable('/permission', { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: sweepSid });
+  const writeReq = postAbortable('/permission', { tool_name: 'Write', tool_input: { file_path: '/tmp/parallel.txt' }, session_id: sweepSid });
+  const bashAOutcome = bashA.settled.then((resp) => ({ resp }), (err) => ({ err }));
+  const writeOutcome = writeReq.settled.then((resp) => ({ resp }), (err) => ({ err }));
   await sleep(60);
   check('two distinct permissions can wait in one shared session', () => {
     assert.strictEqual(permissions.getPending().filter((p) => p.sessionId === sweepSid).length, 2);
@@ -192,24 +196,63 @@ async function main() {
     assert.strictEqual(new Set(actions.map((action) => action.id)).size, 2);
     assert.strictEqual(parallelStats.waitingCount, 2);
   });
-  for (const [event, state] of [
-    ['PostToolUse', 'working'],
-    ['PostToolUseFailure', 'error'],
-    ['Stop', 'attention'],
-    ['UserPromptSubmit', 'thinking'],
-  ]) {
-    await post('/state', { state, event, tool_name: 'Bash', session_id: sweepSid });
-  }
-  check('unrelated lifecycle events keep both live permission cards', () => {
+
+  // 别的工具跑完，证明不了 Bash / Write 这两个请求过期了。
+  await post('/state', { state: 'working', event: 'PostToolUse', tool_name: 'Read', session_id: sweepSid });
+  await sleep(20);
+  check('无关工具的 PostToolUse 不动任何权限卡', () => {
     assert.strictEqual(permissions.getPending().filter((p) => p.sessionId === sweepSid).length, 2);
   });
+
+  // 同会话再来一个 Bash：并行 agent 的另一个请求，内容不同 → 独立卡片。
+  const bashB = postAbortable('/permission', { tool_name: 'Bash', tool_input: { command: 'pwd -P' }, session_id: sweepSid });
+  const bashBOutcome = bashB.settled.then((resp) => ({ resp }), (err) => ({ err }));
+  await sleep(60);
+  // 用户在终端点了「允许」→ 工具真的跑完 → PostToolUse(tool_name=Bash) 是请求级铁证。
+  // 只撤最早的那一张，另一个 agent 的 Bash 请求必须还活着。
+  await post('/state', { state: 'working', event: 'PostToolUse', tool_name: 'Bash', session_id: sweepSid });
+  await sleep(20);
+  check('终端答完的 PostToolUse 只撤掉最早的同名卡片', () => {
+    const live = permissions.getPending().filter((p) => p.sessionId === sweepSid);
+    assert.strictEqual(live.length, 2);
+    assert.deepStrictEqual(live.map((p) => p.toolName).sort(), ['Bash', 'Write']);
+    assert.strictEqual(live.find((p) => p.toolName === 'Bash').toolInput.command, 'pwd -P');
+  });
+  const bashAResult = await bashAOutcome;
+  check('被终端抢答的请求以「无裁决」收场，不回写 allow/deny', () => {
+    assert(bashAResult.err);
+  });
+
   const sweepPending = permissions.getPending().filter((p) => p.sessionId === sweepSid);
   permissions.decide(sweepPending.find((p) => p.toolName === 'Bash').id, 'allow');
   permissions.decide(sweepPending.find((p) => p.toolName === 'Write').id, 'deny');
-  const [bashResp, writeResp] = await Promise.all([bashP, writeP]);
+  const [bashBResult, writeResult] = await Promise.all([bashBOutcome, writeOutcome]);
   check('later clicks resolve only their matching parallel requests', () => {
-    assert.strictEqual(JSON.parse(bashResp.body).hookSpecificOutput.decision.behavior, 'allow');
-    assert.strictEqual(JSON.parse(writeResp.body).hookSpecificOutput.decision.behavior, 'deny');
+    assert.strictEqual(JSON.parse(bashBResult.resp.body).hookSpecificOutput.decision.behavior, 'allow');
+    assert.strictEqual(JSON.parse(writeResult.resp.body).hookSpecificOutput.decision.behavior, 'deny');
+  });
+
+  // 终端里点「拒绝」时工具根本不跑 → 永远没有 PostToolUse。这条路只能靠
+  // 「Stop + 该会话在静默期内再无任何事件」反推，所以静默期必须可被打断。
+  const quietSid = 'quiet-sweep-session';
+  const quietReq = postAbortable('/permission', { tool_name: 'Bash', tool_input: { command: 'rm -rf /tmp/nope' }, session_id: quietSid });
+  const quietOutcome = quietReq.settled.then((resp) => ({ resp }), (err) => ({ err }));
+  await sleep(60);
+  await post('/state', { state: 'attention', event: 'Stop', session_id: quietSid });
+  await sleep(80);
+  // 静默期内又有事件 → 同会话还有 agent 在跑 → 必须撤销待清标记。
+  await post('/state', { state: 'working', event: 'PreToolUse', tool_name: 'Bash', session_id: quietSid });
+  await sleep(400);
+  check('Stop 后静默期内又来事件，权限卡不得被清掉', () => {
+    assert.strictEqual(permissions.getPending().filter((p) => p.sessionId === quietSid).length, 1);
+  });
+  // 再来一次 Stop 并保持静默 → 判定为「终端已拒绝」，无裁决撤卡。
+  await post('/state', { state: 'attention', event: 'Stop', session_id: quietSid });
+  await sleep(450);
+  const quietResult = await quietOutcome;
+  check('Stop 后持续静默，权限卡按「终端已拒绝」无裁决清理', () => {
+    assert.strictEqual(permissions.getPending().filter((p) => p.sessionId === quietSid).length, 0);
+    assert(quietResult.err);
   });
 
   const endSid = 'ended-session-eeee';
@@ -802,6 +845,14 @@ async function main() {
   check('压缩跑了 30s 仍然挂着 sweeping（原来就是这里丢的状态）', () => {
     assert.strictEqual(core.getSession(cmpSid).state, 'sweeping');
     assert.notStrictEqual(deriveBadge(core.getSession(cmpSid)), 'done');
+  });
+  // 用户实测的第二层：压缩期间一个工具都不跑，宿主 60s 空闲计时器必然触发
+  // （Notification → notify-policy 判 IDLE → IdleNotification）。它原来把
+  // sweeping 当「卡死的忙碌态」软着陆成 idle，于是喵在压缩没完时显示「待命」。
+  // TTL 只管被动衰减，管不住这条主动改写，所以必须在这里单独钉住。
+  await post('/state', { state: 'idle', event: 'IdleNotification', session_id: cmpSid, cwd: '/Users/me/proj-cmp' });
+  check('压缩期间的空闲通知不得把 sweeping 打回待命', () => {
+    assert.strictEqual(core.getSession(cmpSid).state, 'sweeping');
   });
 
   await post('/state', postBody);

@@ -147,6 +147,7 @@ function createPermissions(options = {}) {
     if (!entry || !pending.has(entry.id)) return false;
     pending.delete(entry.id);
     if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+    if (entry.quietTimer) { clearTimeout(entry.quietTimer); entry.quietTimer = null; }
     if (entry.res && entry.abortHandler) {
       try { entry.res.off('close', entry.abortHandler); } catch {}
     }
@@ -241,6 +242,7 @@ function createPermissions(options = {}) {
       agentId: parsed.agentId || 'claude-code',
       createdAt: Date.now(),
       timer: null,
+      quietTimer: null,
       abortHandler: null,
     };
 
@@ -287,20 +289,82 @@ function createPermissions(options = {}) {
     return resolveEntry(entry, behavior === 'allow' ? 'allow' : 'deny');
   }
 
-  // Only an actual session end proves every pending card for that session is
-  // stale. PostToolUse / Stop / UserPromptSubmit are not proof: parallel and
-  // background agents share the same session_id, so their lifecycle events
-  // must never remove another agent's live permission card. If the user answers
-  // in the terminal, Claude Code closes the held HTTP connection and the close
-  // handler above performs the no-decision cleanup.
+  // ── 终端抢答（answered-in-terminal）─────────────────────────────────────────
+  //
+  // 宿主会把授权请求**同时**发给两处：终端里它自己的选项框，和这里挂住的 HTTP
+  // hook。谁先答谁赢。
+  //
+  // 「猫 → 终端」那半边是通的：我们写回裁决，宿主收到后自己收掉终端的框。
+  // 「终端 → 猫」这半边**不通**——这段代码原来的注释断言「用户在终端回答后，
+  // Claude Code 会关掉挂住的连接」，2026-09-16 用户实测推翻了：它既不通知也不
+  // 断开，于是卡片一直挂着，只能等 AUTO_CLOSE_MS（8 分钟）超时。
+  //
+  // 难点在于**并行 agent 共用同一个 session_id**，所以会话级事件不能当证据：
+  // 一个 agent 的 Stop 证明不了另一个 agent 的请求过期了。下面按两种终端答法
+  // 分别取证，都是请求级或带静默期的，不会误杀同会话里还活着的请求。
+
   const SWEEP_EVENTS = new Set(['SessionEnd']);
-  function sweepForSessionEvent(sessionId, event) {
-    if (!SWEEP_EVENTS.has(event)) return;
-    for (const entry of [...pending.values()]) {
-      if (entry.sessionId === sessionId) {
-        resolveEntry(entry, 'no-decision', 'Session ended');
-      }
+
+  // 「拒绝」路径的静默期：拒绝后工具根本不跑，没有 PostToolUse 可用，只能靠
+  // Stop + 该会话在这段时间内再无任何事件来反推「这一轮真结束了」。取值偏保守
+  // ——多留几秒卡片只是稍慢，误杀并行 agent 的请求会让它永久卡住。
+  // （可注入，仅为了让测试不必真等 10 秒。）
+  const QUIET_SWEEP_MS = Number(options.quietSweepMs) > 0 ? Number(options.quietSweepMs) : 10 * 1000;
+
+  // 一次 PostToolUse = 恰好一个工具跑完了 = 恰好一张卡该撤。
+  // 撤最早的那张：同会话同工具的并行请求内容一样，用户分辨不出差别，而「只撤
+  // 一张」保证了另一个 agent 的请求仍然活着。
+  // 不写裁决（no-decision）——宿主已经自己往下走了，这时回 allow/deny 无效。
+  function sweepAnsweredInTerminal(sessionId, toolName) {
+    if (!sessionId || !toolName) return false;
+    let oldest = null;
+    for (const entry of pending.values()) {
+      if (entry.sessionId !== sessionId || entry.toolName !== toolName) continue;
+      if (!oldest || entry.createdAt < oldest.createdAt) oldest = entry;
     }
+    if (!oldest) return false;
+    return resolveEntry(oldest, 'no-decision', 'Answered in terminal');
+  }
+
+  // 「拒绝」路径：Stop 只是**候选**证据（会话级，不能立刻信）。给该会话所有挂着
+  // 的卡片打时间戳，静默期内该会话一有新事件就撤销标记（说明还有 agent 在跑）。
+  function armQuietSweep(sessionId) {
+    for (const entry of pending.values()) {
+      if (entry.sessionId !== sessionId || entry.quietTimer) continue;
+      entry.quietTimer = setTimeout(() => {
+        entry.quietTimer = null;
+        resolveEntry(entry, 'no-decision', 'Turn ended, no answer arrived');
+      }, QUIET_SWEEP_MS);
+      if (entry.quietTimer.unref) entry.quietTimer.unref();
+    }
+  }
+
+  function disarmQuietSweep(sessionId) {
+    for (const entry of pending.values()) {
+      if (entry.sessionId !== sessionId || !entry.quietTimer) continue;
+      clearTimeout(entry.quietTimer);
+      entry.quietTimer = null;
+    }
+  }
+
+  function sweepForSessionEvent(sessionId, event, toolName) {
+    if (SWEEP_EVENTS.has(event)) {
+      for (const entry of [...pending.values()]) {
+        if (entry.sessionId === sessionId) {
+          resolveEntry(entry, 'no-decision', 'Session ended');
+        }
+      }
+      return;
+    }
+    // 任何非终结事件都证明该会话还有 agent 在动 → 撤销待清标记。
+    disarmQuietSweep(sessionId);
+    // 「允许」：工具真的跑完了 → 请求级铁证，精确撤一张。
+    if (event === 'PostToolUse' || event === 'PostToolUseFailure') {
+      sweepAnsweredInTerminal(sessionId, toolName);
+      return;
+    }
+    // 「拒绝」：工具没跑，这一轮却结束了 → 候选证据，进静默期观察。
+    if (event === 'Stop') armQuietSweep(sessionId);
   }
 
   function getPending() {
