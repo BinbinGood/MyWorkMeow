@@ -29,49 +29,6 @@ async function initializeChipDisplay() {
 }
 initializeChipDisplay();
 
-// ── 屏幕顶部菜单栏（只有 macOS 有这个位置）────────────────────────────────────
-// 和上面 initializeChipDisplay 同一个套路（读取 → 渲染 → 点一下写回 → 用返回值
-// 重渲染），差别有两处：
-//   1. 非 macOS 直接把整个 section 移除。Electron 在 Windows/Linux 上 setTitle
-//      是 no-op，留着四个点了没反应的开关比没有更糟。
-//   2. 写回时包一层 { menuBar: {...} } —— 走的是同一条 SET_CHIP_DISPLAY 通道，
-//      主进程按 key merge，不会碰底部展示栏那四个。
-async function initializeMenuBar() {
-  const section = $('menu-bar-section');
-  if (!section) return;
-  if (!/mac/i.test((window.navigator && window.navigator.platform) || '')) {
-    section.remove();
-    return;
-  }
-  const keys = ['showStatus', 'showQuota', 'showTokens', 'showCost'];
-  const status = $('menu-bar-status');
-  const button = (key) => $(`menuBar-${key}-toggle`);
-  const render = (value) => {
-    const menuBar = (value && value.menuBar) || {};
-    keys.forEach((key) => button(key).setAttribute('aria-checked', String(menuBar[key] === true)));
-  };
-  keys.forEach((key) => { button(key).disabled = true; });
-  try {
-    render(await window.pet.getChipDisplay());
-    keys.forEach((key) => {
-      const el = button(key);
-      el.disabled = false;
-      el.addEventListener('click', async () => {
-        el.disabled = true;
-        try {
-          const next = el.getAttribute('aria-checked') !== 'true';
-          const result = await window.pet.setChipDisplay({ menuBar: { [key]: next } });
-          if (!result || !result.ok) throw new Error('save failed');
-          render(result);
-          status.textContent = t('settings.menuBarSaved');
-        } catch { status.textContent = '保存失败，请重试'; }
-        finally { el.disabled = false; }
-      });
-    });
-  } catch { status.textContent = '展示设置加载失败，请重新打开设置'; }
-}
-initializeMenuBar();
-
 // ── 每个 Agent 一个额度开关 ─────────────────────────────────────────────────
 // 以前是一个会动态改名的「额度槽位」（接 Codex 就叫 Codex、否则叫 WorkBuddy），
 // 于是出现「设置页写 Codex、托盘写 WorkBuddy」的自相矛盾。2026-09-15 改成
@@ -103,29 +60,23 @@ function quotaAgentCard(agent) {
   description.textContent = t(`settings.quotaAgent${agent.quotaKind || 'None'}Description`);
   copy.append(title, description);
 
-  // 没有额度数据的 Agent（quotaKind === 'None'，如 Claude）：开关**锁死在关**。
-  // 这类 Agent 在底部栏产不出任何徽标，可开关会让人以为坏了 —— 这正是用户报的
-  // 「claude 按钮开了以后啥也没显示」。托盘另有「暂无数据」兜底行，不受此影响。
-  const locked = (agent.quotaKind || 'None') === 'None';
-
+  // 每个接入的 Agent 都是可开关的，**包括没有额度数据的那些**（Claude / TRAE /
+  // opencode）。2026-09-16 之前这里把它们锁死在关（灰掉、点不动），理由是「底部栏
+  // 产不出额度徽标，可开关会让人以为坏了」—— 用户的反馈是那个灰开关本身才像坏的。
+  // 现在这个开关管的是**整个 Agent 的信息**，不只是额度徽标：关掉它，托盘弹出菜单里
+  // 那一行（Agent 名 + 今日 Token + 费用，见 backend/tray-status.js 的 agentParts）
+  // 也一起收起来。没额度数据的 Agent 打开后弹出菜单里就是有内容的，开关不再是空转。
   const button = document.createElement('button');
   button.id = `quota-agent-${agent.id}-toggle`;
-  button.className = locked ? 'switch switch-locked' : 'switch';
+  button.className = 'switch';
   button.type = 'button';
   button.setAttribute('role', 'switch');
-  button.setAttribute('aria-checked', String(!locked && agent.enabled !== false));
+  button.setAttribute('aria-checked', String(agent.enabled !== false));
   button.setAttribute('aria-label', t('settings.quotaAgentToggle', { name: agent.label || agent.id }));
   const thumb = document.createElement('span');
   thumb.className = 'switch-thumb';
   thumb.setAttribute('aria-hidden', 'true');
   button.appendChild(thumb);
-
-  if (locked) {
-    button.disabled = true;
-    button.setAttribute('aria-disabled', 'true');
-    card.append(copy, button);
-    return card;
-  }
 
   button.addEventListener('click', async () => {
     button.disabled = true;
@@ -137,7 +88,7 @@ function quotaAgentCard(agent) {
       });
       if (!result || !result.ok) throw new Error('save failed');
       button.setAttribute('aria-checked', String(result.quotaAgents[agent.id] !== false));
-      quotaAgentStatus.textContent = '已保存，喵底部展示已更新';
+      quotaAgentStatus.textContent = '已保存，喵底部栏与托盘菜单已更新';
     } catch { quotaAgentStatus.textContent = '保存失败，请重试'; }
     finally { button.disabled = false; }
   });

@@ -37,8 +37,6 @@ assert(/PET_ASSETS: 'pet-assets:changed'/.test(preload), 'live asset changes mus
 // Agent 拆开：**检测到几个就渲染几个开关**，位置和名字都固定。
 assert(html.includes('id="quota-agent-list"'), 'settings must host a per-agent quota list');
 assert(html.includes('data-i18n="settings.quotaAgentsKicker"'), 'the per-agent list needs its section kicker');
-// 注意锚在 id=" 上，不能用裸子串：菜单栏那组开关叫 menuBar-showQuota-toggle，
-// 裸子串会把它误判成复活的旧槽位。
 assert(!html.includes('id="showQuota-toggle"'), 'the single dynamic quota slot toggle is gone');
 assert(!/quota-slot-title|quota-slot-description/.test(html), 'the renamed slot title/description placeholders are gone');
 assert(/quotaAgentList\s*=\s*\$\('quota-agent-list'\)/.test(js), 'the renderer must drive the list container');
@@ -54,26 +52,26 @@ for (const key of ['settings.quotaAgentsKicker', 'settings.quotaAgentCodexDescri
   assert(require('../shared/i18n').t(key) !== key, `i18n has ${key}`);
 }
 
-// ── 屏幕顶部菜单栏（macOS）────────────────────────────────────────────────────
-// 2026-09-16 新增。三条容易回归的性质：
-//   1. 四个开关必须都在，且 id 前缀 menuBar- 不能和底部展示栏那四个撞
-//   2. 走现成的 SET_CHIP_DISPLAY 通道（新开 channel 要改 preload.js 手抄副本）
-//   3. 非 macOS 必须把整段移除 —— Electron 在 Windows/Linux 上 setTitle 是
-//      no-op，留着四个点了没反应的开关比没有更糟
-assert(html.includes('id="menu-bar-section"'), 'settings must host the menu-bar section');
-for (const key of ['showStatus', 'showQuota', 'showTokens', 'showCost']) {
-  assert(html.includes(`id="menuBar-${key}-toggle"`), `the menu bar needs a ${key} toggle`);
-}
-assert(/setChipDisplay\(\{ menuBar:/.test(js), 'the menu bar rides the existing chip-display channel');
-assert(/menuBar:\s*\{\s*\[key\]/.test(js), 'toggling must patch one key, never rewrite the whole object');
-assert(/section\.remove\(\)/.test(js), 'non-macOS must drop the whole section, not show dead toggles');
-assert(/patch\.menuBar = merged/.test(main), 'the main process must merge menu-bar keys instead of overwriting');
-assert(/refreshTrayTitle\(\)/.test(main), 'saving must refresh the menu bar right away');
-assert(/title === lastTrayTitle/.test(main),
-  'setTitle must short-circuit on unchanged text — emitStats runs every 4s');
-for (const key of ['settings.menuBarSection', 'settings.menuBarShowStatus', 'settings.menuBarShowQuota',
-  'settings.menuBarShowTokens', 'settings.menuBarShowCost', 'settings.menuBarHint', 'settings.menuBarSaved']) {
-  assert(require('../shared/i18n').t(key) !== key, `i18n has ${key}`);
-}
+// ── 开关必须是真能点的 ────────────────────────────────────────────────────────
+// 2026-09-16：曾给「没有额度数据的 Agent」（Claude / TRAE / opencode）加过 locked
+// 分支 —— 灰掉 + disabled，理由是底部栏产不出额度徽标。用户实测的反馈是**那个灰
+// 开关本身才像坏的**。这组开关现在管的是「显示这个 Agent 的信息」：底部栏的额度
+// 徽标 + 托盘弹出菜单里那一行，后者对任何 Agent 都有 Token 和费用可看，所以一个
+// 都不该锁。下面几条断言防止再锁回去。
+//
+// 断言只切 quotaAgentCard 这一段，不扫全文：全文十几处 disabled = true 都在做
+// **保存期间**的防重入（点一下→disabled→await→finally 放开），那是对的写法。
+const cardFn = /function quotaAgentCard\([\s\S]*?\n}\n/.exec(js);
+assert(cardFn, 'quotaAgentCard must still exist');
+const card = cardFn[0];
+assert(!/switch-locked/.test(js), 'no agent toggle may be greyed out — every one of them does something');
+assert(/button\.className = 'switch';/.test(card),
+  'the toggle class is a plain literal — no conditional variant that grays some agents out');
+assert(card.indexOf('addEventListener') < card.indexOf('return card;'),
+  'every card wires up its click handler — no early return that skips it');
+assert(card.split('return card;').length === 2,
+  'quotaAgentCard has exactly one exit');
+assert(/disabled = false/.test(card),
+  'the in-flight guard must be released again, otherwise one click kills the toggle for good');
 
 console.log('settings asset interaction contract checks passed');

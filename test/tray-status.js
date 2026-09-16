@@ -67,6 +67,14 @@ assert(tray.displayWidth('今日') === 4, 'CJK counts two columns');
 assert(tray.displayWidth('　') === 2, 'the ideographic space counts two columns');
 assert(tray.displayWidth('5h　82%') === 7, 'mixed width adds up (5h=2 + 全角空格=2 + 82%=3)');
 assert(tray.displayWidth(null) === 0, 'displayWidth tolerates null');
+// 旧区符号（U+2600–U+27BF）的宽度：2026-09-16 之前 isWideCodePoint 从 0x1F300
+// 起算，把 ✋ ⚙ ✅ 都判成 1 列 —— 折行预算算虚了，行会实际超宽。
+// 而 ⚙️ 是 U+2699 + U+FE0F 两个码位，变体选择符本身不占位。
+assert(tray.displayWidth('✋') === 2, 'U+270B is two columns (below the old 1F300 floor)');
+assert(tray.displayWidth('✅') === 2, 'U+2705 is two columns');
+assert(tray.displayWidth('⚙️') === 2, 'the variation selector in ⚙️ adds no column');
+assert(tray.displayWidth('🌿') === 2, 'U+1F33F is two columns');
+assert(tray.displayWidth('💤') === 2, 'U+1F4A4 is two columns');
 
 // ── 行生成：本机真实形态 ──────────────────────────────────────────────────────
 const workbuddy = {
@@ -210,6 +218,26 @@ const emptyNoT = tray.buildStatusRows({});
 assert(emptyNoT.length === 1, 'buildStatusRows tolerates a missing t function');
 const emptyNoAgents = tray.buildStatusRows({ agents: [{ id: 'x', label: 'X', detected: false }], t });
 assert(emptyNoAgents.length === 1, 'agents that are all undetected fall back to the empty line');
+// 「都关了」和「没接入」是两种空态，解法不同（一个去设置页，一个去装 hook），
+// 所以文案必须分开 —— 共用一句会让用户以为喵坏了。
+const allHidden = tray.buildStatusRows({
+  agents: [{ ...workbuddy, enabled: false }, { id: 'codex', label: 'Codex', detected: true, enabled: false }],
+  t,
+});
+assert(allHidden.length === 1 && allHidden[0].label === t('tray.allHidden'),
+  `all-toggled-off says 都已隐藏, not 尚未接入 (got ${JSON.stringify(labels(allHidden))})`);
+assert(t('tray.allHidden') !== t('tray.noSources'), 'the two empty states do not share one sentence');
+
+// 关掉一个不影响其它 —— 这条是真正堵住回归的：buildStatusRows 曾经只看 detected，
+// 把 main.js 挂上来的 enabled 白扔了，于是设置页的开关对托盘菜单毫无作用。
+const oneOff = tray.buildStatusRows({
+  agents: [workbuddy, { id: 'claude', label: 'Claude', detected: true, enabled: false, tokens: 1200, cost: 3.4 }],
+  t,
+});
+assert(!/Claude/.test(flat(oneOff)), 'an enabled:false agent is dropped from the tray menu');
+assert(/WorkBuddy/.test(flat(oneOff)), 'its neighbours are untouched');
+assert(oneOff.filter((row) => row.type === 'separator').length === 0,
+  'no separator is left dangling where the hidden agent used to be');
 
 // ── i18n ──────────────────────────────────────────────────────────────────────
 for (const key of ['tray.rowWindow', 'tray.rowStatus', 'tray.rowCredit', 'tray.rowCreditUnset',
@@ -230,137 +258,5 @@ const zeroCost = tray.buildStatusRows({
 });
 assert(!/费用/.test(flat(zeroCost)) && !/\$/.test(flat(zeroCost)),
   'a zero cost leaves no cost segment at all');
-
-// ── macOS 屏幕顶部菜单栏（buildTrayTitle）────────────────────────────────────
-// 2026-09-16：用户要求「仿照喵底部栏，在顶部任务栏也增加开关」。
-// 这里要守的口径，全部是宽度逼出来的：
-//   1. 预算 16 列（右键菜单是 32），超限**整段丢掉后面的片段**，绝不截半个数字
-//   2. 全局聚合，不是「每个 Agent 一段」—— 2 个 Agent 就已经放不下
-//   3. 额度复用底部栏的 quotaAgents 开关（enabled !== false），不另立一张表
-//   4. 项目名一类会被 privacy 脱敏的东西绝不能进来（菜单栏全局可见）
-
-// 状态优先级必须和胶囊一致（renderer/pet.js 的 renderContextCapsule）：
-// waiting → error → needsinput → active → sleeping/idle，同一时刻只显示一类。
-const title = (input) => tray.buildTrayTitle({ t, ...input });
-assert(title({ status: { waiting: 3 } }) === '✋3', 'waiting wins and shows its count');
-assert(title({ status: { waiting: 2, needsinput: 1 } }) === '✋3',
-  'waiting folds needsinput into one count — both mean "go handle it"');
-assert(title({ status: { error: 1, needsinput: 2, active: 5 } }) === '😵1',
-  'error outranks needsinput and active, matching the capsule');
-assert(title({ status: { needsinput: 2, active: 5 } }) === '💬2', 'needsinput outranks active');
-assert(title({ status: { active: 4 } }) === '⚙️4', 'the busy count shows when nothing needs you');
-// 压缩上下文自己一档，排在 active 之前。2026-09-16 用户实测：压缩时菜单栏显示
-// ⚙️（干活中的图标），与胶囊/猫/右键菜单三处口径打架。main.js 现在把
-// sweepingCount 单独传进来，不再只并进 active 的求和里。
-assert(title({ status: { sweeping: 1, active: 3 } }) === '🧹1',
-  'compaction gets its own glyph instead of being folded into the ⚙️ busy count');
-assert(title({ status: { error: 1, sweeping: 2 } }) === '😵1',
-  'error still outranks compaction — a broken session matters more');
-assert(title({ status: { needsinput: 1, sweeping: 2 } }) === '💬1',
-  'anything that needs you outranks compaction');
-assert(title({ status: { sweeping: 0, active: 2 } }) === '⚙️2',
-  'a zero sweeping count falls through to the busy count (never prints "🧹0")');
-assert(title({ status: {} }) === '🌿', 'idle still prints one glyph so the menu bar never looks dead');
-assert(title({ status: { sleeping: true } }) === '💤', 'sleeping has its own glyph');
-assert(title({}) === '🌿', 'a missing status object degrades to idle, not to a crash');
-assert(title({ status: { active: 0.4 } }) === '🌿',
-  'a sub-one count is not a busy session (never prints "⚙️0")');
-
-// 开关：showStatus 默认开，其余三个默认关（对齐 config.js 的 DEFAULTS.menuBar）
-assert(title({ status: { active: 1 }, totals: { tokens: 1_200_000, cost: 3.4 } }) === '⚙️1',
-  'tokens and cost stay off by default — the 16-column budget cannot afford them');
-assert(title({ display: { showStatus: false }, status: { waiting: 3 } }) === '',
-  'turning every segment off yields an empty title, not a stray separator');
-assert(title({ display: { showTokens: true }, status: { active: 1 }, totals: { tokens: 1_234_567 } })
-  === '⚙️1  1.2M', 'tokens join with the two-space separator (PART_SEP would cost 5 columns)');
-assert(title({ display: { showCost: true }, status: { active: 1 }, totals: { cost: 3.4 } })
-  === '⚙️1  $3.40', 'cost reuses money() so it matches the tray rows');
-assert(title({ display: { showTokens: true, showCost: true }, status: {}, totals: { tokens: 0, cost: 0 } })
-  === '🌿', 'a zero token count and a zero cost contribute no segment at all');
-
-// 额度：只取第一个「启用 + 检测到 + 真有数字」的 Agent
-const titleCodex = { id: 'codex', label: 'Codex', detected: true,
-  quota: { kind: 'codex', ready: true, windows: [{ label: '5h', percent: 82 }, { label: '7d', percent: 31 }] } };
-const titleCredit = { id: 'workbuddy', label: 'WorkBuddy', detected: true,
-  quota: { kind: 'credit', ready: true, remaining: 1696 } };
-assert(title({ display: { showQuota: true }, status: {}, agents: [titleCodex] }) === '🌿  7d31%',
-  'of two Codex windows the menu bar warns with the SMALLEST remainder');
-assert(title({ display: { showQuota: true }, status: {}, agents: [titleCredit] }) === '🌿  1696分',
-  'a credit agent shows its remaining credit');
-assert(title({ display: { showQuota: true }, status: {}, agents: [titleCredit, titleCodex] }) === '🌿  1696分',
-  'only the FIRST agent with quota data gets the slot — two would blow the budget');
-assert(title({ display: { showQuota: true }, status: {},
-  agents: [{ ...titleCredit, enabled: false }, titleCodex] }) === '🌿  7d31%',
-  'disabling an agent in the bottom-bar quota toggles also skips it in the menu bar');
-assert(title({ display: { showQuota: true }, status: {},
-  agents: [{ id: 'claude', label: 'Claude', detected: true, quota: null }] }) === '🌿',
-  'an agent with no quota data (Claude/TRAE/opencode) adds no segment');
-assert(title({ display: { showQuota: true }, status: {},
-  agents: [{ id: 'codex', label: 'Codex', detected: true, quota: { kind: 'codex', ready: false, status: '正在刷新' } }] })
-  === '🌿', 'an unfetched Codex quota writes no status text — too wide for the menu bar');
-assert(title({ display: { showQuota: true }, status: {},
-  agents: [{ ...titleCredit, quota: { kind: 'credit', ready: false, remaining: null } }] }) === '🌿',
-  'an unset credit quota adds nothing (-- would just take space)');
-assert(title({ display: { showQuota: true }, status: {},
-  agents: [{ ...titleCredit, quota: { kind: 'credit', ready: true, remaining: 0 } }] }) === '🌿  0分',
-  'an exhausted quota still shows 0 — that is exactly when you want to see it');
-
-// 截断：超预算就丢掉那个片段**和它后面全部**，不中途切断
-const wide = tray.buildTrayTitle({
-  t, display: { showStatus: true, showQuota: true, showTokens: true, showCost: true },
-  status: { waiting: 12 }, agents: [titleCodex], totals: { tokens: 55_060_264, cost: 150.4 },
-});
-assert(tray.displayWidth(wide) <= tray.TITLE_WIDTH_LIMIT,
-  `an all-on title stays inside the budget (got "${wide}" = ${tray.displayWidth(wide)} cols)`);
-assert(wide === '✋12  7d31%',
-  `over-budget segments are dropped from the tail, never truncated mid-number (got "${wide}")`);
-assert(!/55/.test(wide) && !/\$/.test(wide),
-  'tokens did not fit (11 + 2 + 5 = 18 > 16), so it and the cost behind it are both absent');
-// 关键：策略是「丢它和它后面全部」，不是「跳过它、把后面更短的塞进来」。
-// 预算 17 时 tokens（18 列）装不下，而 cost 只有 4 列本来能塞进 17 —— 但仍然
-// 不许出现。否则片段顺序会随数值变来变去，用户看着像 bug。
-const dropTail = tray.buildTrayTitle({
-  t, limit: 17, display: { showStatus: true, showQuota: true, showTokens: true, showCost: true },
-  status: { waiting: 12 }, agents: [titleCodex], totals: { tokens: 55_060_264, cost: 150.4 },
-});
-assert(dropTail === '✋12  7d31%',
-  `a segment that does not fit takes everything after it with it (got "${dropTail}")`);
-assert(tray.buildTrayTitle({ t, limit: 4, display: { showTokens: true },
-  status: { waiting: 1 }, totals: { tokens: 1_234_567 } }) === '✋1',
-  'the first segment is kept unconditionally even when a tiny budget kills the rest');
-assert(tray.buildTrayTitle({ t, limit: 0, status: { waiting: 1 } }) === '✋1',
-  'a bogus limit falls back to the default budget instead of blanking the menu bar');
-
-// 宽度度量：菜单栏用的图标全在**旧区**（U+2600–U+27BF），2026-09-16 之前
-// isWideCodePoint 从 0x1F300 起算，把 ✋ ⚙ ✅ 都判成 1 列 —— 预算算虚了，
-// macOS 会静默裁掉尾部。而 ⚙️ 是 U+2699 + U+FE0F，变体选择符不占位。
-assert(tray.displayWidth('✋') === 2, 'U+270B is two columns (below the old 1F300 floor)');
-assert(tray.displayWidth('✅') === 2, 'U+2705 is two columns');
-assert(tray.displayWidth('⚙️') === 2, 'the variation selector in ⚙️ adds no column');
-assert(tray.displayWidth('🌿') === 2, 'U+1F33F is two columns');
-assert(tray.displayWidth('💤') === 2, 'U+1F4A4 is two columns');
-
-// i18n：菜单栏的键必须都在，且不能有键名原样漏出去
-for (const key of ['tray.titleWaiting', 'tray.titleNeedsinput', 'tray.titleError', 'tray.titleActive',
-  'tray.titleIdle', 'tray.titleSleeping', 'tray.titleQuotaWindow', 'tray.titleCredit']) {
-  assert(typeof t(key) === 'string' && t(key) !== key, `i18n has ${key}`);
-}
-const allOn = tray.buildTrayTitle({
-  t, display: { showStatus: true, showQuota: true, showTokens: true, showCost: true },
-  status: { needsinput: 1 }, agents: [titleCredit], totals: { tokens: 1000, cost: 1 },
-});
-assert(!/tray\.[a-zA-Z]/.test(allOn), 'no untranslated i18n key leaks into the menu bar');
-assert(!/\{[a-z]/i.test(allOn), 'no unfilled {placeholder} leaks into the menu bar');
-
-// 隐私：项目名一类的字段就算硬塞进来也不能出现在标题里。
-// privacy.protectStats() 脱敏 active.project 而不脱敏计数，菜单栏是全局可见的，
-// 旁边坐个人就能看到项目名 —— 这条断言锁住「只吃数字」这个设计。
-const leaky = tray.buildTrayTitle({
-  t, display: { showStatus: true, showQuota: true, showTokens: true, showCost: true },
-  status: { active: 1, project: 'SecretProject' },
-  agents: [{ ...titleCredit, label: 'SecretProject', project: 'SecretProject' }],
-  totals: { tokens: 1000, cost: 1, project: 'SecretProject' },
-});
-assert(!/SecretProject/.test(leaky), 'no project or session name can reach the menu bar');
 
 console.log('\nTRAY STATUS TESTS PASSED');

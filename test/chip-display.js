@@ -28,26 +28,6 @@ config.sanitize({ quotaAgents: { codex: false } });
 assert.strictEqual(config.sanitize({}).quotaAgents.codex, undefined,
   'sanitize never leaks the callers toggle into the shared defaults');
 
-// ── 屏幕顶部菜单栏（macOS 的 Tray.setTitle）───────────────────────────────────
-// 2026-09-16 新增，形状刻意抄底部展示栏，但默认只开「任务状态」：菜单栏预算只有
-// 16 列（右键菜单是 32），还要和输入法、时钟、控制中心抢位置，默认全开会被
-// macOS 静默裁掉尾部。
-assert.deepStrictEqual(config.sanitize({}).menuBar,
-  { showStatus: true, showQuota: false, showTokens: false, showCost: false },
-  'only the status segment is on by default — the other three would blow the 16-column budget');
-assert.strictEqual(config.sanitize({ menuBar: { showCost: true } }).menuBar.showCost, true);
-assert.strictEqual(config.sanitize({ menuBar: { showStatus: false } }).menuBar.showStatus, false,
-  'the default-on toggle can actually be turned off');
-assert.strictEqual(config.sanitize({ menuBar: { showCost: 'yes' } }).menuBar.showCost, false,
-  'a non-boolean toggle is ignored rather than coerced');
-assert.strictEqual(config.sanitize({ menuBar: 'on' }).menuBar.showStatus, true,
-  'a non-object menuBar degrades to the defaults instead of crashing');
-// 和上面 quotaAgents 同一个正靶：Object.freeze(DEFAULTS) 冻不住内嵌对象，
-// sanitize 必须每次重建 menuBar，否则一次调用会污染整个进程的默认值。
-config.sanitize({ menuBar: { showCost: true } });
-assert.strictEqual(config.sanitize({}).menuBar.showCost, false,
-  'sanitize never leaks the callers menu-bar toggle into the shared defaults');
-
 const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/agents.js', 'shared/pet-insights.js', 'renderer/icons.js', 'renderer/pet.js']);
 // 底部展示栏现在是「每个检测到的 Agent 一份额度」，所以渲染揣包里必须带上
 // quotaAgents 列表 —— 它同时驱动胶囊徽标、托盘行、设置页的开关。
