@@ -201,6 +201,11 @@ function applyPetSize(st, requestedAnchor) {
   const { w } = targetSize(st);
   let { h } = targetSize(st);
   const b = win.getBounds();
+  // 目标与当前完全一致就别下发。setBounds 在 macOS 上会让 WindowServer 重排整个
+  // 透明窗口，而渲染层一次「气泡展开→收起」会连着算出 320→520→320 三个目标：
+  // 第 3 次与第 1 次的尺寸一模一样，白重排一遍，正是切状态时那下卡顿。
+  // 放在两条分支的 setBounds 之前各判一次（下面 catch 里那条走的是另一套坐标）。
+  const same = (x, y, width, height) => x === b.x && y === b.y && width === b.width && height === b.height;
   // Cap the window to the screen's work area so a tall popup can NEVER push the
   // pet / footer buttons off-screen — the popup scrolls internally instead.
   try {
@@ -215,12 +220,16 @@ function applyPetSize(st, requestedAnchor) {
     let y = anchored ? anchored.y : Math.round(bottom - h);
     x = Math.min(Math.max(x, wa.x), wa.x + wa.width - width);
     y = Math.min(Math.max(y, wa.y), wa.y + wa.height - h);
+    if (same(x, y, width, h)) return;
     win.setBounds({ x, y, width, height: h });
   } catch {
     const anchor = validPetAnchor(requestedAnchor);
     const anchored = anchor ? anchoredPetOrigin(anchor, w, h) : null;
     const bottom = b.y + b.height;
-    win.setBounds({ x: anchored ? anchored.x : b.x, y: anchored ? anchored.y : Math.round(bottom - h), width: w, height: h });
+    const x = anchored ? anchored.x : b.x;
+    const y = anchored ? anchored.y : Math.round(bottom - h);
+    if (same(x, y, w, h)) return;
+    win.setBounds({ x, y, width: w, height: h });
   }
 }
 

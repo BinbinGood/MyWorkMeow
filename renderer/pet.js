@@ -18,6 +18,57 @@ if (catImg) {
 const PET_ASSET_REGISTRY = window.WorkMeowPetAssets;
 let petAssetCatalog = PET_ASSET_REGISTRY.defaultCatalog();
 
+/* ── GIF 换图：先解码，再挂上去 ────────────────────────────────────────────────
+   裸赋值 `catImg.src = url` 的问题：Chromium 在新 GIF 的首帧解码完成前**继续显示
+   旧图**。cat-working-2.gif 是 265 KB / ~44 帧，这个窗口期肉眼可见，就是用户说的
+   「切状态时旧姿势卡一下才跳过去」。
+   放大因素是 nextPoolFile 的洗牌队列：每次进 working 抽 5 张里**不同**的一张，
+   永远命中不了上次已解码的那张（ambient-awake 有 8 张，更极端）。
+   img.decode() 等首帧解码完成，之后的赋值就是命中缓存的即时切换。
+   三条边界：
+     · 沙箱/无 Image 环境走同步赋值 —— 测试紧跟着断言 src，异步会读到旧值；
+     · 解码失败（素材损坏、workmeow-asset:// 取不到）照旧赋值，让 onerror 兜底，
+       绝不因为解码不过就卡着不换图；
+     · seq 守卫：两次换图叠在一起时，晚出发的赢，先出发的那次 resolve 了也不许
+       把画面拽回去。 */
+const warmedAssets = new Set();
+let catSwapSeq = 0;
+
+function warmAsset(url) {
+  if (!url || warmedAssets.has(url)) return null;
+  if (typeof Image !== 'function') return null;
+  let img;
+  try { img = new Image(); } catch { return null; }
+  img.src = url;
+  if (typeof img.decode !== 'function') { warmedAssets.add(url); return null; }
+  return img.decode().then(() => { warmedAssets.add(url); }, () => {});
+}
+
+function swapCatAsset(source) {
+  if (!catImg || !source || catAssetMatches(source)) return;
+  const seq = ++catSwapSeq;
+  const pending = warmAsset(source);
+  if (!pending) { catImg.src = source; return; }
+  // 超时兜底：解码慢于人眼耐受度（约 120ms）就先换过去，宁可闪一下也不僵着。
+  let done = false;
+  const commit = () => {
+    if (done || seq !== catSwapSeq) return;
+    done = true;
+    if (!catAssetMatches(source)) catImg.src = source;
+  };
+  pending.then(commit);
+  setTimeout(commit, 120);
+}
+
+// 进入某状态时顺手预热该池的**下一张**，把解码成本挪到空闲期 —— 轮换定时器
+// 60s 才动一次，这段时间足够解码完，届时是命中缓存的瞬时切换。
+function warmPoolNext(name, pool) {
+  if (!Array.isArray(pool) || pool.length < 2) return;
+  const cycle = poolCycles.get(name);
+  const next = cycle && cycle.remaining.length ? cycle.remaining[0] : null;
+  if (next) warmAsset(next);
+}
+
 function slotAssetUrls(slotId) {
   const slot = petAssetCatalog.slots[slotId];
   return slot && Array.isArray(slot.active) ? slot.active.map((asset) => asset.url).filter(Boolean) : [];
@@ -76,7 +127,8 @@ function nextPoolFile(name, pool) {
 
 function showPoolFile(name, pool) {
   const source = nextPoolFile(name, pool);
-  if (source && !catAssetMatches(source)) catImg.src = source;
+  swapCatAsset(source);
+  warmPoolNext(name, pool);
 }
 
 function stopPoolRot() {
@@ -174,7 +226,7 @@ function ambientStep() {
     ambientAwakeRun++;
     ambientSleepRun = 0;
   }
-  if (!catAssetMatches(sc.gif)) catImg.src = sc.gif;
+  swapCatAsset(sc.gif);
   if (sleepEl) sleepEl.classList.toggle('on', sc.sleep); // 💤 只在真睡的片段亮
   const [lo, hi] = sc.hold || phase.hold; // 片段自带时长优先（如 roam 幅度大要短播）
   ambientTimer = setTimeout(ambientStep, lo + Math.random() * (hi - lo));
@@ -318,7 +370,7 @@ function xiabanMaybeShow(s) {
     xiabanVisualKey = info.key;
     xiabanVisualAsset = nextPoolFile('xiaban', pool);
   }
-  if (!catAssetMatches(xiabanVisualAsset)) catImg.src = xiabanVisualAsset;
+  swapCatAsset(xiabanVisualAsset);
   if (sleepEl) sleepEl.classList.remove('on');
   announceXiaban(info);
   return true;
@@ -624,7 +676,12 @@ function fitRestingFrame(force = false, allowOverlays = false) {
       Math.max(CAPSULE_FRAME_MIN_W, Math.ceil(measured + CAPSULE_FRAME_GUTTER)),
     );
     const current = Number(window.innerWidth) || CAPSULE_FRAME_MIN_W;
-    if (!force && Math.abs(current - width) <= 2) return;
+    // 宽**和**高都得比。只比宽的话，胶囊本身已经宽到接近 520（多会话 + 额度全开）
+    // 时从气泡态收回来会在这里提前返回，窗口高度就卡在气泡的 600 下不来 ——
+    // 这正是 resetPetSize 当初要 force=true 绕过它的原因。把判断补全，force 就
+    // 真的冗余了：它剩下的唯一作用是在尺寸没变时强行多发一次 IPC。
+    const currentH = Number(window.innerHeight) || BASE_PET_FRAME_H;
+    if (!force && Math.abs(current - width) <= 2 && Math.abs(currentH - BASE_PET_FRAME_H) <= 2) return;
     setRequestedPetSize(width, BASE_PET_FRAME_H);
   });
 }
@@ -659,7 +716,9 @@ function fitPopup(el) {
 }
 function resetPetSize() {
   fitPopupSeq++;
-  fitRestingFrame(true);
+  // 不再 force：上面的去重已经同时比宽和高，尺寸真变了照样会下发。force 只会在
+  // 「已经是静息尺寸」时白发一次 IPC → 主进程一次 setBounds → macOS 一次窗口重排。
+  fitRestingFrame(false);
 }
 
 function settleEdgeLayout() {
@@ -669,6 +728,9 @@ function settleEdgeLayout() {
   // Keep the intrinsic capsule width while re-evaluating the edge anchor.
   // Resetting to the old 320px base here would briefly reintroduce clipping
   // after a drag or immediately before the radial menu is laid out.
+  // 这里的 force 是**必要**的，与 resetPetSize 不同：本函数要重发的是 anchor
+  // （拖动/贴边后猫该锚在窗口的上边还是下边），而 anchor 只随 setRequestedPetSize
+  // 一起走。尺寸通常没变，去重一命中 anchor 就发不出去，贴边判定原地卡住。
   fitRestingFrame(true, true);
 }
 
@@ -3088,6 +3150,13 @@ window.addEventListener('blur', () => {
   applyStaticI18n();
   if (window.pet.getPetAssets) {
     try { applyPetAssetCatalog(await window.pet.getPetAssets()); } catch {}
+  }
+  // 预热高频状态各一张。启动这会儿本来就在等 getStats 的 IPC，解码搭这段空闲跑完，
+  // 第一次真正切状态就是命中缓存的瞬时切换，而不是「旧姿势卡一下」。
+  // 只挑 3 个：全部 28 张一起解码是 3.2MB 的位图，启动期抢 CPU 反而更差。
+  for (const name of ['idle', 'thinking', 'working']) {
+    const pool = stateAssetUrls(name);
+    if (pool.length) warmAsset(pool[0]);
   }
   const s = await window.pet.getStats();
   // 有快照就按真实聚合态亮相；之前无条件 setState('idle') 会把刚算出的
