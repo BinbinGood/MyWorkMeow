@@ -16,6 +16,7 @@ const pidwalk = require('./pidwalk');
 const { detectEmotion } = require('./emotion');
 const { isKnownAgentId, shortKey } = require('../shared/agents');
 const notifyPolicy = require('./notify-policy');
+const States = require('../shared/states');
 
 // Event → pet state. Shared across all Claude-Code-compatible tools (Claude Code,
 // WorkBuddy, TRAE all fire this same vocabulary). Unknown events are ignored.
@@ -45,7 +46,8 @@ const EVENT_STATE = {
 const FOCUS_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'PreToolUse']);
 
 // 「压缩上下文」这类长操作的 oneshot 存活时间。压缩真的失败/PostCompact 丢了也有它兜底。
-const PRE_COMPACT_TTL_MS = 5 * 60 * 1000;
+// 单一来源在 shared/states.js —— codex-watch 的两处 PreCompact 也要用同一个值。
+const PRE_COMPACT_TTL_MS = States.PRE_COMPACT_TTL_MS;
 
 function readStdin() {
   return new Promise((resolve) => {

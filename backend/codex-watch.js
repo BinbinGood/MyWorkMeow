@@ -33,6 +33,7 @@ const os = require('os');
 const path = require('path');
 const { detectEmotion } = require('./emotion');
 const { promptTitle } = require('./transcript');
+const { PRE_COMPACT_TTL_MS } = require('../shared/states');
 
 const SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 const POLL_MS = 2500;
@@ -306,7 +307,9 @@ function createCodexWatch(deps) {
       return;
     }
 
-    if (type === 'compacted') { update(t, 'sweeping', 'PreCompact'); return; }
+    // 压缩上下文是长操作：必须自报长 TTL，否则落到状态表默认的 20s
+    // （那是给 /clear 量的），压缩没完就衰减成 idle / working。
+    if (type === 'compacted') { update(t, 'sweeping', 'PreCompact', { stateTtlMs: PRE_COMPACT_TTL_MS }); return; }
 
     // rollout 是「事项完成才落盘」：function_call 落盘 = 工具正在跑。工具结果
     // 落盘并不表示整轮任务停止执行，后续 reasoning 也属于这次 Working 生命周期。
@@ -380,7 +383,8 @@ function createCodexWatch(deps) {
         t.didWorkThisTurn = false;
         break;
       case 'context_compacted':
-        update(t, 'sweeping', 'PreCompact');
+        // 同 'compacted'：长操作要自报长 TTL，别用 20s 的默认值。
+        update(t, 'sweeping', 'PreCompact', { stateTtlMs: PRE_COMPACT_TTL_MS });
         break;
       // *_end 仍处于同一个正在执行的任务；它们也可能是 watcher 恢复后看到的
       // 第一条工具事件，因此必须补记 didWorkThisTurn。

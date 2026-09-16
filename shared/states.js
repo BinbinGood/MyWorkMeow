@@ -36,11 +36,25 @@
   const ONESHOT_STATES = ['attention', 'error', 'sweeping', 'notification', 'carrying'];
   const ONESHOT_TTL_MS = { attention: 15000, carrying: 15000, sweeping: 20000, error: 45000 };
 
+  // 上面 sweeping 的 20s 是按 `/clear` 那种瞬时清理量的。压缩上下文（PreCompact）
+  // 是长操作，动辄一两分钟，用 20s 会压缩没完就衰减 —— 有后台任务时还会被
+  // core.js 的衰减分支变成 working，正是「压缩时显示干活中」的成因之一。
+  // 所以每个 PreCompact 生产者都必须自报这个更长的 TTL：
+  // backend/hook-common.js（Claude 系）、backend/codex-watch.js（两处）。
+  // hook/opencode-plugin.js 是零依赖的独立插件，只能照抄一份并注明与此对齐。
+  const PRE_COMPACT_TTL_MS = 5 * 60 * 1000;
+
   // Falling-asleep sequence — vocabulary reserved; no producer yet.
   const SLEEP_SEQUENCE = ['yawning', 'dozing', 'collapsing', 'sleeping', 'waking'];
 
   // Busy = counts toward the stuck-sweep + transcript polling in core.
   const BUSY_STATES = ['working', 'thinking', 'juggling', 'carrying', 'sweeping'];
+
+  // 工具类 hook 事件：一个回合**内部**的步进，不是回合边界。
+  // 两处都要用同一份：backend/adapter.js 的摸鱼判定（工具间隙才算摸鱼），以及
+  // backend/core.js 的 juggling / sweeping hold（这类事件不许接管这两个状态）。
+  // 曾经两边各写一份，正是这个文件开头那段「五份清单互相漂移」的老毛病。
+  const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop'];
 
   // Every state the /state route accepts (backend vocabulary).
   const VALID_STATES = Array.from(new Set([...Object.keys(STATE_PRIORITY), ...SLEEP_SEQUENCE]));
@@ -62,8 +76,10 @@
     STATE_PRIORITY,
     ONESHOT_STATES,
     ONESHOT_TTL_MS,
+    PRE_COMPACT_TTL_MS,
     SLEEP_SEQUENCE,
     BUSY_STATES,
+    TOOL_EVENTS,
     VALID_STATES,
     RENDER_EXTRA,
     RENDER_STATE_WORDS,

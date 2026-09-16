@@ -249,6 +249,17 @@ assert(title({ status: { error: 1, needsinput: 2, active: 5 } }) === '😵1',
   'error outranks needsinput and active, matching the capsule');
 assert(title({ status: { needsinput: 2, active: 5 } }) === '💬2', 'needsinput outranks active');
 assert(title({ status: { active: 4 } }) === '⚙️4', 'the busy count shows when nothing needs you');
+// 压缩上下文自己一档，排在 active 之前。2026-09-16 用户实测：压缩时菜单栏显示
+// ⚙️（干活中的图标），与胶囊/猫/右键菜单三处口径打架。main.js 现在把
+// sweepingCount 单独传进来，不再只并进 active 的求和里。
+assert(title({ status: { sweeping: 1, active: 3 } }) === '🧹1',
+  'compaction gets its own glyph instead of being folded into the ⚙️ busy count');
+assert(title({ status: { error: 1, sweeping: 2 } }) === '😵1',
+  'error still outranks compaction — a broken session matters more');
+assert(title({ status: { needsinput: 1, sweeping: 2 } }) === '💬1',
+  'anything that needs you outranks compaction');
+assert(title({ status: { sweeping: 0, active: 2 } }) === '⚙️2',
+  'a zero sweeping count falls through to the busy count (never prints "🧹0")');
 assert(title({ status: {} }) === '🌿', 'idle still prints one glyph so the menu bar never looks dead');
 assert(title({ status: { sleeping: true } }) === '💤', 'sleeping has its own glyph');
 assert(title({}) === '🌿', 'a missing status object degrades to idle, not to a crash');

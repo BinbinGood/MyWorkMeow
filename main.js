@@ -1687,8 +1687,12 @@ function refreshTrayTitle() {
       waiting: n(s.waitingCount),
       needsinput: n(s.needsinputCount),
       error: n(s.errorCount),
+      // 压缩上下文单独传：并进下面的 active 求和就被画成 ⚙️（干活中的图标），
+      // 与胶囊、猫、右键菜单的口径打架。titleStatus 里它排在 active 之前。
+      sweeping: n(s.sweepingCount),
       // 「在干活」= 五个忙态求和，和胶囊的 activeCount 同口径
-      //（shared/pet-insights.js:67）。
+      //（shared/pet-insights.js:67）。sweeping 仍然计入，只是优先级更高的
+      // sweeping 分支会先命中；两者都为 0 时这里的求和才起作用。
       active: n(s.workingCount) + n(s.jugglingCount) + n(s.sweepingCount)
         + n(s.thinkingCount) + n(s.loafingCount),
       sleeping: s.idleMs == null || Number(s.idleMs) > TRAY_TITLE_SLEEP_MS,

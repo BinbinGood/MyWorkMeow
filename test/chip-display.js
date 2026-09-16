@@ -93,6 +93,30 @@ assert.strictEqual(w.elements('stage').classList.contains('cat-hidden'), true);
 assert.strictEqual(w.elements('cat').getAttribute('aria-hidden'), 'true');
 assert.strictEqual(w.elements('chip-context').textContent.startsWith('⚙️'), true,
   'the working-state icon must remain inside the capsule');
+// 2026-09-16 用户实测：压缩上下文时胶囊显示的是「干活中」。其中一层是这里 ——
+// 旧写法在两个及以上忙碌会话时把标签整段换成「N 个任务」，状态词彻底消失，
+// 所以单会话时看着是对的、多会话时就错了（用户说的「有时候又是对的」）。
+// 现在计数缀在状态词后面，两个事实都保住。
+w.handlers.stats({ ...compactStats, sweepingCount: 1, workingCount: 1, sessions: [
+  { state: 'sweeping', agent: 'claude', createdAt: 100 },
+  { state: 'working', agent: 'codex', createdAt: 101 },
+] });
+assert.strictEqual(w.elements('chip-context').textContent, '🧹 清理上下文 ×2',
+  'multiple busy sessions must keep the state word and only append the count');
+assert.strictEqual(w.elements('chip').getAttribute('aria-label').startsWith('清理上下文 · 共 2 个任务'),
+  true, 'the accessible label spells out both the state and the task count');
+w.handlers.stats({ ...compactStats, sweepingCount: 1, sessions: [
+  { state: 'sweeping', agent: 'claude', createdAt: 100 },
+] });
+assert.strictEqual(w.elements('chip-context').textContent.startsWith('🧹 清理上下文'), true,
+  'a single compacting session shows the same state word without a count suffix');
+assert.strictEqual(w.elements('chip-context').textContent.includes('×'), false,
+  'the count suffix must not appear when only one session is busy');
+// 下面测道具图标的落位，得先把状态放回 working —— sweeping 是**高优先级稳态**，
+// pet.js 的 operation 分支会 hold 住它、根本不调 playAction/positionProp
+//（那正是「清理上下文时不被工具事件降级成干活中」的设计）。不复位的话
+// propEl.style.left 压根没被赋值过，断言拿到 undefined，看着像落位算错了。
+w.handlers.stats(compactStats);
 w.window.innerWidth = 320;
 w.elements('stage').getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 340 });
 w.elements('chip').getBoundingClientRect = () => ({ left: 150, top: 300, width: 130, height: 21 });

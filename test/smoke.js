@@ -855,6 +855,31 @@ async function main() {
     assert.strictEqual(core.getSession(cmpSid).state, 'sweeping');
   });
 
+  // 用户实测的第三层，也是「有时候对有时候不对」的成因：自动压缩发生在**回合
+  // 中间**，PostToolUse 与 PreCompact 是两个各自独立的 hook 进程，都要先读
+  // transcript 尾部（磁盘 I/O）再发 HTTP，链路上没有任何事件顺序守卫。迟到的
+  // 工具事件一落地就把 sweeping 改写成 working，还顺带把 stateTtlMs 清零
+  // （working 不是 oneshot）—— 5 分钟的保护一起没了。谁先谁后取决于两次磁盘读
+  // 的耗时，所以时对时错。core.js 用一条 hold 钉住（照 juggling 的老范式）。
+  const heldTtl = core.getSession(cmpSid).stateTtlMs;
+  await post('/state', { state: 'working', event: 'PostToolUse', session_id: cmpSid, cwd: '/Users/me/proj-cmp', tool_name: 'Bash' });
+  check('迟到的 PostToolUse 不得把压缩中的 sweeping 改成 working', () => {
+    assert.strictEqual(core.getSession(cmpSid).state, 'sweeping');
+  });
+  check('hold 期间必须沿用旧的长 TTL（清零等于换个方式提前放掉）', () => {
+    assert.strictEqual(core.getSession(cmpSid).stateTtlMs, heldTtl);
+    assert(heldTtl > 20 * 1000, '沿用下来的必须是那个长 TTL');
+  });
+  // hold 不能变成「卡住不动」：TTL 仍是最终兜底，压缩真挂了也会自己落地。
+  core.sessions.get(cmpSid).updatedAt = Date.now() - (heldTtl + 1000);
+  core.cleanStaleSessions();
+  check('长 TTL 到点后 hold 仍然放手（不会永久挂着假压缩态）', () => {
+    assert.notStrictEqual(core.getSession(cmpSid).state, 'sweeping');
+  });
+  // 复位回压缩中，继续验证正常的释放路径。
+  await post('/state', preBody);
+  assert.strictEqual(core.getSession(cmpSid).state, 'sweeping');
+
   await post('/state', postBody);
   check('PostCompact 回到干活态并清掉长 TTL', () => {
     const s = core.getSession(cmpSid);
@@ -868,6 +893,16 @@ async function main() {
   core.cleanStaleSessions();
   check('长 TTL 不外泄：/clear 的 sweeping 仍按默认 20s 衰减', () => {
     assert.strictEqual(core.getSession(cmpSid).state, 'idle');
+  });
+  // hold 的边界条件：它只认「自报了长 TTL」的真压缩。/clear 那条瞬时 sweeping
+  // 不带 TTL，必须仍能被工具事件正常接管 —— 否则会挂着一个假的压缩态。
+  await post('/state', { state: 'sweeping', event: 'SessionEnd', session_id: cmpSid, cwd: '/Users/me/proj-cmp' });
+  check('/clear 的 sweeping 不带长 TTL（hold 的判据）', () => {
+    assert.strictEqual(core.getSession(cmpSid).stateTtlMs, 0);
+  });
+  await post('/state', { state: 'working', event: 'PostToolUse', session_id: cmpSid, cwd: '/Users/me/proj-cmp', tool_name: 'Bash' });
+  check('/clear 的瞬时 sweeping 不 hold，工具事件照旧接管', () => {
+    assert.strictEqual(core.getSession(cmpSid).state, 'working');
   });
 
   console.log('\n[21] 会话名跟着任务名走（每轮 prompt 只做兜底）');

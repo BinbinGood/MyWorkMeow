@@ -15,6 +15,7 @@
 const path = require('path');
 const { t } = require('../shared/i18n');
 const { shortKey, shortLabel } = require('../shared/agents');
+const States = require('../shared/states');
 
 const TOOL_ICON = {
   Edit: '📝', MultiEdit: '📝', Write: '📝', NotebookEdit: '📝',
@@ -47,8 +48,9 @@ function toolLabel(tool) {
   return tool || t('tool.default');
 }
 
-// 「最近事件是工具活动」判定——op 标签只该跟着这些事件走
-const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop']);
+// 「最近事件是工具活动」判定——op 标签只该跟着这些事件走。
+// 清单在 shared/states.js，与 core.js 的 juggling / sweeping hold 同源。
+const TOOL_EVENTS = new Set(States.TOOL_EVENTS);
 
 // 工具结束后超过这个间隙仍无事件 → 摸鱼中（等下一步）
 const LOAF_GAP_MS = 5000;

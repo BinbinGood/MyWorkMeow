@@ -2424,10 +2424,16 @@ function renderContextCapsule(s) {
     const elapsed = info.primary && info.primary.turnStartedAt
       ? capsuleElapsed(now - Number(info.primary.turnStartedAt))
       : '';
-    label = info.activeCount > 1
-      ? `${icon}${info.activeCount} 个任务`
-      : `${icon}${stateText}${elapsed ? ` · ${elapsed}` : ''}`;
-    title = info.activeCount > 1 ? `${info.activeCount} 个任务正在进行` : stateText;
+    // 多任务时保留状态词，只把计数缀在后面（「🧹清理上下文 ×2」）。
+    // 旧写法是 `${icon}${activeCount} 个任务`，状态词被整段吃掉 —— 于是「压缩
+    // 上下文」在两个会话同时忙时看不见，单会话才看得见，正是用户说的
+    // 「有时候又是对的」（2026-09-16）。计数比耗时更值钱，多任务时让位。
+    const multi = info.activeCount > 1;
+    const tail = multi
+      ? t('capsule.multiSuffix', { count: info.activeCount })
+      : (elapsed ? ` · ${elapsed}` : '');
+    label = `${icon}${stateText}${tail}`;
+    title = multi ? t('capsule.multiTitle', { state: stateText, count: info.activeCount }) : stateText;
   } else if (showDone) {
     label = '✅ 刚刚完成';
     title = '最近一轮任务已完成';

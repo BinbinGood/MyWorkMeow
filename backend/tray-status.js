@@ -243,11 +243,16 @@ function titleStatus(status, t) {
   const waiting = n(s.waiting);
   const needsinput = n(s.needsinput);
   const error = n(s.error);
+  const sweeping = n(s.sweeping);
   const active = n(s.active);
   // 「等你」把授权和回复合并计数：菜单栏上这两者对用户是同一个动作（去处理一下）。
   if (waiting > 0) return t('tray.titleWaiting', { count: String(waiting + needsinput) });
   if (error > 0) return t('tray.titleError', { count: String(error) });
   if (needsinput > 0) return t('tray.titleNeedsinput', { count: String(needsinput) });
+  // 压缩上下文单独一档，排在 active 之前。否则它被并进 active 的求和里，画成
+  // ⚙️（就是「干活中」的图标）—— 与胶囊、猫、右键菜单三处的口径不一致，
+  // 用户看到的「压缩时显示干活中」很可能正是这里（2026-09-16）。
+  if (sweeping > 0) return t('tray.titleSweeping', { count: String(sweeping) });
   if (active > 0) return t('tray.titleActive', { count: String(active) });
   // 空闲态也给一个字符：菜单栏彻底空着会让人怀疑喵挂了。
   return t(s.sleeping ? 'tray.titleSleeping' : 'tray.titleIdle');

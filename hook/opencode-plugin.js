@@ -30,6 +30,10 @@ const POST_TIMEOUT_MS = 500;
 const LAST_OUTPUT_MAX = 2400;   // 与 server 的 ASSISTANT_LAST_OUTPUT_MAX 对齐
 const MAX_BODY_BYTES = 16384;   // 与 server 的 MAX_STATE_BODY_BYTES 对齐
 const TURN_LOOKBACK_MS = 90000; // session.idle 多久内算「刚完成一轮」
+// 压缩上下文这类长操作的 oneshot 存活时间。不报的话打工喵会用状态表里给 /clear
+// 量的 20s，压缩没完就衰减，看起来像「压缩时状态显示干活中」。
+// 与 shared/states.js 的 PRE_COMPACT_TTL_MS 对齐 —— 本插件零依赖，只能抄一份。
+const PRE_COMPACT_TTL_MS = 5 * 60 * 1000;
 
 // opencode 工具类型 → 打工喵词汇（未知类型原样首字母大写兜底）。
 const TOOL_NAMES = {
@@ -185,6 +189,7 @@ export const WorkMeowOpenCodePlugin = async ({ directory }) => {
       if (extra.session_title || meta.title) body.session_title = extra.session_title || meta.title;
       if (extra.tool_name) body.tool_name = extra.tool_name;
       if (extra.api_error_type) body.api_error_type = extra.api_error_type;
+      if (extra.state_ttl_ms > 0) body.state_ttl_ms = extra.state_ttl_ms;
       const tail = outputTail.get(sessionID);
       if (tail) body.assistant_last_output = tail.length > LAST_OUTPUT_MAX ? tail.slice(-LAST_OUTPUT_MAX) : tail;
       // 相同 session+state+event 300ms 内去重（session.idle 等会连发）。
@@ -330,7 +335,7 @@ export const WorkMeowOpenCodePlugin = async ({ directory }) => {
 
       if (type === 'session.compacted') {
         const sid = str(p.sessionID) || str(info.id) || '';
-        if (sid) post('sweeping', 'PreCompact', { session_id: sid });
+        if (sid) post('sweeping', 'PreCompact', { session_id: sid, state_ttl_ms: PRE_COMPACT_TTL_MS });
         return;
       }
 

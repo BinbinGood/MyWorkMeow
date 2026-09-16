@@ -30,6 +30,10 @@ const RUNTIME_FILES = Object.freeze([
   'backend/protocol-compat.js',
   'shared/agents.js',
   'shared/brand.js',
+  // hook-common.js 从这里取 PRE_COMPACT_TTL_MS（压缩上下文的长 TTL）。
+  // 便携 runtime 是**整份拷贝出去独立跑**的，漏一个文件 hook 就直接 MODULE_NOT_FOUND
+  // —— test/portable-runtime.js 守这条。states.js 本身零依赖，拷过去即可用。
+  'shared/states.js',
 ]);
 
 function runtimeDir(homeDir = os.homedir()) {

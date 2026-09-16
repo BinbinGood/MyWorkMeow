@@ -53,6 +53,8 @@
     'tray.titleWaiting': '✋{count}',
     'tray.titleNeedsinput': '💬{count}',
     'tray.titleError': '😵{count}',
+    // 压缩上下文用扫帚，与胶囊 SESS_META_ICON.sweeping 同一个图标。
+    'tray.titleSweeping': '🧹{count}',
     'tray.titleActive': '⚙️{count}',
     'tray.titleIdle': '🌿',
     'tray.titleSleeping': '💤',
@@ -456,6 +458,12 @@
     'menu.panel': '详情',
     'menu.privacy': '隐私',
     'menu.collapse': '收起',
+
+    // ── 状态胶囊（喵头顶那条）────────────────────────────────────────────────
+    // 多任务时把「×N」缀在状态词后面，而不是拿「N 个任务」把状态词整段换掉 ——
+    // 后者会让「清理上下文」在两个会话同时忙时彻底消失（2026-09-16 实测）。
+    'capsule.multiSuffix': ' ×{count}',
+    'capsule.multiTitle': '{state} · 共 {count} 个任务',
 
     // ── action center ───────────────────────────────────────────────────────
     'action.title': '🗒️ 行动中心',

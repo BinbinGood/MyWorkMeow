@@ -38,6 +38,9 @@ const ONESHOT_STATES = new Set(States.ONESHOT_STATES);
 const ONESHOT_TTL_MS = States.ONESHOT_TTL_MS;
 const VALID_STATES = new Set(States.VALID_STATES); // states the /state route accepts
 const BUSY_STATES = new Set(States.BUSY_STATES);
+// 工具类事件（回合内部的步进）——juggling / sweeping 的 hold 要靠它区分
+// 「回合内步进」与「回合边界」。清单在 shared/states.js，与 adapter.js 同源。
+const TOOL_EVENTS = new Set(States.TOOL_EVENTS);
 
 // TaskStarted: Codex 回合开始（rollout 的 task_started）——同样属于「新工作开始」，
 // 要清掉上一轮的完成徽标；Claude 路径永远不会发这个事件名。
@@ -178,6 +181,9 @@ function createCore(options = {}) {
     const isNew = !prev;
     const s = prev || { id, createdAt: now, state: 'idle', recentEvents: [] };
     const prevState = s.state;
+    // 上一次事件自报的 oneshot 存活时长。下面的 sweeping hold 要用它区分
+    // 「压缩中」（PreCompact 报了 5 分钟）和「/clear 的瞬时 sweeping」（没报）。
+    const prevStateTtlMs = Number(s.stateTtlMs) || 0;
 
     // Merge identity / focus fields only when provided (never clobber with null).
     setField(s, 'agentId', f.agentId);
@@ -227,6 +233,22 @@ function createCore(options = {}) {
     if (prevState === 'juggling' && (event === 'PreToolUse' || event === 'PostToolUse')) {
       resolvedState = 'juggling';
     }
+
+    // 压缩上下文（PreCompact → sweeping）同理，而且更需要：自动压缩发生在**回合
+    // 中间**，PostToolUse 与 PreCompact 是两个各自独立的 hook 进程，都要先读
+    // transcript 尾部（磁盘 I/O）再发 HTTP，谁先到达没有保证，链路上也没有任何
+    // 事件顺序守卫。迟到的工具事件一落地就把 sweeping 改成 working，还顺带把下面
+    // 那行的 stateTtlMs 清零（working 不是 oneshot）—— 5 分钟的保护一起没了。
+    // 于是「压缩时状态显示干活中」时对时错，取决于两次磁盘读的快慢
+    // （2026-09-16 用户实测反馈）。
+    // 只 hold「真·压缩中」：PreCompact 自报了 TTL 才算。/clear 那条瞬时 sweeping
+    // 不带 TTL，必须仍能被工具事件正常接管，否则会挂着一个假的压缩态。
+    // 释放路径不用新增：PostCompact / UserPromptSubmit / Stop / SessionEnd /
+    // StopFailure 都不是工具事件，照旧接管；5 分钟 TTL 仍是最终兜底。
+    const holdSweeping = prevState === 'sweeping'
+      && prevStateTtlMs > 0
+      && TOOL_EVENTS.has(event);
+    if (holdSweeping) resolvedState = 'sweeping';
 
     if (event === 'Stop') {
       const backgroundTasksCount = positiveCount(f.backgroundTasksCount);
@@ -286,7 +308,12 @@ function createCore(options = {}) {
     // oneshot 状态的存活时长：默认取状态表的 TTL（sweeping 是给 /clear 量的 20s），
     // 长操作（PreCompact 压缩上下文）由 hook 自己报一个更长的值，直到 PostCompact
     // 把它换掉。非 oneshot 状态一律清零，免得旧值被下一个 sweeping 借用。
-    s.stateTtlMs = ONESHOT_STATES.has(resolvedState) ? (Number(f.stateTtlMs) || 0) : 0;
+    // holdSweeping 时必须沿用旧 TTL：迟到的工具事件不带 state_ttl_ms，按上面这条
+    // 算就是 0，`cleanStaleSessions` 的 ttl 便回落到 ONESHOT_TTL_MS.sweeping = 20s
+    // （shared/states.js），压缩没完就被衰减成 working —— 等于换个方式丢掉状态。
+    s.stateTtlMs = holdSweeping
+      ? prevStateTtlMs
+      : (ONESHOT_STATES.has(resolvedState) ? (Number(f.stateTtlMs) || 0) : 0);
     // Which flavour of Notification parked us in 「等你回复」(permission_prompt /
     // elicitation_dialog / …). Kept so a future false positive can be traced to
     // its exact source via /debug instead of guessed at; cleared on the way out.
