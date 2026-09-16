@@ -28,6 +28,22 @@ config.sanitize({ quotaAgents: { codex: false } });
 assert.strictEqual(config.sanitize({}).quotaAgents.codex, undefined,
   'sanitize never leaks the callers toggle into the shared defaults');
 
+// ── 托盘菜单与底部展示栏解耦（2026-09-16）───────────────────────────────────
+// trayAgents 是新增的独立开关。迁移口径：用户还没显式写过 trayAgents 时，
+// 用 quotaAgents 作初值（升级后之前关掉的托盘行不会自己亮回来）；一旦写过，
+// 就和 quotaAgents 彻底脱钩。
+assert.strictEqual(config.sanitize({}).trayAgents.workbuddy, undefined,
+  'an unmentioned tray agent defaults to enabled');
+assert.strictEqual(config.sanitize({ quotaAgents: { codex: false } }).trayAgents.codex, false,
+  'trayAgents seeds from quotaAgents on first run after upgrade');
+assert.strictEqual(config.sanitize({ quotaAgents: { codex: false }, trayAgents: { codex: true } }).trayAgents.codex, true,
+  'an explicit trayAgents value wins over the migrated seed');
+assert.strictEqual(
+  config.sanitize({ quotaAgents: { codex: false }, trayAgents: { codex: true } }).quotaAgents.codex,
+  false, 'toggling the tray must not touch the bottom-bar toggle');
+assert.strictEqual(config.sanitize({ showQuota: false }).trayAgents.workbuddy, false,
+  'the legacy showQuota:false also migrates into the tray map');
+
 const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/agents.js', 'shared/pet-insights.js', 'renderer/icons.js', 'renderer/pet.js']);
 // 底部展示栏现在是「每个检测到的 Agent 一份额度」，所以渲染揣包里必须带上
 // quotaAgents 列表 —— 它同时驱动胶囊徽标、托盘行、设置页的开关。

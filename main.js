@@ -1090,20 +1090,22 @@ function registerIpc() {
     for (const key of ['showCat', 'showStatus', 'showTokens', 'showCost']) {
       if (value && typeof value[key] === 'boolean') patch[key] = value[key];
     }
-    // 额度开关按 Agent 逐个给：{ quotaAgents: { workbuddy: false } }。
-    // 走 merge 而不是整表覆盖，改一个不会把别的 Agent 的开关抹掉。
-    if (value && value.quotaAgents && typeof value.quotaAgents === 'object' && !Array.isArray(value.quotaAgents)) {
-      const merged = { ...(config.get().quotaAgents || {}) };
-      let touched = false;
-      for (const [id, enabled] of Object.entries(value.quotaAgents)) {
-        if (!id || typeof enabled !== 'boolean') continue;
-        merged[id] = enabled;
-        touched = true;
+    // 两组 Agent 开关各自 merge：quotaAgents 管底部展示栏、trayAgents 管托盘菜单，
+    // 改一个不会把别的 Agent 的开关抹掉（走 merge 而不是整表覆盖）。
+    for (const group of ['quotaAgents', 'trayAgents']) {
+      if (value && value[group] && typeof value[group] === 'object' && !Array.isArray(value[group])) {
+        const merged = { ...(config.get()[group] || {}) };
+        let touched = false;
+        for (const [id, enabled] of Object.entries(value[group])) {
+          if (!id || typeof enabled !== 'boolean') continue;
+          merged[id] = enabled;
+          touched = true;
+        }
+        if (touched) patch[group] = merged;
       }
-      if (touched) patch.quotaAgents = merged;
     }
     config.save(patch);
-    // 托盘右键菜单也吃 quotaAgents（buildStatusRows 按 enabled 过滤），
+    // 托盘右键菜单也吃 trayAgents（buildStatusRows 按 enabled 过滤），
     // 所以每次保存都得重建，不能等 20s 的定时刷新。
     refreshTrayMenu();
     emitStats();
@@ -1617,9 +1619,10 @@ function codexQuotaBundle() {
   };
 }
 
-// 「托盘/底部展示栏要不要显示这个 Agent 的额度」。缺省放行，只有显式 false 才关。
-function quotaAgentEnabled(id) {
-  const map = config.get().quotaAgents || {};
+// 「托盘弹出菜单要不要显示这个 Agent 那一行」。缺省放行，只有显式 false 才关。
+// 2026-09-16 与底部展示栏解耦：这里只读 trayAgents，底部栏读 quotaAgents。
+function trayAgentEnabled(id) {
+  const map = config.get().trayAgents || {};
   return map[id] !== false;
 }
 
@@ -1627,7 +1630,7 @@ function quotaAgentEnabled(id) {
 function trayAgents() {
   return trayAgentRows().filter((row) => row.detected).map((row) => ({
     ...row,
-    enabled: quotaAgentEnabled(row.id),
+    enabled: trayAgentEnabled(row.id),
   }));
 }
 

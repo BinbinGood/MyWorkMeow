@@ -44,9 +44,10 @@ const creditQuotaClear = $('credit-quota-clear');
 // agents 里最后一个 Credit 型 Agent —— 手填那张卡片归属它。
 let creditAgentState = null;
 let quotaAgentRows = [];
+let chipAgentsState = {};
 let creditQuotaBusy = false;
 
-function quotaAgentCard(agent) {
+function quotaAgentCard(agent, chipEnabled) {
   const card = document.createElement('div');
   card.className = 'setting-card';
 
@@ -60,40 +61,62 @@ function quotaAgentCard(agent) {
   description.textContent = t(`settings.quotaAgent${agent.quotaKind || 'None'}Description`);
   copy.append(title, description);
 
-  // 每个接入的 Agent 都是可开关的，**包括没有额度数据的那些**（Claude / TRAE /
-  // opencode）。2026-09-16 之前这里把它们锁死在关（灰掉、点不动），理由是「底部栏
-  // 产不出额度徽标，可开关会让人以为坏了」—— 用户的反馈是那个灰开关本身才像坏的。
-  // 现在这个开关管的是**整个 Agent 的信息**，不只是额度徽标：关掉它，托盘弹出菜单里
-  // 那一行（Agent 名 + 今日 Token + 费用，见 backend/tray-status.js 的 agentParts）
-  // 也一起收起来。没额度数据的 Agent 打开后弹出菜单里就是有内容的，开关不再是空转。
-  const button = document.createElement('button');
-  button.id = `quota-agent-${agent.id}-toggle`;
-  button.className = 'switch';
-  button.type = 'button';
-  button.setAttribute('role', 'switch');
-  button.setAttribute('aria-checked', String(agent.enabled !== false));
-  button.setAttribute('aria-label', t('settings.quotaAgentToggle', { name: agent.label || agent.id }));
-  const thumb = document.createElement('span');
-  thumb.className = 'switch-thumb';
-  thumb.setAttribute('aria-hidden', 'true');
-  button.appendChild(thumb);
+  // 2026-09-16：底部展示栏（额度徽标）与托盘菜单（那一行信息）拆成两个独立开关，
+  // 各自可开可关、互不影响。之前是一个开关同时管两处，用户要的是分开控制。
+  const toggles = document.createElement('div');
+  toggles.className = 'setting-toggles';
 
-  button.addEventListener('click', async () => {
-    button.disabled = true;
-    quotaAgentStatus.className = 'setting-status';
-    quotaAgentStatus.textContent = t('settings.chipHint');
-    try {
-      const result = await window.pet.setChipDisplay({
-        quotaAgents: { [agent.id]: button.getAttribute('aria-checked') !== 'true' },
-      });
-      if (!result || !result.ok) throw new Error('save failed');
-      button.setAttribute('aria-checked', String(result.quotaAgents[agent.id] !== false));
-      quotaAgentStatus.textContent = '已保存，喵底部栏与托盘菜单已更新';
-    } catch { quotaAgentStatus.textContent = '保存失败，请重试'; }
-    finally { button.disabled = false; }
-  });
+  const makeToggle = (kind, checked) => {
+    const row = document.createElement('div');
+    row.className = 'toggle-row';
+    const label = document.createElement('span');
+    label.className = 'toggle-label';
+    label.textContent = kind === 'chip' ? t('settings.agentChipLabel') : t('settings.agentTrayLabel');
+    const button = document.createElement('button');
+    button.id = `quota-agent-${agent.id}-${kind}-toggle`;
+    button.className = 'switch';
+    button.type = 'button';
+    button.setAttribute('role', 'switch');
+    button.setAttribute('aria-checked', String(checked));
+    button.setAttribute('aria-label', kind === 'chip'
+      ? t('settings.agentChipToggle', { name: agent.label || agent.id })
+      : t('settings.agentTrayToggle', { name: agent.label || agent.id }));
+    const thumb = document.createElement('span');
+    thumb.className = 'switch-thumb';
+    thumb.setAttribute('aria-hidden', 'true');
+    button.appendChild(thumb);
+    row.append(label, button);
+    return { row, button };
+  };
 
-  card.append(copy, button);
+  const chip = makeToggle('chip', chipEnabled !== false);
+  const tray = makeToggle('tray', agent.enabled !== false);
+
+  const wire = (button, kind) => {
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      quotaAgentStatus.className = 'setting-status';
+      quotaAgentStatus.textContent = t('settings.chipHint');
+      const next = button.getAttribute('aria-checked') !== 'true';
+      try {
+        // 底部栏走 quotaAgents，托盘走 trayAgents —— 两处独立，互不影响。
+        const payload = kind === 'chip'
+          ? { quotaAgents: { [agent.id]: next } }
+          : { trayAgents: { [agent.id]: next } };
+        const result = await window.pet.setChipDisplay(payload);
+        if (!result || !result.ok) throw new Error('save failed');
+        button.setAttribute('aria-checked', String(next));
+        quotaAgentStatus.textContent = '已保存，底部展示栏与托盘菜单已更新';
+      } catch { quotaAgentStatus.textContent = '保存失败，请重试'; }
+      finally { button.disabled = false; }
+    });
+  };
+
+  wire(chip.button, 'chip');
+  wire(tray.button, 'tray');
+
+  toggles.append(chip.row, tray.row);
+  card.append(copy, toggles);
   return card;
 }
 
@@ -104,8 +127,9 @@ function quotaAgentQuotaKind(agent) {
   return 'None';
 }
 
-function renderQuotaAgents(agents) {
+function renderQuotaAgents(agents, chipMap) {
   quotaAgentRows = Array.isArray(agents) ? agents : [];
+  const chip = chipMap && typeof chipMap === 'object' ? chipMap : {};
   quotaAgentList.replaceChildren();
   if (!quotaAgentRows.length) {
     const empty = document.createElement('div');
@@ -120,7 +144,7 @@ function renderQuotaAgents(agents) {
       label: agent.label,
       enabled: agent.enabled !== false,
       quotaKind: quotaAgentQuotaKind(agent),
-    }));
+    }, chip[agent.id]));
   }
 }
 
@@ -157,10 +181,17 @@ function renderCreditQuotaForm() {
 }
 
 async function loadQuotaAgents() {
+  // 底部栏开关状态在 chipDisplay.quotaAgents；托盘开关状态在 agent.enabled。
+  // 两个都取：getChipDisplay 拿前者，getQuotaAgents 拿后者（含检测到的 Agent 名单）。
+  try {
+    const display = await window.pet.getChipDisplay();
+    chipAgentsState = (display && display.quotaAgents && typeof display.quotaAgents === 'object')
+      ? display.quotaAgents : {};
+  } catch { chipAgentsState = {}; }
   try {
     const result = await window.pet.getQuotaAgents();
-    renderQuotaAgents(result && result.agents ? result.agents : []);
-  } catch { renderQuotaAgents([]); }
+    renderQuotaAgents(result && result.agents ? result.agents : [], chipAgentsState);
+  } catch { renderQuotaAgents([], {}); }
   renderCreditQuotaForm();
 }
 
@@ -184,7 +215,7 @@ async function saveCreditQuota(clear = false) {
       resetDay: Number(creditQuotaResetDay.value),
     });
     if (!result || !result.ok || !result.agents) throw new Error('save failed');
-    renderQuotaAgents(result.agents);
+    renderQuotaAgents(result.agents, chipAgentsState);
     renderCreditQuotaForm();
     renderCreditQuotaStatus(clear ? 'settings.creditQuotaCleared' : 'settings.creditQuotaSaved');
   } catch { renderCreditQuotaStatus('settings.creditQuotaFailed', 'error'); }

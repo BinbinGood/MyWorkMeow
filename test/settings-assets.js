@@ -41,14 +41,16 @@ assert(!html.includes('id="showQuota-toggle"'), 'the single dynamic quota slot t
 assert(!/quota-slot-title|quota-slot-description/.test(html), 'the renamed slot title/description placeholders are gone');
 assert(/quotaAgentList\s*=\s*\$\('quota-agent-list'\)/.test(js), 'the renderer must drive the list container');
 assert(/window\.pet\.getQuotaAgents\(\)/.test(js), 'the list is populated from the main process agent roster');
-assert(/quotaAgents:\s*\{\s*\[agent\.id\]/.test(js), 'toggling must patch one agent, never rewrite the whole map');
+assert(/quotaAgents:\s*\{\s*\[agent\.id\]/.test(js) && /trayAgents:\s*\{\s*\[agent\.id\]/.test(js),
+  'each agent toggles two independent maps (bottom bar + tray), never rewriting the whole map');
 assert(!/creditQuotaSection\.hidden/.test(js),
   'the hand-filled credit card must not appear and disappear dynamically');
 // Codex / Credit / 无额度三种描述文案都要真存在 —— 这段走的是插值 key，
-// i18n 的正则扫描抓不到，只能在这里显式钉住。
+// i18n 的正则扫描抓不到，只能在这里显式钉住。拆成两个开关后，四个新 key 也要钉住。
 for (const key of ['settings.quotaAgentsKicker', 'settings.quotaAgentCodexDescription',
   'settings.quotaAgentCreditDescription', 'settings.quotaAgentNoneDescription',
-  'settings.quotaAgentToggle', 'settings.quotaAgentsLoading']) {
+  'settings.agentChipLabel', 'settings.agentTrayLabel',
+  'settings.agentChipToggle', 'settings.agentTrayToggle', 'settings.quotaAgentsLoading']) {
   assert(require('../shared/i18n').t(key) !== key, `i18n has ${key}`);
 }
 

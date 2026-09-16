@@ -106,15 +106,16 @@
     'settings.chipShowCost': '今日 API 等价费用',
     'settings.chipShowCostDescription': '按 API 价格估算，不代表订阅实际扣费',
     'settings.chipHint': '修改立即生效并自动保存；完整用量仍可在统计面板查看。',
-    // 按 Agent 拆开的开关。有几个「有效的」（已接入）就有几个按钮。
-    // 一个开关管两处：底部展示栏的额度徽标 + 托盘弹出菜单里那一行。所以标题不叫
-    // 「订阅额度」——没有额度数据的 Agent（Claude/TRAE/opencode）在托盘里照样有
-    // Token 和费用可看，叫「订阅额度」会让人以为那几个开关是空的（2026-09-16）。
+    // 按 Agent 拆开的开关。每个 Agent 有**两个独立开关**：底部展示栏（额度徽标）
+    // 和托盘菜单（那一行信息），2026-09-16 拆开 —— 之前一组开关同时管两处。
     'settings.quotaAgentsKicker': '显示哪些 Agent',
-    'settings.quotaAgentCodexDescription': '底部展示栏显示 5h、7d 剩余百分比（点击看刷新时间）；托盘菜单里也有它一行',
-    'settings.quotaAgentCreditDescription': '底部展示栏显示剩余积分（需在下面填每期总量，点击看今日消耗）；托盘菜单里也有它一行',
-    'settings.quotaAgentNoneDescription': '这个 Agent 不提供额度数据，底部展示栏不会有它的徽标；托盘菜单里仍有它的今日 Token 与费用，关掉就连那一行一起收起来',
-    'settings.quotaAgentToggle': '显示 {name} 的信息',
+    'settings.quotaAgentCodexDescription': '提供 5h、7d 剩余百分比',
+    'settings.quotaAgentCreditDescription': '提供剩余积分（在下面填每期总量）',
+    'settings.quotaAgentNoneDescription': '不提供额度数据，只有今日 Token 与费用',
+    'settings.agentChipLabel': '底部展示栏',
+    'settings.agentTrayLabel': '托盘菜单',
+    'settings.agentChipToggle': '在底部展示栏显示 {name}',
+    'settings.agentTrayToggle': '在托盘菜单显示 {name}',
     'settings.quotaAgentsLoading': '正在检查接入的 Agent…',
 
     // 积分额度（手填）。WorkBuddy 的余额只在服务端、本机无副本，所以由用户填每期
@@ -421,12 +422,8 @@
     'peek.today': '今日 {rounds} 轮 · {tokens} tokens · API 等价 {cost}',
     'peek.running': '运行中 {running} · 等待你 {waiting} · 今日 {rounds} 轮',
     'peek.more': '另有 {count} 个任务，可在详情中查看',
-    'peek.elapsed': '会话已持续 {time}',
+    'peek.elapsed': '{time}',
     'peek.updated': '{time}前更新',
-    'peek.justNow': '刚刚',
-    'peek.seconds': '{count}秒',
-    'peek.minutes': '{count}分钟',
-    'peek.hours': '{count}小时',
     'peek.errorDetail': '任务执行异常，可打开会话查看',
     'peek.done': '刚完成',
     'peek.interrupted': '已中断',

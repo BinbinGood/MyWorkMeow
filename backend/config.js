@@ -27,14 +27,14 @@ const DEFAULTS = Object.freeze({
   showStatus: true,
   showTokens: false,
   showCost: true,
-  // 「哪个 Agent 要出现在底部展示栏（额度徽标）/ 托盘弹出菜单（那一行信息）」——
-  // 按 Agent 逐个开关，一处开关两处生效。
-  // 以前这里是一个布尔 showQuota + 一个会动态改名的「额度槽位」：设置页写
-  // Codex、托盘却写 WorkBuddy，看起来自相矛盾。2026-09-15 改成每个检测到
-  // 的 Agent 各一个开关，有几个有效的就有几个按钮，位置从此固定。
+  // 「哪个 Agent 要出现在底部展示栏（额度徽标）」——按 Agent 逐个开关。
   //   { workbuddy: true, codex: false }
   // 缺省（没写）= 打开。只有显式 false 才是关掉。
   quotaAgents: {},
+  // 「哪个 Agent 要出现在托盘弹出菜单（那一行信息）」——2026-09-16 从 quotaAgents
+  // 拆出来，两个各自独立。之前一组开关同时管底部栏和托盘，用户要分开控制。
+  // 升级迁移：trayAgents 没写过时，用 quotaAgents 作初值（见 sanitize）。
+  trayAgents: {},
   xiabanTimes: DEFAULT_XIABAN_TIMES,
   // 按数据源手填的「每期积分总量」，用于反推剩余额度：
   //   { workbuddy: { monthly: 3600, resetDay: 1 } }
@@ -55,6 +55,7 @@ function sanitize(raw) {
     ...DEFAULTS,
     xiabanTimes: { ...DEFAULT_XIABAN_TIMES },
     quotaAgents: {},
+    trayAgents: {},
   };
   if (!raw || typeof raw !== 'object') return out;
   if (raw.petPosition && Number.isFinite(raw.petPosition.x) && Number.isFinite(raw.petPosition.y)) {
@@ -71,14 +72,29 @@ function sanitize(raw) {
   }
   // showQuota 是 2026-09-15 之前的老键。迁移：老配置里若明确关掉过额度，
   // 就把它当作「全部 Agent 都关」，避免升级后用户之前关掉的东西自己亮回来。
+  // 它当时同时管底部栏和托盘，所以两个都写。
   if (typeof raw.showQuota === 'boolean') {
-    for (const id of SOURCE_IDS) out.quotaAgents[id] = raw.showQuota;
+    for (const id of SOURCE_IDS) {
+      out.quotaAgents[id] = raw.showQuota;
+      out.trayAgents[id] = raw.showQuota;
+    }
   }
   if (raw.quotaAgents && typeof raw.quotaAgents === 'object' && !Array.isArray(raw.quotaAgents)) {
     for (const [id, enabled] of Object.entries(raw.quotaAgents)) {
       if (!id || typeof enabled !== 'boolean') continue;
       out.quotaAgents[id] = enabled;
     }
+  }
+  // trayAgents 是 2026-09-16 新增的独立开关。升级迁移：只要用户还没显式写过它，
+  // 就用 quotaAgents 作初值 —— 保证「之前关掉的托盘行」不会在升级后自己亮回来。
+  // 一旦用户动过 trayAgents，它就落盘成独立值，此后不再跟 quotaAgents 联动。
+  if (raw.trayAgents && typeof raw.trayAgents === 'object' && !Array.isArray(raw.trayAgents)) {
+    for (const [id, enabled] of Object.entries(raw.trayAgents)) {
+      if (!id || typeof enabled !== 'boolean') continue;
+      out.trayAgents[id] = enabled;
+    }
+  } else {
+    out.trayAgents = { ...out.quotaAgents };
   }
   if (raw.creditQuota && typeof raw.creditQuota === 'object' && !Array.isArray(raw.creditQuota)) {
     const quota = {};

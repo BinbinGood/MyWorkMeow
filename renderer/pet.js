@@ -1376,12 +1376,15 @@ function peekAgentSvg(agent) {
   return '';
 }
 
+// 速览右侧的持续时间：只留数字 + 单位（s/m/h/d），不再写「会话已持续」这类
+// 前缀——状态点已经说明是「进行中」，重复一遍「会话已持续」纯属占地方。
 function peekTime(ms) {
   const value = Math.max(0, Number(ms) || 0);
-  if (value < 1000) return t('peek.justNow');
-  if (value < 60 * 1000) return t('peek.seconds', { count: Math.max(1, Math.floor(value / 1000)) });
-  if (value < 60 * 60 * 1000) return t('peek.minutes', { count: Math.max(1, Math.floor(value / 60000)) });
-  return t('peek.hours', { count: Math.max(1, Math.floor(value / 3600000)) });
+  if (value < 1000) return '0s';
+  if (value < 60 * 1000) return `${Math.max(1, Math.floor(value / 1000))}s`;
+  if (value < 60 * 60 * 1000) return `${Math.max(1, Math.floor(value / 60000))}m`;
+  if (value < 24 * 60 * 60 * 1000) return `${Math.max(1, Math.floor(value / 3600000))}h`;
+  return `${Math.max(1, Math.floor(value / 86400000))}d`;
 }
 
 function peekSessionState(s) {
