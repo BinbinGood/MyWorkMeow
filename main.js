@@ -1426,24 +1426,34 @@ function keepCatOnScreen() {
 // ── tray ──────────────────────────────────────────────────────────────────────
 // 菜单栏图标的目标逻辑尺寸（pt）。macOS 的 Wi-Fi / 电量那类自带图标，墨迹只有
 // 12~14pt —— 上下留白才是「像不像系统图标」的关键。这里原先写的是 32pt 的框，
-// 而 salary-cat-tray.png 的猫本体占了画布 92%，等效 29.5pt：比菜单栏本身还高
-// （实测刘海机型 33pt、非刘海 24pt），于是顶满上下、还连带拖出一块底色方块。
-// 18pt 的框 ⇒ 猫本体约 16.6pt，落在系统图标与第三方图标之间。
+// 配上当时那张头像（墨迹占画布 92%），等效 29.5pt：比菜单栏本身还高（实测刘海
+// 机型 33pt、非刘海 24pt），于是顶满上下、还连带拖出一块底色方块。
+//
+// 现在这张企鹅（assets/pingu-tray.png，由 scripts/build-tray-icon.js 从
+// assets/pingu-tray.svg 烘出）已把墨迹裁到贴边再补成正方形，实测墨迹
+// 18.0×16.0pt，上下各留约 8.5pt。
 // 想再调只改这一个数：16 ≈ 与系统图标齐平，20 ≈ 仍明显偏大。
+// ⚠ 改完必须重跑 scripts/build-tray-icon.js，否则位图尺寸和这里对不上。
 const TRAY_ICON_PT = 18;
 // 位图按 2x 出、再声明 scaleFactor=2：逻辑尺寸仍是 TRAY_ICON_PT，位图是 2 倍像素，
-// Retina 下才不糊。直接把 256px 原图交给 Tray 的话，AppKit 会按 256pt 摆进来。
+// Retina 下才不糊。直接把大图交给 Tray 的话，AppKit 会按原像素数当 pt 摆进来。
 const TRAY_ICON_SCALE = 2;
 
 function buildTray() {
   let img;
   try {
-    // 托盘始终使用月薪喵头像；额度只在右键菜单里展示。
-    const src = nativeImage.createFromPath(path.join(__dirname, 'assets', 'salary-cat-tray.png'));
+    // 托盘图标 = 任务栏里那只企鹅（黑白无背景版）；额度只在右键菜单里展示。
+    // 源是 assets/pingu-tray.png，矢量原件 assets/pingu-tray.svg 同目录。
+    const src = nativeImage.createFromPath(path.join(__dirname, 'assets', 'pingu-tray.png'));
     if (src && !src.isEmpty()) {
       const px = TRAY_ICON_PT * TRAY_ICON_SCALE;
-      const scaled = src.resize({ width: px, height: px, quality: 'best' });
-      img = nativeImage.createFromBuffer(scaled.toPNG(), { scaleFactor: TRAY_ICON_SCALE });
+      const size = src.getSize();
+      // 资源本身就是按目标像素烘好的（见 scripts/build-tray-icon.js）。尺寸已经对上
+      // 就不要再过一次重采样 —— 眼白在 36px 下只有 1.9px 宽，二次采样会把它糊掉。
+      const sized = (size.width === px && size.height === px)
+        ? src
+        : src.resize({ width: px, height: px, quality: 'best' });
+      img = nativeImage.createFromBuffer(sized.toPNG(), { scaleFactor: TRAY_ICON_SCALE });
     }
   } catch {}
   tray = new Tray(img || nativeImage.createEmpty());
