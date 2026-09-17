@@ -128,7 +128,13 @@ function cycle(workArea, restingW, catX0, where) {
 
 // 屏幕清单覆盖真实 Mac 的常见与极端情形，含负原点的外接屏（工作区不是从 0 开始，
 // 任何把 workArea.x 当 0 的算术都会在这里露出来）。
+// 前两条是**用户这台机器实测**的工作区（Electron screen.getAllDisplays 探到的原值，
+// 主屏 scale 2、副屏 scale 1 且原点为负）。F2 那个漂移只有在真实屏幕参数下才出现在
+// 用户看到的那个位置上，而上一版清单里**没有任何一条**匹配他的机器 —— 这也是为什么
+// 这个 suite 一直绿着而屏幕上在漂。别删这两条。
 const SCREENS = [
+  [{ x: 0, y: 30, width: 1680, height: 956 }, '真机主屏 1680×1050@2x'],
+  [{ x: -1998, y: -1410, width: 2560, height: 1410 }, '真机副屏 2560×1440（负原点）'],
   [{ x: 0, y: 24, width: 1440, height: 876 }, '1440×900'],
   [{ x: 0, y: 24, width: 1728, height: 1085 }, '1728 MBP14'],
   [{ x: 0, y: 24, width: 1024, height: 744 }, '1024 最窄 Mac'],
@@ -140,7 +146,17 @@ const SCREENS = [
 // 静息帧宽是**内容内蕴**的（胶囊 + 会话点，320～900）：320 = 无徽标，438 = 两个额度，
 // 504 = 额度徽标全开，688/900 = 极端。这一维必须扫，因为 2026-09-16 那个回归正是
 // 「拿一个固定像素上限去卡静息帧宽」造成的 —— 504 的合法静息帧被当成弹窗帧。
-const RESTING_WIDTHS = [320, 438, 504, 688, 900];
+//
+// 2026-09-17（F2）：这一串**全是偶数**，而且必须全是偶数 —— 因为 restingFrameWidth()
+// 现在强制取偶。上一版这里同样全是偶数，但那是**巧合**，不是约束，于是「帧宽为奇数
+// 时猫每开关一轮气泡右移 1px」这条链路一次都没被覆盖过，suite 绿着而屏幕上在漂。
+// 下面 ODD_WIDTHS 那组是反向对照：它断言奇数帧宽**确实会**漂，所以这一串一旦被换成
+// 奇数、或 restingFrameWidth() 的取偶被删掉，立刻红。
+const RESTING_WIDTHS = [320, 438, 504, 520, 522, 688, 690, 900];
+
+// F2 的反向对照：奇数帧宽**确实**会漂。这一组不是「期望的行为」，而是「病灶还在原地」
+// 的证据 —— 它保证上面那串偶数不是靠巧合过的。
+const ODD_WIDTHS = [521, 523, 689, 899];
 
 // 每一轮共用的断言：从落位收敛后的位置起，开关一轮弹窗，猫必须一格不动。
 function assertStable(where, r) {
@@ -152,6 +168,87 @@ function assertStable(where, r) {
     `${where}：关弹窗把猫从 ${r.resting} 挪到了 ${r.closed}`);
   assert.strictEqual(r.resettled, r.resting,
     `${where}：关弹窗后再落位把猫挪到了 ${r.resettled}`);
+}
+
+// ── 回归 F2：连续开关多轮，猫不许**累积**位移 ─────────────────────────────────
+// 用户实测（F2）：「如果喵处于大概上次那种环带区域，点击出现气泡，点其他位置，气泡
+// 关闭后，喵有概率会移动位置，而且这个只在右边缘的时候才出现。」
+//
+// 为什么 assertStable 抓不到它：assertStable 只跑**一轮**开关。这个 bug 是每轮 +1px
+// 的单向漂移 —— 一轮内 popupBeats / closed / resettled 之间确实都相等（漂移发生在
+// 「落位 → 开弹窗」这一跳，而 resting 是从**漂过之后**的状态重新量的），要连续跑好几
+// 轮、和**最初**的位置比才看得见。所以这里单独一条：链式跑 N 轮，只比首尾。
+//
+// 成因：#stage 恒 align-items:center → 猫的窗内偏移 inset = (帧宽-120)/2，帧宽为奇数
+// 时它带 .5（真机 Electron 实测 F=521 时 #cat 的 getBoundingClientRect().left = 200.5）。
+// 带小数的 screenX 进 anchoredPetOrigin 的 Math.round(x.5) 在 JS 里**恒向上**，
+// applyPetSize 再由取整后的原点反推 inset、clampCatOrigin 又取一次整 —— 净 +1px/轮。
+// 「有概率」= 帧宽碰巧是奇数才有；「只在右边缘」= 到处都在漂，只有右缘会撞上
+// clampCatOrigin 的上界、饱和成一次可见的跳动。
+// 修法在 renderer/pet.js restingFrameWidth()：帧宽强制取偶，inset 恒为整数。
+const DRIFT_ROUNDS = 8;
+function chainCycles(workArea, restingW, catX0, rounds) {
+  let win = Math.round(catX0 - catInset(restingW));
+  for (let round = 1; round <= 6; round++) {
+    const next = step(workArea, win, restingW, restingW);
+    if (next.winX === win) break;
+    win = next.winX;
+  }
+  const start = win + catInset(restingW);
+  let frame = restingW;
+  for (let k = 0; k < rounds; k++) {
+    for (let beat = 0; beat < 3; beat++) {
+      const next = step(workArea, win, frame, POPUP_W);
+      win = next.winX;
+      frame = POPUP_W;
+    }
+    let next = step(workArea, win, POPUP_W, restingW);
+    win = next.winX;
+    frame = restingW;
+    next = step(workArea, win, restingW, restingW);
+    win = next.winX;
+  }
+  return { start, end: win + catInset(restingW) };
+}
+{
+  let driftChecked = 0;
+  for (const [workArea, label] of SCREENS) {
+    const waRight = workArea.x + workArea.width;
+    for (const restingW of RESTING_WIDTHS) {
+      for (let catX = workArea.x; catX <= waRight - CAT; catX += 7) {
+        const r = chainCycles(workArea, restingW, catX, DRIFT_ROUNDS);
+        driftChecked++;
+        assert.strictEqual(r.end, r.start,
+          `${label} 静息帧${restingW} 猫x=${catX}：连开关 ${DRIFT_ROUNDS} 轮气泡后猫从 `
+          + `${r.start} 漂到了 ${r.end}（偏 ${r.end - r.start}px）—— 每轮 1px 的单向漂移，`
+          + 'assertStable 只看一轮所以看不见，成因是帧宽为奇数导致 inset 带 .5');
+      }
+    }
+  }
+  assert(driftChecked > 3000, `漂移扫描覆盖太少（只有 ${driftChecked} 个位置）`);
+
+  // 反向对照：奇数帧宽**必须**还在漂。这一条证明上面那组偶数不是靠巧合绿的 ——
+  // 如果哪天 step() 的模型被改成两边都不漂，这里会红，提示模型已经不代表真实链条。
+  let oddDrift = 0;
+  for (const [workArea] of SCREENS) {
+    const waRight = workArea.x + workArea.width;
+    for (const restingW of ODD_WIDTHS) {
+      for (let catX = workArea.x; catX <= waRight - CAT; catX += 37) {
+        const r = chainCycles(workArea, restingW, catX, DRIFT_ROUNDS);
+        if (r.end !== r.start) oddDrift++;
+      }
+    }
+  }
+  assert(oddDrift > 100,
+    `奇数帧宽本该漂移（这是 F2 的病灶），实测只漂了 ${oddDrift} 个位置 —— `
+    + '要么模型失真了，要么取偶之外还有别的改动，两种情况都需要重新看一遍');
+
+  // 取偶必须真的落在源码里：模型验的是「偶数不漂」，而现实里帧宽由 restingFrameWidth()
+  // 决定。它一旦不取偶，奇数帧宽就真的可达（measuredRestingWidth 读的是带小数的
+  // getBoundingClientRect().width，Math.ceil 之后任何奇数都产得出来）。
+  assert(/function restingFrameWidth\(\)[\s\S]*?return w \+ \(w % 2\);/.test(petJs),
+    'restingFrameWidth 必须强制返回偶数帧宽：奇数帧宽会让猫的窗内偏移带 .5，'
+    + '两次 Math.round 把它放大成每开关一轮气泡 +1px 的单向漂移（F2）');
 }
 
 // ── 回归一：贴边时开弹窗，猫的横向位置不能变，而且必须真的贴住边 ───────────────

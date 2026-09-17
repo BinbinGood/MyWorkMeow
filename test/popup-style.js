@@ -172,6 +172,22 @@ assert(!/inferHorizontalFrameClamp/.test(js),
   'the horizontal frame-clamp inference must stay retired: nothing clamps the frame horizontally any more');
 assert(/function restingFrameWidth\(\)/.test(js),
   'the resting frame width must have a single shared definition');
+// 2026-09-17（F2）：帧宽必须**取偶**。用户实测：「喵处于大概上次那种环带区域，点击
+// 出现气泡，点其他位置，气泡关闭后，喵有概率会移动位置，而且这个只在右边缘的时候
+// 才出现。」#stage 恒 align-items:center → 猫的窗内偏移 = (帧宽-120)/2，帧宽为奇数时
+// 它带 .5（真机 Electron 实测 F=521 时 #cat 的 getBoundingClientRect().left = 200.5）。
+// 带小数的 screenX 进 anchoredPetOrigin 的 Math.round(x.5) 在 JS 里**恒向上**，
+// applyPetSize 再由取整后的原点反推 inset、clampCatOrigin 又取一次整 —— 一次
+// setPetSize 净 +1px。「有概率」= 帧宽碰巧是奇数才有；「只在右边缘」= 到处都在漂，
+// 只有右缘会撞上 clampCatOrigin 的上界、饱和成一次可见的跳动。
+// 奇数帧宽真的可达：measuredRestingWidth 读的是带小数的 getBoundingClientRect().width，
+// 外面套 Math.ceil，520..900 之间任何奇数都产得出来（帧宽卡在 520 下限时才碰不到）。
+// 漂移量的算术由 test/pet-edge-cycle.js 全扫（含奇数帧宽的反向对照）。
+{
+  const fn = js.match(/function restingFrameWidth\(\)[\s\S]*?\n\}/)?.[0] || '';
+  assert(/return w \+ \(w % 2\);/.test(fn),
+    'restingFrameWidth must force an even frame width: an odd width puts the cat at a .5 in-window offset, and two Math.round steps amplify it into +1px of one-way drift per popup open/close (F2)');
+}
 {
   const fn = js.match(/function fitRestingFrame\([\s\S]*?\n\}/)?.[0] || '';
   assert(/restingFrameWidth\(\)/.test(fn),

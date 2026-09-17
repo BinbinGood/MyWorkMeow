@@ -806,11 +806,27 @@ function measuredRestingWidth() {
 //     几何恒定后这条链路整个消失，气泡和胶囊的形态天然协调。
 // 弹窗帧本来就是 520 宽的透明窗，静息态也用 520 并不会多挡任何东西（命中测试
 // 按元素而不是按窗口矩形），代价为零。
+//
+// 2026-09-17（F2）：帧宽必须是**偶数**。用户实测：「喵处于大概上次那种环带区域，
+// 点击出现气泡，点其他位置，气泡关闭后，喵有概率会移动位置，而且这个只在右边缘的
+// 时候才出现。」
+// 成因是 .5 像素被向上取整放大成每轮 +1px 的单向漂移：#stage 恒 align-items:center，
+// 猫的窗内偏移 = (帧宽 - 120)/2，帧宽为奇数时它带 .5（真机 Electron 实测 F=521 时
+// #cat 的 getBoundingClientRect().left = 200.5）。这个带小数的 screenX 经
+// anchoredLayoutPayload 交给主进程，anchoredPetOrigin 的 Math.round(x.5) 在 JS 里
+// **恒向上**，applyPetSize 再由取整后的原点反推 inset、clampCatOrigin 又取一次整 ——
+// 一次 setPetSize 净 +1px。所以「有概率」= 帧宽碰巧是奇数时才有；「只在右边缘」=
+// 到处都在漂，只有右缘会撞上 clampCatOrigin 的上界饱和成一次可见的跳动。
+// 取偶之后 inset 恒为整数，两次 Math.round 都成了恒等变换。
+// （试过「少取一次整」——用未取整的 localX 直接当 inset：仿真显示毫无改善，
+// 129786 个样本里 64893 个照旧漂移、最大 8.5px。小数 inset 本身才是病根。）
+// CAPSULE_FRAME_MAX_W(900) 与 POPUP_W(520) 都已是偶数，所以夹取的两端天然安全。
 function restingFrameWidth() {
-  return Math.min(
+  const w = Math.min(
     CAPSULE_FRAME_MAX_W,
     Math.max(POPUP_W, Math.ceil(measuredRestingWidth() + CAPSULE_FRAME_GUTTER)),
   );
+  return w + (w % 2);
 }
 
 function fitRestingFrame(force = false, allowOverlays = false) {
