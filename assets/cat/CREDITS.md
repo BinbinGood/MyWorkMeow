@@ -8,7 +8,9 @@ GIF 素材来自抖音博主 @月薪喵 的原创“月薪喵”表情系列。�
 
 ## 托盘图标（2026-09-17 起）
 
-菜单栏托盘图标已换成企鹅：`assets/pingu-tray.svg`（矢量原件）+ `assets/pingu-tray.png`（按目标像素烘好的位图，配方见 `scripts/build-tray-icon.js`）。这两个文件是依据 Pingu 角色形象制作的衍生图标，**视觉特征来自 Pingu**（角色版权与商标归其权利人所有），同样不纳入 WorkMeow 的 MIT License。原先的托盘头像 `assets/salary-cat-tray.png` 已不再使用（需要时从 git 历史取回）。
+菜单栏托盘图标已换成企鹅：`assets/pingu-tray.svg`（矢量原件，彩色版）+ `assets/pingu-tray.png`（按目标像素烘好的位图，配方见 `scripts/build-tray-icon.js`）。这两个文件是依据 Pingu 角色形象制作的衍生图标，**视觉特征来自 Pingu**（角色版权与商标归其权利人所有），同样不纳入 WorkMeow 的 MIT License。原先的托盘头像 `assets/salary-cat-tray.png` 已不再使用（需要时从 git 历史取回）。
+
+位图不是原件直接缩小 —— 烘焙脚本另外做了三件事：裁掉透明边、补成正方形居中、沿剪影向外扩一圈 1.5pt 的**白色光晕**。光晕是为了在深色菜单栏上保住轮廓（企鹅身体是纯黑，半透明菜单栏会透出深色壁纸，黑对黑就糊了）；浅色菜单栏下白边自然隐去、本体本来就清楚，所以一套图通吃深浅两种外观。
 
 - **原作者**：抖音博主 **@月薪喵**（原创猫 meme 表情系列）
 - **素材出处**：mfuns 文章《最近很火的月薪喵表情包第1弹》
