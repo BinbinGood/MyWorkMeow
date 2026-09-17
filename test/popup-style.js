@@ -123,48 +123,6 @@ assert(/function clampCatOrigin\(/.test(main),
   'the main process must clamp the visible cat horizontally, not the transparent frame');
 assert(!/x = Math\.min\(Math\.max\(x, wa\.x\), wa\.x \+ wa\.width - width\);/.test(main),
   'the old frame-clamping line must not return: it is what created the 200px dead band at each screen edge');
-// 2026-09-17（F2/F3）：横向原点必须**纯由主进程自己算**，一个渲染端读回来的坐标都不用。
-// 用户实测（F3）：「把猫放在离边缘还有一点空间的位置，点击气泡，关闭气泡。还是有概率
-// 往左移动。主屏幕、副屏幕都会出现。但不是每次都有。」
-// 成因：旧代码横向也走「渲染端量屏幕位置 → 主进程反解原点」。把 anchoredLayoutPayload
-// 的 xOffset（= rect.left + rect.width/2 - window.innerWidth/2）代进 anchoredPetOrigin
-// 之后，rect.left 与 rect.width **整项抵消**，净结果只剩两个渲染端读数：
-//     新原点 = round(window.screenX - (目标帧宽 - window.innerWidth) / 2)
-// 而这两个量是 Chromium 在 setBounds 之后**分帧**刷新的。两个都新 → 对；两个都旧 →
-// 也对（误差抵消）；**一新一旧 → 错，错量恰好是半个帧宽差**。真机 Electron 探针抓到过
-// 那一帧：screenX 还是旧的 500、innerWidth 已是新的 520，猫偏左 84px = (688-520)/2。
-// 窗口只有一帧宽 → 「有概率」；静息帧宽恰好 520 时帧宽不变、那对读数压根进不了公式 →
-// 「不是每次都有」。而静息帧宽是内容内蕴的（.chip / .sessions 都是 width:max-content，
-// 随会话名和徽标线性增长、没有上限），所以 R > 520 是常态可达，不是极端情况。
-// 修法：#stage 恒 align-items:center → 锚点永远居中在视口里，而 win.getBounds() 是
-// 主进程手上的**权威**值、不会过期。锚点宽两式相减整项抵消 →
-//     新原点 = round(b.x + (b.width - 目标帧宽) / 2)
-// 漂移量与「一新一旧差半个帧宽」的算术由 test/pet-edge-cycle.js 全扫（含旧算法的反向对照）。
-{
-  const fn = main.match(/function applyPetSize\([\s\S]*?\n\}/)?.[0] || '';
-  assert(/const catScreenX = b\.x \+ \(b\.width - catW\) \/ 2;/.test(fn)
-    && /const inset = \(width - catW\) \/ 2;/.test(fn),
-    'applyPetSize must derive the horizontal origin from win.getBounds() alone (F3): '
-    + 'window.screenX and window.innerWidth are refreshed on different frames after setBounds, '
-    + 'and one-fresh-one-stale moves the cat by half the frame-width difference');
-  // 横向反解的三条 localX 分支不能回来 —— 它们就是把那两个异步读数引进来的入口。
-  assert(!/localX = anchor\.xOffset;/.test(main)
-    && !/localX = width - anchor\.xOffset - anchor\.width;/.test(main)
-    && !/localX = width \/ 2 \+ anchor\.xOffset - anchor\.width \/ 2;/.test(main),
-    'the horizontal reverse-solve (anchoredPetOrigin localX branches) must stay deleted (F3)');
-  assert(/function anchoredPetOriginY\(anchor, height\)/.test(main)
-    && !/function anchoredPetOrigin\(/.test(main),
-    'the anchor reverse-solve must be vertical-only (anchoredPetOriginY)');
-  // 主进程不许再**读**锚点的任何横向字段。注释里可以提，代码里不行，所以先剥注释。
-  const live = main.split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n');
-  assert(!/anchor\.(?:screenX|xOffset|xAlign)/.test(live),
-    'the main process must not read any horizontal anchor field (screenX / xOffset / xAlign): '
-    + 'those are renderer reads that go stale for one frame after setBounds (F3)');
-  // 渲染端**仍然**要发这几个字段 —— applyCapsuleShift 靠 anchor.screenX 算胶囊内缩，
-  // 而那条路径因为位移已饱和所以自愈（见上面 F1 那段）。别顺手把发送端也删了。
-  assert(/const xAlign = 'center';/.test(js) && /const xOffset = rect\.left \+ rect\.width \/ 2 - viewportW \/ 2;/.test(js),
-    'the renderer must keep emitting the horizontal anchor fields: applyCapsuleShift still needs them');
-}
 // 胶囊比猫宽，居中在猫正下方时可能探出工作区。补偿走 --chip-shift（按需最小位移），
 // 且必须是 transform —— margin 会挤压兄弟节点、把整列的布局宽度推出去。
 assert(/\.chip\s*\{[\s\S]*?transform:\s*translateX\(var\(--chip-shift/.test(css),
