@@ -182,6 +182,51 @@ for (const frame of [320, 338, 360, 361, 381, 504, 520, 688, 900]) {
     '无效中心点必须落回 0');
   assert.strictEqual(geometry.capsuleShift({ petCenterX: 60, capsuleWidth: 0, workArea }), 0,
     '没有胶囊时没有位移');
+
+  // ── 位移必须封顶：胶囊要跟着猫出屏 ────────────────────────────────────────
+  // 用户实测（F1）：「拖动喵到边缘，继续往边缘拖的时候（还没松鼠标），喵会移出屏幕，
+  // 但是底部胶囊没有跟随，一直保持在屏幕里面」。
+  // 成因：溢出量无上限，猫每往外一像素，位移就跟着涨一像素，胶囊被一路推回屏幕里。
+  // 上限 = (胶囊宽-猫宽)/2 + margin，即「猫贴死缘时那个位移」。
+  const CAP520 = (520 - 120) / 2 + 4; // 204
+  assert.strictEqual(shift(60, 520), CAP520, '猫贴死左缘时位移恰好等于上限');
+  for (const out of [1, 10, 60, 200, 500, 2000]) {
+    assert.strictEqual(shift(60 - out, 520), CAP520,
+      `猫向左出屏 ${out}px：位移必须停在上限 ${CAP520}，否则胶囊会脱开猫留在屏幕里`);
+    assert.strictEqual(shift(1380 + out, 520), -CAP520,
+      `猫向右出屏 ${out}px：位移必须停在上限 -${CAP520}`);
+  }
+  // 饱和的直接后果：胶囊的缘恒在猫的同侧缘往内 margin 处，猫再往外走胶囊 1:1 跟着走。
+  for (const out of [1, 50, 300]) {
+    const catX = workArea.x - out;              // 猫的左上角
+    const s = shift(catX + 60, 520);
+    const capsuleLeft = catX + 60 - 260 + s;
+    assert.strictEqual(capsuleLeft, catX + 4,
+      `猫出屏 ${out}px：胶囊左缘必须跟到猫左缘+margin（${catX + 4}），实际 ${capsuleLeft}`);
+  }
+
+  // ── 自愈：出屏坐标与钳定坐标算出的位移必须相等 ──────────────────────────
+  // 用户实测（F1 后半段）：「松开鼠标，喵会到屏幕，处在边缘，但是底部的胶囊却没保持
+  // 居中，还保持刚才喵移出屏幕的时候的相对位置。只有点一下喵，气泡刷新后，才恢复正常」。
+  // 主进程 clampCatOrigin 把猫钳回边缘时**不通知渲染端**，而窗口移动不触发渲染端的
+  // resize，所以渲染端手里永远是拖动留下的出屏坐标 —— 事后重算等不到。
+  // 这一条断言的正是「不需要重算」：两种输入所需位移都已饱和到同一个上限，那个
+  // 「过期」值本来就是正确值。它一旦不成立，就必须补一条主进程回报通道。
+  for (const capsuleWidth of [160, 275, 340, 480, 520, 620]) {
+    for (const out of [1, 7, 120, 900]) {
+      for (const [name, dragged, settled] of [
+        ['左', workArea.x - out, workArea.x],
+        ['右', workArea.x + workArea.width - 120 + out, workArea.x + workArea.width - 120],
+      ]) {
+        assert.strictEqual(
+          shift(dragged + 60, capsuleWidth),
+          shift(settled + 60, capsuleWidth),
+          `胶囊${capsuleWidth} 向${name}出屏 ${out}px：出屏位移与钳定后的位移必须相等`
+          + '（否则松手后胶囊会卡在过期位移上，非得点一下猫刷新才回正）',
+        );
+      }
+    }
+  }
 }
 
 // capsuleShiftFromEdge 已删（2026-09-17）：它解的是「贴边时整列被 align-items 拉到窗口

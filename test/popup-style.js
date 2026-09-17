@@ -129,6 +129,22 @@ assert(/\.chip\s*\{[\s\S]*?transform:\s*translateX\(var\(--chip-shift/.test(css)
   'the capsule must be nudged by transform, never by layout-affecting margins');
 assert(/PetGeometry\.capsuleShift\(/.test(js) && /--chip-shift/.test(js),
   'the renderer must compute the capsule shift from the pet post-move screen position');
+// 2026-09-17（F1）：位移必须封顶，而且渲染端必须把猫宽传下去。溢出量本身是无上限的 ——
+// 猫被拖出屏幕时它随距离线性增长，于是胶囊被一路推回屏幕里、和猫脱开（用户原话：
+// 「拖动喵到边缘，继续往边缘拖的时候，喵会移出屏幕，但是底部胶囊没有跟随，一直保持
+// 在屏幕里面」）。上限含 margin，等于「猫贴死缘时那个位移」，所以出屏与贴边两种输入
+// 算出同一个值 —— 松手后主进程钳猫**不通知渲染端**，渲染端手里那个「过期」出屏坐标
+// 因此正好还是对的，不需要回报通道。算术与饱和性质由 test/pet-geometry.js 全扫。
+{
+  const fn = read('shared/pet-geometry.js').match(/function capsuleShift\([\s\S]*?\n  \}/)?.[0] || '';
+  assert(/petWidth = PET_BODY_W/.test(fn) && /\(width - body\) \/ 2\) \+ pad/.test(fn),
+    'capsuleShift must cap its displacement at the cat-flush-to-edge value: the raw overflow is unbounded and detaches the capsule from an off-screen cat');
+  for (const caller of ['applyCapsuleShift', 'applyPopupShift']) {
+    const src = js.match(new RegExp(`function ${caller}\\([\\s\\S]*?\\n\\}`))?.[0] || '';
+    assert(/capsuleShift\(\{[\s\S]*?petWidth:/.test(src),
+      `${caller} must forward petWidth so the cap tracks the real anchor width`);
+  }
+}
 // 2026-09-16：上一版注释在这里断言「transform 量不到 measuredRestingWidth 里去」，
 // 那句话是错的。transform 不参与**布局**，但会把祖先的 scrollWidth 撑大：实测
 // --chip-shift 从 0 到 204px，#compact-row.scrollWidth 从 275 变成 479（正好 +204），

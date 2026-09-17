@@ -10,6 +10,10 @@
 })(typeof window !== 'undefined' ? window : globalThis, () => {
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
+  // 猫本体（#cat）的宽度。renderer/pet.css 把它写死成 120×120 且不带任何 transform，
+  // 所以它是常量而不是测量值；main.js 的 PET_BODY_W 是同一个数。
+  const PET_BODY_W = 120;
+
   function normalizeRect(rect) {
     const x = Number(rect && rect.x) || 0;
     const y = Number(rect && rect.y) || 0;
@@ -81,7 +85,22 @@
   //
   // 两侧同时挤不下（胶囊比整个工作区还宽）时返回居中偏移，宁可两边对称溢出，
   // 也不要单侧甩出去 —— 那种情况下无论怎么挪都会被裁，对称至少还能读中间。
-  function capsuleShift({ petCenterX, capsuleWidth, workArea, margin = 4 }) {
+  //
+  // 2026-09-17：位移必须**封顶**。溢出量本身是无上限的 —— 猫被拖出屏幕时它随距离
+  // 线性增长，于是胶囊被一路推回屏幕里、和猫脱开（用户原话：「拖动喵到边缘继续往
+  // 边缘拖，喵会移出屏幕，但是底部胶囊没有跟随，一直保持在屏幕里面」）。
+  //
+  // 上限取「猫贴死工作区缘时所需的那个位移」，即 (胶囊宽-猫宽)/2 + margin。含 margin
+  // 是有意的：猫合法地贴边时胶囊仍应留出那 4px 屏幕留白（现行观感，别动）。饱和之后
+  // 胶囊的缘恒在猫的同侧缘往内 margin 处，猫再往外走胶囊就 1:1 跟着走。
+  //
+  // 封顶顺带修掉了松手后那个「位移卡住」的后半段：主进程 clampCatOrigin 把猫钳回
+  // 边缘时不会通知渲染端，渲染端手里还是拖动留下的**出屏**坐标。但猫刚出屏时所需
+  // 位移 > 上限（被削到上限），而猫贴死边缘时所需位移**恰好等于**上限 —— 两者相等，
+  // 那个「过期」位移本来就是正确值，不需要额外的主进程回报通道。
+  // 反过来说：上限一旦不含 margin，贴边时的位移会被削（204→200）而出屏时也是 200，
+  // 虽然仍然相等、自愈仍成立，但会白丢那 4px 留白。所以 margin 必须算进上限。
+  function capsuleShift({ petCenterX, capsuleWidth, workArea, margin = 4, petWidth = PET_BODY_W }) {
     const wa = normalizeRect(workArea);
     const width = Math.max(0, Number(capsuleWidth) || 0);
     const center = Number(petCenterX);
@@ -94,10 +113,16 @@
     // 比可用宽度还宽：挪不出结果，对称溢出。
     if (width >= maxRight - minLeft) return 0;
 
+    // 胶囊比猫窄时上限只剩 margin：它横向整个落在猫的跨度里，猫在屏内它就在屏内，
+    // 猫出屏它就该一起出屏，更大的位移只会让它脱离猫。
+    const body = Math.max(0, Number(petWidth) || 0);
+    const cap = Math.max(0, (width - body) / 2) + pad;
+    const capped = (v) => clamp(v, -cap, cap);
+
     const overflowLeft = minLeft - (center - half);
-    if (overflowLeft > 0) return Math.round(overflowLeft);
+    if (overflowLeft > 0) return capped(Math.round(overflowLeft));
     const overflowRight = (center + half) - maxRight;
-    if (overflowRight > 0) return -Math.round(overflowRight);
+    if (overflowRight > 0) return capped(-Math.round(overflowRight));
     return 0;
   }
 

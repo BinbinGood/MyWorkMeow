@@ -637,6 +637,7 @@ function applyCapsuleShift(petScreenX, petWidth) {
       petCenterX: Number(petScreenX) + Number(petWidth) / 2,
       capsuleWidth: width,
       workArea: browserWorkArea(),
+      petWidth: Number(petWidth),
     })
     : 0;
   stage.style.setProperty('--chip-shift', shift + 'px');
@@ -669,6 +670,12 @@ function applyPopupShift(petScreenX, petWidth) {
     // 取当前可见弹窗中**最宽**的那个：它需要的位移最大，按它算能保证所有弹窗都在
     // 屏幕内（窄的那些本来就在宽的覆盖范围里，多挪一点也不会探出另一侧 ——
     // capsuleShift 的口径是「刚好不出屏」，不会过冲）。
+    //
+    // 2026-09-17：capsuleShift 现在按 (弹窗宽 - 猫宽)/2 封顶，所以位移最多把弹窗
+    // 挪到与猫齐缘。传 petWidth 是必须的 —— 不传就按默认 120 算，猫宽本来也恒是
+    // 120，但显式传值才能保证隐藏猫身等特殊态下上限跟着实际锚点走。
+    // 已验（逐 1px 全扫）：封顶之后 320/340 宽的弹窗在猫位于工作区内的任何位置
+    // 都不会被裁 —— 猫贴死缘时需要的位移恰好等于上限。
     let widest = 0;
     for (const el of [peekEl, askEl, bubble, thinkEl]) {
       if (!el || el.hidden || el.classList.contains('hidden')) continue;
@@ -681,6 +688,7 @@ function applyPopupShift(petScreenX, petWidth) {
         petCenterX,
         capsuleWidth: widest,
         workArea: wa,
+        petWidth: Number(petWidth),
       });
     }
   }
