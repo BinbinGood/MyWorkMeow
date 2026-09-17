@@ -48,7 +48,10 @@ const { createCodexWatch } = require('./backend/codex-watch');
 const { createTraeWatch } = require('./backend/trae-watch');
 const { createCodexMetering } = require('./backend/codex-metering');
 const { createCodexRateLimits, unavailableState: unavailableCodexQuota } = require('./backend/codex-rate-limits');
-const { estimateWeeklyQuota } = require('./backend/codex-quota-estimate');
+const { createWeeklyQuotaEstimator } = require('./backend/codex-quota-estimate');
+const weeklyQuotaEstimator = createWeeklyQuotaEstimator({
+  statePath: require('./backend/paths').statePath('codex-quota-calibration.json'),
+});
 const codexQuotaTray = require('./backend/codex-quota-tray');
 const { createWorkbuddyMetering } = require('./backend/workbuddy-metering');
 const { createTitles: createWorkbuddyTitles } = require('./backend/workbuddy-titles');
@@ -865,7 +868,9 @@ function buildStats(agent = 'all', snapshot = null, cachedMeter = null) {
     statusText: quotaStatusLabel(codexQuotaState),
     updatedAt: codexQuotaState.updatedAt,
     account: quotaAccount,
-    estimate: estimateWeeklyQuota(codexUsage, quotaWindows.weekly),
+    estimate: weeklyQuotaEstimator.observe({
+      quotaHistory: codexMetering ? codexMetering.getQuotaHistory() : [],
+    }, codexQuotaState),
   };
   return privacy.protectStats(stats, config.get().privacyMode === true);
 }
@@ -935,9 +940,15 @@ function bootBackend() {
         onUpdate: (next) => {
           codexQuotaState = next;
           refreshTrayMenu();
-          // Publish the same quota snapshot immediately; do not wait for the
-          // periodic stats refresh to catch the capsule up with the tray.
-          emitStats();
+          // Pair a fresh local ledger with the quota observation. Suppress
+          // older async completions if a newer account/quota update arrives.
+          codexMetering.scan().then(() => {
+            if (codexQuotaState !== next) return;
+            emitStats();
+          }).catch(() => {
+            if (codexQuotaState !== next) return;
+            emitStats();
+          });
         },
         onAlert: showQuotaAlert,
       });

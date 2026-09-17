@@ -2379,6 +2379,7 @@ function quotaWindowEntries(quota) {
 }
 
 function quotaCostText(value) {
+  if (value === null || value === undefined) return '--';
   const n = Number(value);
   return Number.isFinite(n) ? '$' + n.toFixed(3) : '--';
 }
@@ -2393,28 +2394,52 @@ function quotaPlanText(quota) {
 function renderQuotaEstimate(quota) {
   if (!quotaPopoverInsight) return;
   const estimate = quota && quota.estimate;
-  if (!estimate || (!Number.isFinite(Number(estimate.tokens)) && !Number.isFinite(Number(estimate.cost)))) {
-    quotaPopoverInsight.hidden = true;
-    quotaPopoverInsight.textContent = '';
-    return;
-  }
-  const used = compactTokens(estimate.tokens || 0);
-  const cost = quotaCostText(estimate.cost);
-  const percent = Number.isFinite(Number(estimate.usedPercent))
-    ? Math.round(Number(estimate.usedPercent)) + '%'
-    : '--';
-  if (Number.isFinite(Number(estimate.estimatedTotalTokens))) {
-    quotaPopoverInsight.textContent = t('quota.estimate', {
-      used,
-      cost,
-      percent,
-      total: compactTokens(estimate.estimatedTotalTokens),
-      totalCost: quotaCostText(estimate.estimatedTotalCost),
-    });
+  quotaPopoverInsight.innerHTML = '';
+  quotaPopoverInsight.hidden = !estimate;
+  if (!estimate) return;
+  const add = (parent, tag, className, text) => {
+    const el = document.createElement(tag);
+    el.className = className;
+    el.textContent = text;
+    parent.appendChild(el);
+    return el;
+  };
+  const ready = Number.isFinite(estimate.estimatedTotalCost) && estimate.estimatedTotalCost > 0;
+  const head = add(quotaPopoverInsight, 'div', 'quota-estimate-head', '');
+  add(head, 'span', '', t('quota.estimateTitle'));
+  add(head, 'span', 'quota-estimate-badge', t(ready
+    ? (estimate.confidence === 'early' ? 'quota.estimateEarly' : 'quota.estimateDynamic') : 'quota.estimateCollecting'));
+  if (ready) {
+    const grid = add(quotaPopoverInsight, 'div', 'quota-estimate-grid', '');
+    for (const [label, value] of [
+      ['quota.estimateFull', estimate.estimatedTotalCost],
+      ['quota.estimateRemaining', estimate.estimatedRemainingCost],
+    ]) {
+      const card = add(grid, 'div', 'quota-estimate-card', '');
+      add(card, 'div', 'quota-estimate-label', t(label));
+      add(card, 'div', 'quota-estimate-number', Number.isFinite(value) ? '≈ $' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--');
+      add(card, 'div', 'quota-estimate-unit', t('quota.estimateUnit'));
+    }
+    add(quotaPopoverInsight, 'div', 'quota-estimate-detail', t(estimate.basis === 'cycle' ? 'quota.estimateCycleEvidence' : 'quota.estimateEvidence', {
+      percent: Number.isFinite(estimate.samplePercent) ? +estimate.samplePercent.toFixed(1) : '--',
+      cost: quotaCostText(estimate.cost),
+    }));
+    if (Number.isFinite(estimate.rangeLow) && Number.isFinite(estimate.rangeHigh)) {
+      add(quotaPopoverInsight, 'div', 'quota-estimate-detail', t('quota.estimateRange', {
+        low: '$' + estimate.rangeLow.toFixed(2), high: '$' + estimate.rangeHigh.toFixed(2),
+      }));
+    } else if (estimate.confidence === 'early') {
+      add(quotaPopoverInsight, 'div', 'quota-estimate-detail', t('quota.estimateEarlyHint'));
+    }
   } else {
-    quotaPopoverInsight.textContent = t('quota.estimatePending', { used, cost, percent });
+    const pending = add(quotaPopoverInsight, 'div', 'quota-estimate-pending', t('quota.estimateObserved', {
+      cost: quotaCostText(estimate.cost),
+      used: Number.isFinite(estimate.usedPercent) ? +estimate.usedPercent.toFixed(1) : '--',
+    }));
+    add(pending, 'div', 'quota-estimate-detail', t(estimate.reason === 'no-percent'
+      ? 'quota.estimateAwaitPercent' : 'quota.estimateAwaitCost'));
   }
-  quotaPopoverInsight.hidden = false;
+  add(quotaPopoverInsight, 'div', 'quota-estimate-note', t('quota.estimateNote'));
 }
 
 // 弹层里的一行。bar 只在需要显示百分比的场合给，没有就不塞第三个格子。
@@ -2624,6 +2649,7 @@ function renderContextCapsule(s) {
   chip.removeAttribute('title');
   if (quotaPopoverOpen) {
     renderQuotaPopover(s);
+    fitPopup(quotaPopover);
     positionQuotaPopoverTip();
   }
   const now = perfNow();

@@ -1,102 +1,124 @@
 'use strict';
 
-// The App Server exposes Codex subscription usage as a percentage, while the
-// local rollout ledger exposes absolute token/cost totals.  This module joins
-// the two only for an explicitly labelled estimate; it must never be treated
-// as an official quota value.
+const fs = require('fs');
+const path = require('path');
+const { createHash } = require('crypto');
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const RESET_TOLERANCE_SECONDS = 5 * 60;
+const MAX_QUOTA_AGE_MS = 5 * 60 * 1000;
+const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function finite(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+// A token_count event may carry the latest snapshot of an unrelated limit
+// bucket (e.g. Spark while the request used Astra). It is NOT an attribution
+// of that request's cost. Only timestamps select monetary records here.
+function cycleCost(history, start, end) {
+  if (!Array.isArray(history)) return 0;
+  return history.reduce((total, row) => total + (row && finite(row.at) !== null
+    && row.at >= start && row.at <= end && finite(row.cost) !== null && row.cost > 0 ? row.cost : 0), 0);
 }
 
-function positive(value) {
-  const n = finite(value);
-  return n !== null && n > 0 ? n : 0;
+function validCalibration(value) {
+  return value && value.version === 1 && typeof value.accountKey === 'string'
+    && typeof value.windowId === 'string' && ['cycle', 'sample'].includes(value.basis)
+    && ['resetsAt', 'startAt', 'anchorCost', 'anchorUsed', 'anchorAt', 'lastUsed', 'lastAt'].every(k => finite(value[k]) !== null)
+    && value.anchorCost >= 0 && value.anchorUsed >= 0 && value.anchorUsed <= 100
+    && value.lastUsed >= 0 && value.lastUsed <= 100 && value.resetsAt > 0;
 }
 
-function clampPercent(value) {
-  const n = finite(value);
-  return n === null ? null : Math.max(0, Math.min(100, n));
-}
-
-function localDayStart(day) {
-  const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(String(day || ''));
-  if (!match) return null;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  date.setHours(0, 0, 0, 0);
-  return Number.isFinite(date.getTime()) ? date.getTime() : null;
-}
-
-function cycleBounds(window, now = Date.now()) {
-  if (!window || typeof window !== 'object') return null;
-  const durationMins = finite(window.windowDurationMins);
-  const resetsAt = finite(window.resetsAt);
-  if (durationMins === null || durationMins <= 0 || resetsAt === null || resetsAt <= 0) return null;
-  const endMs = resetsAt * 1000;
-  const startMs = endMs - durationMins * 60 * 1000;
-  const currentMs = finite(now);
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs
-    || currentMs === null || currentMs < startMs) return null;
-  return { startMs, endMs, nowMs: Math.min(currentMs, endMs) };
-}
-
-function addUsage(target, row) {
-  if (!row || typeof row !== 'object') return;
-  target.tokens += positive(row.tokens);
-  target.cost += positive(row.cost);
-  target.messages += positive(row.messages ?? row.msgs);
-}
-
-function usageInCycle(codexUsage, window, now = Date.now()) {
-  const bounds = cycleBounds(window, now);
-  if (!bounds) return null;
-  const daily = codexUsage && codexUsage.daily && typeof codexUsage.daily === 'object'
-    ? codexUsage.daily
-    : {};
-  const usage = { tokens: 0, cost: 0, messages: 0, days: 0 };
-  for (const [day, row] of Object.entries(daily)) {
-    const start = localDayStart(day);
-    if (start === null) continue;
-    const end = start + DAY_MS;
-    // The ledger is day-granular, so include a day when any part of it falls
-    // inside the official reset window. This is deliberately conservative for
-    // a reset that happens in the middle of a local day.
-    if (end <= bounds.startMs || start > bounds.nowMs) continue;
-    addUsage(usage, row);
-    usage.days++;
+function createWeeklyQuotaEstimator(options = {}) {
+  const statePath = options.statePath;
+  let calibration = null;
+  if (statePath) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      if (validCalibration(saved)) calibration = saved;
+    } catch {}
   }
-  return {
-    ...usage,
-    startAt: Math.floor(bounds.startMs / 1000),
-    resetsAt: Math.floor(bounds.endMs / 1000),
-  };
+  function persist() {
+    if (!statePath || !calibration) return;
+    try {
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      const tmp = `${statePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(calibration), { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(tmp, statePath);
+    } catch {}
+  }
+
+  function observe(usage, state, now = Date.now()) {
+    const window = state && state.windows && state.windows.weekly;
+    const updatedAt = finite(state && state.updatedAt);
+    const used = finite(window && window.usedPercent)
+      ?? (finite(window && window.remainingPercent) === null ? null : 100 - window.remainingPercent);
+    // A reconnect/stale read is not a quota reset. Keep calibration intact.
+    if (!state || state.status !== 'ready' || !state.account || state.account.type !== 'chatgpt'
+      || !window || window.windowDurationMins !== 10080 || finite(window.resetsAt) === null
+      || used === null || used < 0 || used > 100 || updatedAt === null || updatedAt > now
+      || now - updatedAt > MAX_QUOTA_AGE_MS || window.resetsAt * 1000 <= now) return null;
+    if (calibration && updatedAt < calibration.lastAt) return null;
+
+    const accountKey = createHash('sha256').update(JSON.stringify([
+      state.account.email || '', state.account.planType || '',
+    ])).digest('hex');
+    const windowId = window.windowId || 'codex:10080';
+    const changedAccount = calibration && calibration.accountKey !== accountKey;
+    const changedCycle = !calibration || calibration.windowId !== windowId
+      || Math.abs(calibration.resetsAt - window.resetsAt) > RESET_TOLERANCE_SECONDS;
+    const fresh = !calibration || updatedAt > calibration.lastAt;
+    // Ignore one-point rounding noise. A substantial recovery, or a return
+    // to zero, marks a manual reset even if the deadline stayed the same.
+    const recovered = calibration && fresh && (calibration.lastUsed - used >= 3
+      || (used === 0 && calibration.lastUsed >= 1));
+    const startAt = changedCycle ? window.resetsAt * 1000 - WEEK_MS : calibration.startAt;
+    const totalCost = cycleCost(usage && usage.quotaHistory, startAt, now);
+    if (changedCycle || changedAccount || recovered) {
+      const basis = changedAccount || (!changedCycle && recovered) ? 'sample' : 'cycle';
+      calibration = {
+        version: 1, accountKey, windowId, resetsAt: window.resetsAt, startAt, basis,
+        anchorCost: basis === 'sample' ? totalCost : 0,
+        anchorUsed: basis === 'sample' ? used : 0,
+        anchorAt: basis === 'sample' ? now : startAt,
+        lastUsed: used, lastAt: updatedAt,
+      };
+      persist();
+    } else if (updatedAt < calibration.lastAt) {
+      return null; // an out-of-order response must not undo a newer reset
+    }
+    if (calibration.basis === 'sample' && totalCost < calibration.anchorCost) {
+      calibration.anchorCost = totalCost;
+      calibration.anchorUsed = used;
+      calibration.anchorAt = now;
+      delete calibration.exhausted;
+      persist();
+    }
+    // At 100% the quota counter is capped and cannot calibrate extra spend.
+    if (used === 100 && calibration.lastUsed === 100 && calibration.exhausted) return calibration.exhausted;
+
+    const cost = Math.max(0, totalCost - calibration.anchorCost);
+    const samplePercent = Math.max(0, used - calibration.anchorUsed);
+    const ready = samplePercent > 0 && cost > 0;
+    const estimatedTotalCost = ready ? cost * 100 / samplePercent : null;
+    const result = {
+      status: ready ? 'ready' : 'collecting', basis: calibration.basis,
+      confidence: samplePercent < 5 ? 'early' : 'reference',
+      reason: samplePercent <= 0 ? 'no-percent' : cost <= 0 ? 'no-cost' : null,
+      cost, usedPercent: used, samplePercent, cycleCost: totalCost,
+      startAt: calibration.anchorAt / 1000, resetsAt: window.resetsAt,
+      estimatedTotalCost,
+      estimatedRemainingCost: ready ? estimatedTotalCost * (100 - used) / 100 : null,
+      // Sensitivity to one percentage point, not a statistical confidence interval.
+      rangeLow: ready ? cost * 100 / Math.min(100, samplePercent + 1) : null,
+      rangeHigh: ready && samplePercent > 1 ? cost * 100 / (samplePercent - 1) : null,
+      updatedAt: now,
+    };
+    const shouldSave = calibration.lastAt !== updatedAt;
+    calibration.lastUsed = used;
+    calibration.lastAt = updatedAt;
+    if (used === 100 && ready) calibration.exhausted = result;
+    else delete calibration.exhausted;
+    if (shouldSave || used === 100) persist();
+    return result;
+  }
+  return { observe };
 }
 
-function estimateWeeklyQuota(codexUsage, weeklyWindow, now = Date.now()) {
-  const usage = usageInCycle(codexUsage, weeklyWindow, now);
-  if (!usage || (usage.tokens <= 0 && usage.cost <= 0)) return null;
-
-  const remaining = clampPercent(weeklyWindow && weeklyWindow.remainingPercent);
-  const reportedUsed = clampPercent(weeklyWindow && weeklyWindow.usedPercent);
-  const usedPercent = reportedUsed === null && remaining !== null
-    ? 100 - remaining
-    : reportedUsed;
-  const fraction = usedPercent === null ? null : usedPercent / 100;
-
-  return {
-    ...usage,
-    usedPercent,
-    estimatedTotalTokens: fraction && fraction > 0 ? Math.round(usage.tokens / fraction) : null,
-    estimatedTotalCost: fraction && fraction > 0 ? usage.cost / fraction : null,
-  };
-}
-
-module.exports = {
-  DAY_MS,
-  cycleBounds,
-  usageInCycle,
-  estimateWeeklyQuota,
-};
+module.exports = { createWeeklyQuotaEstimator, cycleCost, RESET_TOLERANCE_SECONDS, MAX_QUOTA_AGE_MS };
