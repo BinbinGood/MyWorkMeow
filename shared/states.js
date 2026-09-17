@@ -40,7 +40,9 @@
   // 是长操作，动辄一两分钟，用 20s 会压缩没完就衰减 —— 有后台任务时还会被
   // core.js 的衰减分支变成 working，正是「压缩时显示干活中」的成因之一。
   // 所以每个 PreCompact 生产者都必须自报这个更长的 TTL：
-  // backend/hook-common.js（Claude 系）、backend/codex-watch.js（两处）。
+  // backend/hook-common.js（Claude 系）、backend/codex-watch.js（两处）、
+  // backend/workbuddy-compact-watch.js（WorkBuddy —— 它的 PreCompact hook 是死
+  // 代码，压缩态改由读会话状态机日志产出，见该文件顶部说明）。
   // hook/opencode-plugin.js 是零依赖的独立插件，只能照抄一份并注明与此对齐。
   const PRE_COMPACT_TTL_MS = 5 * 60 * 1000;
 

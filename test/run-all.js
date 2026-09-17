@@ -17,6 +17,7 @@ const TESTS = Object.freeze([
   'codex-quota-estimate.js',
   'workbuddy-metering.js',
   'workbuddy-titles.js',
+  'workbuddy-compact-watch.js',
   'credit-cycle.js',
   'tray-status.js',
   'trae-metering.js',

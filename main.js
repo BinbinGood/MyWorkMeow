@@ -52,6 +52,7 @@ const { estimateWeeklyQuota } = require('./backend/codex-quota-estimate');
 const codexQuotaTray = require('./backend/codex-quota-tray');
 const { createWorkbuddyMetering } = require('./backend/workbuddy-metering');
 const { createTitles: createWorkbuddyTitles } = require('./backend/workbuddy-titles');
+const { createWorkbuddyCompactWatch } = require('./backend/workbuddy-compact-watch');
 const macLoginItem = require('./backend/mac-login-item');
 const trayStatus = require('./backend/tray-status');
 const creditCycle = require('./backend/credit-cycle');
@@ -141,6 +142,10 @@ let server = null;
 let stopWatcher = null;
 let codexWatch = null;  // Codex rollout 只读监听器
 let traeWatch = null;   // TRAE SOLO CN 日志只读监听器
+// WorkBuddy 压缩状态只读监听器：hook 通道的 PreCompact/PostCompact 在 WorkBuddy
+// 里是死代码（只有 Blocking 策略会发，而它永远不被选中），压缩态只能从它自己的
+// 会话状态机日志里捞。见 backend/workbuddy-compact-watch.js 顶部的实证说明。
+let workbuddyCompactWatch = null;
 let codexMetering = null; // Codex rollout 累计 token 台账（与状态 watcher 解耦）
 let codexRateLimits = null; // Codex App Server 订阅额度（独立于 rollout token 台账）
 let codexQuotaState = unavailableCodexQuota('idle');
@@ -550,7 +555,7 @@ function repairIntegrationHealth() {
         stopWatcher = hooks.startWatcher(() => ({ port: server.getPort(), token: server.getToken() }));
       }
     }
-    for (const watcher of [codexWatch, traeWatch]) {
+    for (const watcher of [codexWatch, traeWatch, workbuddyCompactWatch]) {
       if (watcher && typeof watcher.start === 'function') watcher.start();
     }
   } catch {
@@ -900,6 +905,16 @@ function bootBackend() {
     onDirty: scheduleEmit,
   });
   core.startStaleCleanup();
+  if (!env.flag('NO_WORKBUDDY_WATCH')) {
+    // WorkBuddy 的 PreCompact/PostCompact hook 是死代码（只有 Blocking 策略会发，
+    // 而它永远不被选中），压缩态只能从它自己的会话状态机日志里捞。
+    workbuddyCompactWatch = createWorkbuddyCompactWatch({
+      core,
+      // 开发/E2E 可用 WORKMEOW_WORKBUDDY_LOG_DIR 指到假目录，不碰真实日志
+      logRoot: env.value('WORKBUDDY_LOG_DIR') || undefined,
+    });
+    workbuddyCompactWatch.start();
+  }
   if (!env.flag('NO_CODEX')) {
     codexMetering = createCodexMetering({
       sessionsDir: codexDir,
@@ -1833,6 +1848,7 @@ app.on('before-quit', () => {
   try { if (codexWatch) codexWatch.stop(); } catch {}
   try { if (codexRateLimits) codexRateLimits.stop(); } catch {}
   try { if (traeWatch) traeWatch.stop(); } catch {}
+  try { if (workbuddyCompactWatch) workbuddyCompactWatch.stop(); } catch {}
   try { if (stopWatcher) stopWatcher(); } catch {}
   try { if (permissions) permissions.cleanup(); } catch {}
   try { if (server) server.stop(); } catch {}
