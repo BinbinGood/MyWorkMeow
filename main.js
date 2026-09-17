@@ -336,7 +336,28 @@ function makePetWindow(agent) {
     // 透明窗口也要显式给一个全透明底色。缺省时 Electron 用不透明白，macOS 上
     // 合成器要靠它判断「这块该不该清」；面板窗口（:322）和设置窗口（:371）
     // 都设了各自的背景色，只有桌宠没设。八位十六进制的末两位是 alpha。
+    // ⚠️ 这两行之间不要插长注释：test/pet-insights.js 钉的是它们的**邻近性**
+    //（transparent: true 后 400 字符内必须出现 backgroundColor）。
     backgroundColor: '#00000000',
+    // 桌宠窗口 520 宽而猫只有 120 宽，左右各 200px 透明留白；猫想贴住屏幕缘时
+    // 窗口原点就必须合法地悬出屏幕（单侧最多 (帧宽-120)/2）。这是「钳猫不钳窗口」
+    // （clampCatOrigin）整套方案的地基，而 macOS 默认不允许：AppKit 的
+    // NSWindow constrainFrameRect:toScreen: 会把窗口钳回工作区。
+    //
+    // 它不是每时每刻都钳 —— 静息、气泡打开、纯改高度、setAlwaysOnTop、
+    // setVisibleOnAllWorkspaces、同矩形 setBounds 全都不触发（实测原点稳在 -200）。
+    // 只有**失焦**触发：closePeek() 里的 window.pet.blurPet() → PET_BLUR → w.blur()，
+    // 3ms 后窗口就被钳到 wa.x（或 wa.x+wa.width-520），没有 will-move、没有任何
+    // JS setBounds；随后我们的 applyPetSize 忠实地按这个**已被污染**的 b.x 反解原点，
+    // 于是猫净移动 max(0, 200-离缘距离) 像素、方向恒朝屏幕中心 —— 用户原话：
+    // 「主要喵处于边缘的环带内，打开气泡再关闭，喵的位置就会移动……自动移到靠中间的位置」。
+    //
+    // enableLargerThanScreen（darwin-only）正是覆写 constrainFrameRect: 的开关。
+    // 注意：Electron 文档措辞是「resized larger than screen」而非「moved off screen」，
+    // 所以这里的依据是实测而不是文档 —— 2 屏 × 左右缘 × 离缘 {0,40,199}px × 4 轮：
+    // 关 = 48 例里 46 例漂移，开 = 48/48 零漂移。
+    // 竖直方向的安全网不依赖它：applyPetSize 自己把 y 钳进工作区。
+    enableLargerThanScreen: true,
     hasShadow: false,
     resizable: false,
     alwaysOnTop: true,

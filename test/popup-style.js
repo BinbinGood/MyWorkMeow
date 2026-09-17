@@ -123,6 +123,27 @@ assert(/function clampCatOrigin\(/.test(main),
   'the main process must clamp the visible cat horizontally, not the transparent frame');
 assert(!/x = Math\.min\(Math\.max\(x, wa\.x\), wa\.x \+ wa\.width - width\);/.test(main),
   'the old frame-clamping line must not return: it is what created the 200px dead band at each screen edge');
+// 2026-09-17（F4）：钳猫方案的**前置条件**——桌宠窗口必须开 enableLargerThanScreen。
+// 钳猫的地基是「窗口原点可以合法地悬出屏幕」（猫贴死屏幕缘时原点 = wa.x - 200），
+// 而 macOS 默认不允许：AppKit 的 NSWindow constrainFrameRect:toScreen: 会钳回工作区。
+// 它只在窗口**失焦**时钳（静息 / 气泡打开 / 纯改高度 / setAlwaysOnTop /
+// setVisibleOnAllWorkspaces / 同矩形 setBounds 实测全不触发，原点稳在 -200），
+// 而 closePeek() 里就有一次 window.pet.blurPet() → PET_BLUR → w.blur()：3ms 后原点
+// 被钳到 wa.x，没有 will-move、没有任何 JS setBounds，随后 applyPetSize 忠实地按
+// 这个已被污染的 b.x 反解，猫净移动 max(0, 200 - 离缘距离) px、方向恒朝屏幕中心。
+// 用户原话：「主要喵处于边缘的环带内，打开气泡再关闭……自动移到靠中间的位置」。
+// 实测 A/B（2 屏 × 左右缘 × 离缘 {0,40,199} × 4 轮）：关 = 48 例中 46 例漂移，
+// 开 = 48/48 零漂移。
+// 这条断言只能保证「这一行还在」。Electron 文档措辞是「resized larger than screen」
+// 而不是「moved off screen」，所以语义若被上游收窄，静态检查是看不出来的 ——
+// 升级 Electron 后必须手工复验贴边开关气泡。
+{
+  const petWin = main.match(/const win = new BrowserWindow\(\{[\s\S]*?\n  \}\);/)?.[0] || '';
+  assert(/transparent:\s*true/.test(petWin) && /backgroundColor:\s*'#00000000'/.test(petWin),
+    'the first BrowserWindow in main.js must still be the transparent pet window');
+  assert(/enableLargerThanScreen:\s*true/.test(petWin),
+    'the pet window must set enableLargerThanScreen: macOS clamps an off-screen frame back into the work area on blur, and closePeek() blurs — that is what moves the cat toward screen centre (F4)');
+}
 // 胶囊比猫宽，居中在猫正下方时可能探出工作区。补偿走 --chip-shift（按需最小位移），
 // 且必须是 transform —— margin 会挤压兄弟节点、把整列的布局宽度推出去。
 assert(/\.chip\s*\{[\s\S]*?transform:\s*translateX\(var\(--chip-shift/.test(css),
