@@ -20,30 +20,35 @@ html, body {
   justify-content: flex-end;
 }
 
-/* Edge anchoring ------------------------------------------------------------
-   The BrowserWindow stays fully inside the work area; the visible pet moves
-   to the corresponding side *inside* that transparent window. This is what
-   lets a pet genuinely touch the screen edge without sacrificing room for a
-   popup or circular menu — the bubbles simply flip to the other side.
+/* Edge anchoring（只剩竖直方向）--------------------------------------------
+   贴顶时把整列翻过来：气泡/面板落到猫**下方**，否则它们会被顶出屏幕。
 
-   横向为什么必须靠 align-items 而不是靠坐标：窗口 320 宽而猫只有 120 宽，左右
-   各约 100px 透明留白，主进程 applyPetSize 又会把**窗口**钳在工作区内。想让猫
-   本体走到屏幕边，唯一的办法就是把整列贴齐窗口缘、让猫的窗内偏移变成 0，这样
-   反解出的窗口原点正好落在工作区缘上、钳制不会触发。2026-09-16 那次「左右拖完
-   松手就弹回中间」的回归，就是删掉这两条规则、猫的窗内偏移回到 ~100px 之后被
-   钳掉的 100px。
-
-   代价是胶囊比猫宽，整列贴边时它会往内侧甩出去。那件事不在这里解决 —— 见
-   .chip 的 --chip-shift（按需最小位移）。 */
+   横向曾经也有一套（#stage.edge-left/.edge-right + 两条 #compact-row 覆盖），
+   2026-09-17 删掉了。它不是功能，是变通：那时主进程 applyPetSize 钳的是**透明
+   窗口**，窗口 520 宽而猫只有 120 宽、左右各 200px 留白，所以猫想待在离屏幕缘
+   200px 以内时窗口原点会被钳掉、猫被推走（屏幕左右各一条 200px 的「环带」）。
+   把整列 align-items 甩到窗口缘、让猫的窗内偏移变成 0，正是为了让反解出的原点
+   刚好落在工作区缘上、绕开那次钳制。
+   现在钳的对象换成了猫本体（main.js clampCatOrigin），窗口原点允许悬出屏幕，
+   工作区内每个像素都直接可达 —— 真贴边自然成立，不需要任何横向对齐切换，
+   也不再有对齐翻转带来的中间帧。 */
 #stage.edge-below { justify-content: flex-start; }
-#stage.edge-left { align-items: flex-start; }
-#stage.edge-right { align-items: flex-end; }
-/* 两条都要：#stage 那条把整列推到窗口缘，#compact-row 这条才让**猫**落在整列的
-   那一侧（列的宽度由最宽的孩子——胶囊——决定，不加这条猫仍停在列中央）。
-   :not(.cat-hidden) 是因为隐藏猫身后 #compact-row 变成 flex-direction: row，
-   align-items 的语义翻成竖直方向，贴边由 #stage 那条独自负责。 */
-#stage.edge-left:not(.cat-hidden) #compact-row { align-items: flex-start; }
-#stage.edge-right:not(.cat-hidden) #compact-row { align-items: flex-end; }
+
+/* 弹窗的按需内缩（--pop-shift，由 pet.js 的 applyPopupShift 计算）------------
+   横向贴边退役后弹窗一律由 #stage 的 align-items:center 居中在**520 宽的窗口**里，
+   而钳猫之后窗口原点合法地悬出屏幕（猫贴死左缘时原点 = wa.x-200）。于是 .peek
+   （320 宽）会落在 wa.x-100、.ask（340 宽）落在 wa.x-110 —— 探出屏幕外被裁掉。
+   旧代码里这不会发生：#stage.edge-left 把整列拉到窗口左缘，而那个缘本身被钳在
+   wa.x —— 横向贴边那半套**顺手**保护了弹窗，删它时这层保护一起没了，这里补回来。
+
+   用 position:relative + left，不用 transform：.peek/.ask/.think 的入场动画
+   keyframes 结尾是 `transform: none`，位移会被擦掉。也不用 margin —— margin 会挤压
+   兄弟节点、把整列的布局宽度推出去（2026-09-16 的教训）。relative 的 left 和
+   transform 一样只在绘制期偏移、不参与布局，所以不会喂回 measuredRestingWidth。 */
+.peek, .ask, .bubble, .think {
+  position: relative;
+  left: var(--pop-shift, 0px);
+}
 
 #compact-row {
   display: flex;

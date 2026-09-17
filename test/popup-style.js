@@ -106,25 +106,28 @@ assert(/\.radial\[data-layout="compact"\] \.radial-compact\s*\{[\s\S]*?display:\
 assert(/\.sessions\s*\{[\s\S]*?min-width:\s*120px;/.test(css), 'session dots must retain a centred minimum width');
 assert(/#stage\.cat-hidden #compact-row \.sessions\s*\{[\s\S]*?min-width:\s*0;/.test(css),
   'compact session dots must shrink to their intrinsic width beside the capsule');
-// ── 横向贴边（左右）与胶囊的按需内缩 ────────────────────────────────────────
-// 这两条规则是「猫能真的贴到屏幕左右缘」的**唯一**实现：窗口 320 宽而猫只有 120
-// 宽，左右各约 100px 透明留白，主进程 applyPetSize 会把窗口钳进工作区 —— 只有把
-// 整列拉到窗口缘、让猫的窗内偏移变成 0，反解出的窗口原点才正好落在工作区缘上，
-// 那 100px 不会被钳掉。2026-09-16 我误判这套是纯胶囊样式而删掉，用户实测「往左右
-// 拖松开后自动处在比较靠中间的位置」，就是被钳走的那 100px。
-assert(/#stage\.edge-left\s*\{[^}]*align-items\s*:\s*flex-start\s*;/s.test(css),
-  'left-edge snapping must pull the column to the window edge');
-assert(/#stage\.edge-right\s*\{[^}]*align-items\s*:\s*flex-end\s*;/s.test(css),
-  'right-edge snapping must pull the column to the window edge');
-// 光有 #stage 那条不够：列宽由最宽的孩子（胶囊）决定，不加这条**猫**仍停在列中央。
-assert(/#stage\.edge-left:not\(\.cat-hidden\) #compact-row\s*\{[^}]*align-items\s*:\s*flex-start\s*;/s.test(css)
-  && /#stage\.edge-right:not\(\.cat-hidden\) #compact-row\s*\{[^}]*align-items\s*:\s*flex-end\s*;/s.test(css),
-  'the compact row must put the cat itself on the snapped side');
-// 胶囊比猫宽，整列贴边时它会被带出去。补偿走 --chip-shift（按需最小位移），
+// ── 横向：钳猫本体，不钳窗口 ────────────────────────────────────────────────
+// 2026-09-17：横向贴边那半套（#stage.edge-left/.edge-right + 两条 #compact-row
+// 覆盖）已退役。它从来不是功能，是变通 —— 那时主进程 applyPetSize 钳的是**透明
+// 窗口**，窗口 520 宽而猫只有 120 宽、左右各 200px 留白，猫想待在离屏幕缘 200px
+// 以内时窗口原点会被钳掉、猫被推走（屏幕左右各一条 200px 的「环带」，即用户报的
+// E3/E4）。把整列 align-items 甩到窗口缘、让猫的窗内偏移变成 0，正是为了让反解出
+// 的原点刚好落在工作区缘上、绕开那次钳制。
+// 现在钳的对象换成猫本体（main.js clampCatOrigin），窗口原点允许悬出屏幕，工作区
+// 内每个像素都直接可达 —— 真贴边自然成立，也不再有对齐翻转造成的中间帧（E1）。
+assert(!/#stage\.edge-(?:left|right)[^\n]*\{/.test(css),
+  'horizontal edge classes must stay retired: the clamp now targets the cat, so the band they worked around is gone');
+assert(!/['"]edge-(?:left|right)['"]/.test(js),
+  'the renderer must not toggle horizontal edge classes any more');
+assert(/function clampCatOrigin\(/.test(main),
+  'the main process must clamp the visible cat horizontally, not the transparent frame');
+assert(!/x = Math\.min\(Math\.max\(x, wa\.x\), wa\.x \+ wa\.width - width\);/.test(main),
+  'the old frame-clamping line must not return: it is what created the 200px dead band at each screen edge');
+// 胶囊比猫宽，居中在猫正下方时可能探出工作区。补偿走 --chip-shift（按需最小位移），
 // 且必须是 transform —— margin 会挤压兄弟节点、把整列的布局宽度推出去。
 assert(/\.chip\s*\{[\s\S]*?transform:\s*translateX\(var\(--chip-shift/.test(css),
   'the capsule must be nudged by transform, never by layout-affecting margins');
-assert(/PetGeometry\.capsuleShiftFromEdge/.test(js) && /--chip-shift/.test(js),
+assert(/PetGeometry\.capsuleShift\(/.test(js) && /--chip-shift/.test(js),
   'the renderer must compute the capsule shift from the pet post-move screen position');
 // 2026-09-16：上一版注释在这里断言「transform 量不到 measuredRestingWidth 里去」，
 // 那句话是错的。transform 不参与**布局**，但会把祖先的 scrollWidth 撑大：实测
@@ -141,19 +144,16 @@ assert(/function measuredRestingWidth\(\)[\s\S]*?\n\}/.test(js), 'resting width 
   assert(/\[chip, sessionsEl\]/.test(fn),
     'resting width must come from the capsule and session dots themselves');
 }
-// 横向贴边判定不能再按**静息**帧宽开关：静息帧宽是内容内蕴的（额度徽标全开时胶囊
-// 480 宽 → 帧宽 504），拿固定像素数去卡它维度上就是错的。竖直方向的帧高门必须保留。
+// 横向不能再引入任何「帧宽像素上限」当判据：静息帧宽是内容内蕴的（额度徽标全开时
+// 胶囊 480 宽 → 帧宽 504），拿固定像素数去卡它维度上就是错的。竖直方向的帧高门保留。
 assert(!/RESTING_FRAME_MAX_W/.test(js),
   'the horizontal snapping gate must not be reinstated as a fixed frame-width cap');
-// 但它也不能恒开。2026-09-16：关闭弹窗时 restingEdgeLayout 会在窗口**还是 520 宽**
-// 的时候先跑一次（closePeek → resetPetSize → fitRestingFrame），此时透明留白有
-// 200px，而 infer 分支认的是静息帧那 ~100px —— 于是屏幕中间的猫被误判成贴边，实测
-// x=200 被搬到 0、x=1180 被搬到 1320，且**关掉气泡也回不来**（永久位移）。
-// 判据必须是「当前帧有没有比静息帧宽」这个相对量，且两边共用同一个 restingFrameWidth()
-// 定义（否则贴边判定会和实际帧宽错位）。这和上面禁止的「固定像素上限」是两回事：
-// 那问的是「静息帧能有多宽」，这问的是「当前帧还是静息帧吗」。
-assert(/inferHorizontalFrameClamp:\s*snapshot\.windowRect\.width <= restingFrameWidth\(\)/.test(js),
-  'horizontal edge inference must be gated on the frame still being a resting frame, not on a fixed width cap');
+// 横向的 infer 门（inferHorizontalFrameClamp）也已随横向贴边一起退役。它存在的意义
+// 是「窗口被钳住了但猫还没到边」这个状态，而钳猫之后这个状态不再存在。顺带一提：它
+// 上一版是**永真**的死门（`windowRect.width <= restingFrameWidth() + 2`，而静息帧
+// 恒等于 restingFrameWidth()），正是 E3/E4 那条 200px 环带没被拦住的直接原因。
+assert(!/inferHorizontalFrameClamp/.test(js),
+  'the horizontal frame-clamp inference must stay retired: nothing clamps the frame horizontally any more');
 assert(/function restingFrameWidth\(\)/.test(js),
   'the resting frame width must have a single shared definition');
 {
@@ -163,18 +163,49 @@ assert(/function restingFrameWidth\(\)/.test(js),
 }
 assert(/inferVerticalFrameClamp:\s*snapshot\.windowRect\.height <= RESTING_FRAME_MAX_H/.test(js),
   'the vertical frame-height gate must remain: a tall popup clamped to the screen top would masquerade as a top-edge drag');
-// 弹窗横向必须按**目标**帧宽判定（窗口要涨到 520），不能用 snapshot 里的当前帧宽 ——
-// 否则 fitPopup 第一拍（还是 320）会判错一次再自我纠正，猫闪一下。
-assert(/popupEdgeLayout\(height, options\.popupHeight, width\)/.test(js),
-  'the popup layout must be decided from the target frame width, not the current one');
-assert(/popupWidth:\s*Math\.max\(0, Number\(popupWidth\) \|\| 0\)/.test(js),
-  'popupEdgeLayout must forward the popup width to the geometry helper');
-// 旧补丁不能回来：从前是贴边把整列甩过去、再给 .chip 补一个 justify-content: center
-// 找回中心。那条既解决不了溢出，也和 --chip-shift 抢同一件事。
-assert(!/#stage\.edge-(?:left|right)[^{]*\.chip\s*\{[^}]*justify-content/s.test(css),
-  'the superseded justify-content patch on .chip must not return');
+// 弹窗布局只判竖直方向了：横向恒居中，帧宽涨到多少猫都停在原地，所以不再需要把
+// 目标帧宽喂进几何层（旧的 popupWidth / popupHorizontal 已删）。
+assert(/popupEdgeLayout\(height, options\.popupHeight\)/.test(js),
+  'the popup layout call must only carry the vertical inputs it still needs');
+assert(!/popupWidth/.test(js),
+  'popupWidth must stay retired: horizontal popup alignment no longer exists');
+// positionProp 的可用区间必须按**屏幕**算。窗口原点现在合法地可以悬出屏幕（单侧最多
+// (帧宽-120)/2 ≈ 200px），猫贴住屏幕左缘时窗口左边那 200px 留白整块在屏幕外 ——
+// 只按视口算会以为「左边还有 200px 空位」，把道具放到屏幕外。
+{
+  const fn = js.match(/function positionProp\(\)[\s\S]*?\n\}/)?.[0] || '';
+  assert(/browserWorkArea\(\)/.test(fn) && /window\.screenX/.test(fn),
+    'positionProp must intersect the viewport with the work area, not assume the whole frame is on-screen');
+}
 assert(/#compact-row\s*\{[\s\S]*?align-items:\s*center;/.test(css),
-  'centred under the cat remains the default when not snapped to an edge');
+  'the cat stays centred in its column: horizontal alignment no longer switches at all');
+// ── 弹窗的按需内缩（--pop-shift）────────────────────────────────────────────
+// 这一条补的是钳猫方案**差点漏掉**的后果，而且必须钉死，因为它替代的是一层**顺手的、
+// 没人写下来的**保护：旧代码里 #stage.edge-left { align-items: flex-start } 把整列拉到
+// 窗口左缘，而那个缘本身被钳在 wa.x —— 也就是说横向贴边那半套顺手保护了弹窗不出屏。
+// 删掉横向贴边时这层保护一起没了：弹窗改由 #stage 的 align-items:center 居中在 520 宽
+// 的窗口里，而钳猫之后窗口原点合法地悬出屏幕（猫贴死左缘时原点 = wa.x-200），于是
+// .peek（320 宽）落在 wa.x-100、.ask / .bubble（340 宽）落在 wa.x-110 —— 探出屏幕被裁。
+// 补偿走 --pop-shift（applyPopupShift 复用 capsuleShift 的「按需最小位移」口径）。
+assert(/function applyPopupShift\(/.test(js) && /--pop-shift/.test(js),
+  'popups must be nudged inward: after the cat-clamp, a centred popup hangs 100~110px off the screen edge');
+// 位移必须落在 position:relative 的 left 上。
+// **不能用 transform**：.peek / .ask / .think 的入场动画 keyframes 结尾就是
+// `transform: none`（@keyframes peekIn / askIn / thinkIn），动画一跑完就把位移擦掉 ——
+// 静态审查看不出来，只在屏幕上坏。.bubble 还额外有 transition: transform 和
+// .bubble.hidden { transform: translateY(8px) scale(0.96) }。
+// **也不能用 margin**：margin 会挤压兄弟节点、把整列的布局宽度推出去（2026-09-16 的
+// 教训，见上面 measuredRestingWidth 那段）。relative 的 left 和 transform 一样只在
+// 绘制期偏移、不参与布局，所以不会喂回帧宽。
+{
+  const rule = css.match(/\.peek,\s*\.ask,\s*\.bubble,\s*\.think\s*\{[^}]*\}/)?.[0] || '';
+  assert(/position:\s*relative;/.test(rule) && /left:\s*var\(--pop-shift/.test(rule),
+    'the popup shift must ride on position:relative + left');
+  assert(!/transform/.test(rule),
+    'the popup shift must not use transform: the peek/ask/think entry keyframes end at `transform: none` and would erase it');
+  assert(!/margin/.test(rule),
+    'the popup shift must not use margin: margin squeezes siblings and inflates the column layout width');
+}
 // 单宠时代（2026-08-07 起）：不再有 per-tool 名牌，agent-tag 样式必须整体移除
 assert(!/agent-tag/.test(css), 'per-tool agent tag styles must be gone (single unified pet)');
 assert(/function positionProp\(\)[\s\S]*propEl\.style\.left/.test(js), 'action prop must use the visible cat geometry');

@@ -89,6 +89,11 @@ const WINDOW_ICON = WINDOW_ICON_FILE.isEmpty()
   ? nativeImage.createFromPath(WINDOW_ICON_PNG_PATH)
   : WINDOW_ICON_FILE;
 const BASE_W = 320, BASE_H = 340;
+// 猫本体的可见宽度（renderer/pet.css 的 #cat 是 120×120，1:1 显示 GIF）。
+// 主进程需要它是因为**钳制的对象是猫，不是透明窗口**：窗口恒比猫宽几百像素，
+// 拿窗口去撞工作区缘会把猫推离用户放它的位置（见 applyPetSize）。
+// 没有锚点的退化路径只能靠这个常量推窗内偏移；有锚点时用 anchor.width（权威值）。
+const PET_BODY_W = 120;
 
 // 让一个「用户主动打开的」窗口真正拿到键盘焦点。
 // app.dock.hide() 会把 mac 上的 app 变成 accessory app，副作用是 show()/focus()
@@ -181,10 +186,10 @@ function validPetAnchor(anchor) {
 }
 
 // 从「桌宠本体在屏幕上的位置」反解窗口原点。
-// 三条 xAlign 分支都是活的：渲染端贴左/右缘时把整列拉到窗口缘，本体的窗内偏移
-// 变成 0，反解出的原点正好落在工作区缘上，下面 applyPetSize 的钳制就不会吃掉那
-// ~100px 透明留白 —— 这正是「左右能真贴边」的实现方式（见 renderer/pet.css 里
-// #stage.edge-left / .edge-right 的注释）。上面的 xAlign 白名单挡住脏值。
+// xAlign 白名单挡住脏值。渲染端现在恒发 'center'（横向贴边那套 align-items 机制
+// 已于 2026-09-17 退役），left/right 两条分支留着只为兼容旧渲染端/旧锚点，
+// 不再是任何功能的实现手段 —— 「左右能真贴边」现在由下面 applyPetSize 的
+// **钳猫**做到：窗口原点允许落到工作区外，钳的是猫本体那 120px。
 function anchoredPetOrigin(anchor, width, height) {
   let localX;
   if (anchor.xAlign === 'left') localX = anchor.xOffset;
@@ -200,6 +205,34 @@ function anchoredPetOrigin(anchor, width, height) {
   };
 }
 
+// 把**猫本体**钳进工作区，返回窗口原点。
+//
+// 为什么不是钳窗口（2026-09-17 之前就是钳窗口，那是 E1/E3/E4 三个 bug 的唯一成因）：
+// 透明窗口恒 520 宽而猫只有 120 宽，左右各 200px 留白。猫想待在离屏幕左缘 1..199px
+// 处时，窗口原点要 -199..-1，被钳成 wa.x，猫就被推到 200 —— 屏幕左右各出现一条
+// 200px 宽的「环带」，拖进去的猫会被自动搬走（用户原话：「只要喵拖到这个区域，
+// 会自动根据距离，往中间移动，或者放边缘移动」）。环带宽 = (帧宽 - 猫宽) / 2。
+//
+// 钳猫之后窗口原点**合法地**可以是负数或超出屏幕右缘，最多单侧悬出 inset 那么多。
+// 三件事保证这没有代价：
+//   1. 命中测试是逐元素的（renderer 用 elementFromPoint + HIT_SEL 算，再经
+//      setIgnoreMouseEvents(ignore,{forward:true}) 下发），透明留白从不参与命中，
+//      悬出屏幕也挡不住底下的应用；
+//   2. screen.getDisplayMatching 按重叠面积挑屏，只有 inset > 帧宽/2 才可能选错屏，
+//      而 inset 恒 = (帧宽-猫宽)/2 < 帧宽/2；
+//   3. 存盘存的是猫的屏幕位置、恢复时重新钳猫（见 persistPos / restoreWindowOrigin）。
+//
+// 竖直方向**不用**这个函数，继续钳窗口：高弹窗绝不能把猫和底部按钮顶出屏幕。
+//
+// inset 由调用方给（有锚点时从 anchoredPetOrigin 精确反解，三条 xAlign 分支都对，
+// 不预设居中），所以这个函数对旧锚点也成立。
+function clampCatOrigin(wa, catScreenX, catWidth, inset) {
+  const catW = catWidth > 0 ? catWidth : PET_BODY_W;
+  const maxCatX = Math.max(wa.x, wa.x + wa.width - catW);
+  const catX = Math.min(Math.max(catScreenX, wa.x), maxCatX);
+  return Math.round(catX - inset);
+}
+
 function applyPetSize(st, requestedAnchor) {
   if (!st || !st.win || st.win.isDestroyed()) return;
   const win = st.win;
@@ -211,19 +244,24 @@ function applyPetSize(st, requestedAnchor) {
   // 第 3 次与第 1 次的尺寸一模一样，白重排一遍，正是切状态时那下卡顿。
   // 放在两条分支的 setBounds 之前各判一次（下面 catch 里那条走的是另一套坐标）。
   const same = (x, y, width, height) => x === b.x && y === b.y && width === b.width && height === b.height;
-  // Cap the window to the screen's work area so a tall popup can NEVER push the
-  // pet / footer buttons off-screen — the popup scrolls internally instead.
+  // 竖直：把窗口钳进工作区，这样高弹窗永远不会把猫 / 底部按钮顶出屏幕
+  // （超高时由弹窗内部滚动）。横向：钳猫，见 clampCatOrigin 的注释。
   try {
     const wa = screen.getDisplayMatching(b).workArea;
     const width = Math.min(w, wa.width);
     h = Math.min(h, wa.height);
     const anchor = validPetAnchor(requestedAnchor);
     const anchored = anchor ? anchoredPetOrigin(anchor, width, h) : null;
-    const cx = b.x + b.width / 2;
     const bottom = b.y + b.height;
-    let x = anchored ? anchored.x : Math.round(cx - width / 2);
+    // 猫此刻在屏幕上的位置与它在目标帧里的窗内偏移。
+    // 有锚点：screenX 是渲染端量出来的权威值，inset 从 anchoredPetOrigin 反解
+    // （screenX - 原点 = localX，三条 xAlign 分支都精确）。
+    // 无锚点（早期调用 / 异常路径）：按「当前窗口居中」推，这也是 CSS 的默认对齐。
+    const catW = anchor ? anchor.width : PET_BODY_W;
+    const catScreenX = anchor ? anchor.screenX : b.x + (b.width - PET_BODY_W) / 2;
+    const inset = anchored ? anchor.screenX - anchored.x : (width - PET_BODY_W) / 2;
+    const x = clampCatOrigin(wa, catScreenX, catW, inset);
     let y = anchored ? anchored.y : Math.round(bottom - h);
-    x = Math.min(Math.max(x, wa.x), wa.x + wa.width - width);
     y = Math.min(Math.max(y, wa.y), wa.y + wa.height - h);
     if (same(x, y, width, h)) return;
     win.setBounds({ x, y, width, height: h });
@@ -243,8 +281,33 @@ function createPetWindows() {
   reconcilePets();
 }
 
+// 存窗口原点**以及存盘那一刻的帧宽**。
+//
+// 为什么要连帧宽一起存：猫在窗口里居中，窗内偏移 = (帧宽 - 猫宽)/2。存盘时帧宽是
+// 内容内蕴的静息帧（现在恒 520），而重建窗口时用的是 BASE_W(320) —— 只还原原点的话
+// 猫每次重启都会左移 (520-320)/2 = 100px，越开越偏。带上帧宽就能反解出「猫当时在
+// 屏幕哪儿」，再按新帧宽重新反解原点。
+// 老配置没有 w：按 BASE_W 兜底，等于保持升级前的行为，不会凭空跳一次。
 function persistPos(b) {
-  config.save({ petPosition: { x: b.x, y: b.y } });
+  config.save({ petPosition: { x: b.x, y: b.y, w: b.width } });
+}
+
+// 从存盘位置反解「新窗口该开在哪」：先还原猫当时的屏幕位置，把**猫**钳进工作区
+// （换过分辨率、拔过外接屏、或上次存的位置已经不可见时，这一步把它拉回来），
+// 再按新帧宽反解原点。竖直方向仍然钳窗口，理由同 applyPetSize。
+function restoreWindowOrigin(saved, frameWidth, frameHeight) {
+  const savedW = Number.isFinite(saved.w) && saved.w > 0 ? saved.w : BASE_W;
+  const catX = saved.x + (savedW - PET_BODY_W) / 2;
+  const inset = (frameWidth - PET_BODY_W) / 2;
+  try {
+    const wa = screen.getDisplayNearestPoint({ x: Math.round(catX), y: saved.y }).workArea;
+    return {
+      x: clampCatOrigin(wa, catX, PET_BODY_W, inset),
+      y: Math.min(Math.max(saved.y, wa.y), wa.y + wa.height - frameHeight),
+    };
+  } catch {
+    return { x: Math.round(catX - inset), y: saved.y };
+  }
 }
 
 function makePetWindow(agent) {
@@ -252,8 +315,10 @@ function makePetWindow(agent) {
   const c = config.get();
   const saved = c.petPosition;
   let x, y;
-  if (saved) { x = saved.x; y = saved.y; }
-  else {
+  if (saved) {
+    const origin = restoreWindowOrigin(saved, BASE_W, BASE_H);
+    x = origin.x; y = origin.y;
+  } else {
     try {
       const wa = screen.getPrimaryDisplay().workArea;
       x = wa.x + wa.width - BASE_W - 24;
@@ -1288,6 +1353,29 @@ function reconcilePets() {
   petWin = mergedWin; // 兼容别名
 }
 
+// 屏幕拓扑变了（换分辨率、拔/插外接屏、Dock 位置变化）就把猫拉回可见区。
+//
+// 2026-09-17 之前主进程**没有任何** screen 事件监听。那时窗口恒被钳在工作区内，
+// 所以「猫在屏幕外」只可能来自换分辨率；现在窗口原点合法地允许悬出屏幕，缺了这个
+// 监听就可能出现「窗口还在旧屏的坐标里、新拓扑下整只猫都摸不到」。
+// 钳的仍然是猫本体，口径与 applyPetSize / restoreWindowOrigin 完全一致。
+function keepCatOnScreen() {
+  for (const st of petState.values()) {
+    const win = st && st.win;
+    if (!win || win.isDestroyed()) continue;
+    try {
+      const b = win.getBounds();
+      const inset = (b.width - PET_BODY_W) / 2;
+      const catX = b.x + inset;
+      const wa = screen.getDisplayNearestPoint({ x: Math.round(catX), y: b.y }).workArea;
+      const x = clampCatOrigin(wa, catX, PET_BODY_W, inset);
+      const y = Math.min(Math.max(b.y, wa.y), wa.y + wa.height - b.height);
+      if (x === b.x && y === b.y) continue;
+      win.setBounds({ x, y, width: b.width, height: b.height });
+    } catch {}
+  }
+}
+
 // ── tray ──────────────────────────────────────────────────────────────────────
 function buildTray() {
   let img;
@@ -1707,6 +1795,11 @@ if (!gotTheLock) {
     registerIpc();
     bootBackend();
     createPetWindows();
+    // 屏幕拓扑变化后把猫拉回可见区（见 keepCatOnScreen）。三个事件都要：换分辨率
+    // 发 metrics-changed，拔显示器发 removed，插上发 added（新屏可能改变工作区原点）。
+    for (const event of ['display-metrics-changed', 'display-removed', 'display-added']) {
+      try { screen.on(event, keepCatOnScreen); } catch {}
+    }
     try { buildTray(); } catch {}
     initUpdateService();
   });

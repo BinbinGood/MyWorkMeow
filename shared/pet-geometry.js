@@ -21,29 +21,31 @@
   // threshold 只服务竖直方向，语义是「猫本体上方还够不够放气泡」。调用方传的是
   // 实测值（约 216px），量纲对得上。
   //
-  // 横向**不用** threshold —— 这是 2026-09-16 那次回归的根：横向曾与竖直共用它，
-  // 于是「距屏幕左/右缘 200 多像素」就算贴边，回中还要 2× ≈ 436px 的双侧余量，
-  // 1440 宽的屏幕上猫待在右下角时永远处于贴边态，胶囊被甩到猫侧面。
-  // 现在横向问的是**真贴边了吗**：猫本体离工作区左/右缘 ≤ edgeGap（默认 3px），
-  // 或者透明窗口已被 applyPetSize 钳在工作区缘、而猫还困在窗口里面（inset > 18px）。
-  // 后者是必须的：窗口 320 宽而猫只有 120 宽，左右各约 100px 透明留白，用户把猫
-  // 拖到屏幕边时先撞边的是窗口，可见的猫还在里面 100px 处。
+  // 横向**没有贴边态**（2026-09-17 起）。之前有，而且是三个 bug 的来源：
+  // 那时主进程 applyPetSize 钳的是**透明窗口**，窗口 520 宽而猫只有 120 宽，
+  // 左右各 200px 留白，所以猫想待在离屏幕缘 200px 以内时窗口原点会被钳掉，猫被
+  // 推走 —— 屏幕左右各一条 200px 的「环带」。横向贴边（把整列 align-items 甩到
+  // 窗口缘、让猫的窗内偏移变成 0）正是为绕开那个钳制发明的变通，不是功能。
+  // 现在钳的对象换成了猫本体（main.js clampCatOrigin），窗口原点允许悬出屏幕，
+  // 猫在工作区内的**每一个**像素都直接可达，于是：
+  //   · 「真贴边」由钳猫自然做到，不需要任何对齐切换；
+  //   · 环带消失（E3/E4）；
+  //   · 拖动中与落位后的窗内偏移恒定，没有 class 翻转、没有中间帧（E1）。
+  // 所以这里横向恒返回 'center'，edgeGap / inferHorizontalFrameClamp 两个入参已退役
+  // （留着只为不炸老调用方，值被忽略）。竖直的 threshold / inferVerticalFrameClamp
+  // **仍然在用** —— 贴顶时气泡要往下让位，那是真实需求。
   //
-  // 胶囊比猫宽，所以「猫贴死边」和「胶囊完整可读且严格居中」不可能同时成立。
-  // 这里只管猫的贴边；胶囊的取舍交给下面的 capsuleShift（默认居中，只在会出屏时
-  // 往内挪刚好够用的那点距离），两件事解耦。旧代码用同一个 align-items 同时干这
-  // 两件事，才有了「贴边就整列甩过去」的观感。
+  // 胶囊比猫宽，居中在猫正下方时可能探出工作区。那件事交给下面的 capsuleShift
+  // （按需最小位移：默认严格居中，只在会出屏时往内挪刚好够用的距离），与贴边无关。
   //
   // 不收 current：方向每次都由当前几何重新判定。"below" 只是贴顶时的临时让位，
-  // 不能作为粘性历史状态；横向同理，留着这个参数只会让调用方以为历史方向有投票权。
+  // 不能作为粘性历史状态。
   function chooseRestingLayout({
     workArea,
     windowRect,
     petRect,
     threshold = 168,
-    edgeGap = 3,
     inferVerticalFrameClamp = true,
-    inferHorizontalFrameClamp = true,
   }) {
     const wa = normalizeRect(workArea);
     const wr = normalizeRect(windowRect);
@@ -56,7 +58,6 @@
     };
     pet.right = pet.x + pet.width;
     pet.bottom = pet.y + pet.height;
-    const gap = Math.max(0, Number(edgeGap) || 0);
 
     // "below" is exclusively a top-edge accommodation. Do not keep it as a
     // sticky historical state after the pet has returned to the desktop: all
@@ -69,15 +70,7 @@
     if (pet.y - wa.y <= threshold
       || (inferVerticalFrameClamp && wr.y <= wa.y + 3 && pr.y > 18)) vertical = 'below';
 
-    // 横向：只有真贴边才算贴边。没有「回中要 2× 余量」的滞回 —— 判据两侧对称，
-    // 离开边缘的那一帧自然回到 center，不需要额外的宽容带。
-    let horizontal = 'center';
-    if (pet.x - wa.x <= gap
-      || (inferHorizontalFrameClamp && wr.x <= wa.x + 3 && pr.x > 18)) horizontal = 'left';
-    else if (wa.right - pet.right <= gap
-      || (inferHorizontalFrameClamp && wr.right >= wa.right - 3 && wr.width - pr.right > 18)) horizontal = 'right';
-
-    return { vertical, horizontal };
+    return { vertical, horizontal: 'center' };
   }
 
   // 胶囊（底部展示栏）需要的水平位移，单位 px，正数向右。
@@ -108,84 +101,12 @@
     return 0;
   }
 
-  // 胶囊（底部展示栏）的按需内缩——按「贴边对齐」修正版。
-  //
-  // 和 capsuleShift 的区别：capsuleShift 假设胶囊的 flex 位置本来就在猫正下方
-  // （居中模式成立），只算「会不会探出工作区」那点内缩。但贴边（edge-left/right）
-  // 时整列被 align-items 拉到窗口缘、猫又贴到胶囊那一侧，胶囊的 flex 中心已经不在
-  // 猫下方了（差 (胶囊宽-猫宽)/2）。这个函数先按 horizontal 把胶囊的 flex 中心
-  // 算出来，再让它「尽量居中在猫下方、但整条不出工作区」，返回需要补的位移。
-  //
-  // 纯算术、不碰 DOM：入参只有猫的屏幕位置、猫宽、胶囊宽、工作区和当前对齐，
-  // 所以拖动途中、窗口 resize 前后都能算对（不依赖胶囊此刻在哪个旧窗口里）。
-  function capsuleShiftFromEdge({ catScreenX, catWidth, capsuleWidth, workArea, horizontal = 'center', margin = 4 }) {
-    const wa = normalizeRect(workArea);
-    const width = Math.max(0, Number(capsuleWidth) || 0);
-    const catW = Math.max(0, Number(catWidth) || 0);
-    const catX = Number(catScreenX);
-    const catCenterX = catX + catW / 2;
-    if (!width || !Number.isFinite(catCenterX)) return 0;
-
-    // 胶囊 flex 中心（屏幕坐标）：居中=猫中心；贴右=胶囊右缘贴猫右缘（中心往左半宽）；
-    // 贴左=胶囊左缘贴猫左缘（中心往右半宽）。
-    let flexCenterX = catCenterX;
-    if (horizontal === 'right') flexCenterX = catX + catW - width / 2;
-    else if (horizontal === 'left') flexCenterX = catX + width / 2;
-
-    const pad = Math.max(0, Number(margin) || 0);
-    const half = width / 2;
-    const minCenter = wa.x + pad + half;
-    const maxCenter = wa.right - pad - half;
-    // 胶囊比整个工作区还宽：挪不出结果，宁可对称溢出也不单侧甩。
-    const desiredCenterX = (maxCenter < minCenter)
-      ? catCenterX
-      : Math.min(Math.max(catCenterX, minCenter), maxCenter);
-    return Math.round(desiredCenterX - flexCenterX);
-  }
-
-  // 弹窗路径的横向对齐：挑一个能让猫**停在当前这个屏幕像素上**的对齐方式。
-  //
-  // 问的不是「猫贴边了吗」（那是 chooseRestingLayout 的问题），而是「窗口要涨到
-  // popupWidth 这么宽，哪种对齐能让它既装进工作区、又不必挪动猫」。原因：猫的屏幕
-  // 位置 = 窗口原点 + 窗内偏移，而窗内偏移完全由对齐方式决定（left→0，center→
-  // (帧宽-猫宽)/2，right→帧宽-猫宽）。主进程 applyPetSize 会把**窗口**钳进工作区，
-  // 所以只有当「猫位置 − 窗内偏移」这个窗口原点本来就在工作区内时，猫才不会被挪。
-  // 把这个条件解成窗内偏移的可行区间 [lo, hi]，再按偏好挑第一个落在区间里的。
-  //
-  // 偏好顺序 center → left → right 不是随手排的：center 必须在最前，否则屏幕中间
-  // 的猫会在 center/left 之间摆动（实测猫x=200/201 处来回跳）。
-  //
-  // 不借道 chooseRestingLayout。2026-09-16 之前那版借了（只为拿 horizontal），
-  // 于是「猫是否贴边」和「弹窗放得下吗」两个不同的问题共用一个答案，实测两种改法
-  // 都会漏：直接沿用静息方向时屏幕中间的猫净漂 ±200px。
-  function popupHorizontal({ workArea, popupWidth, petScreenX, petWidth }) {
-    const wa = normalizeRect(workArea);
-    const width = Number(popupWidth) || 0;
-    const petW = Number(petWidth) || 0;
-    const petX = Number(petScreenX);
-    // 拿不到弹窗宽度（早期调用/测试）时不做判断，保持居中。
-    if (!(width > 0) || !Number.isFinite(petX)) return 'center';
-    const lo = petX - (wa.right - width);
-    const hi = petX - wa.x;
-    // 弹窗比工作区还宽：怎么放都会被钳，对称溢出。
-    if (lo > hi) return 'center';
-    const offsets = {
-      center: (width - petW) / 2,
-      left: 0,
-      right: width - petW,
-    };
-    for (const key of ['center', 'left', 'right']) {
-      if (offsets[key] >= lo && offsets[key] <= hi) return key;
-    }
-    return 'center';
-  }
 
   function choosePopupLayout({
     workArea,
     windowRect,
     petRect,
     popupHeight = 140,
-    popupWidth = 0,
   }) {
     const wa = normalizeRect(workArea);
     const wr = normalizeRect(windowRect);
@@ -197,13 +118,10 @@
     // 单一规则：只有桌宠本体上方放不下完整卡片时才向下翻；除此之外
     // 一律向上。不要把下方剩余空间、历史方向或当前透明窗口高度掺进来。
     const vertical = above < need ? 'below' : 'above';
-    const horizontal = popupHorizontal({
-      workArea,
-      popupWidth,
-      petScreenX: wr.x + pr.x,
-      petWidth: pr.width,
-    });
-    return { vertical, horizontal };
+    // 横向恒居中：钳的是猫本体，窗口原点允许悬出屏幕，所以无论帧宽涨到多少，
+    // 猫都停在原地，不需要挑对齐方式。之前那个 popupHorizontal（解「哪种对齐能让
+    // 窗口装进工作区而不挪动猫」）只在钳窗口的前提下才有意义，已随之退役。
+    return { vertical, horizontal: 'center' };
   }
 
   function chooseDragVerticalLayout({
@@ -370,5 +288,5 @@
     return { direction: chosen.dir, points };
   }
 
-  return { chooseRestingLayout, choosePopupLayout, chooseDragVerticalLayout, capsuleShift, capsuleShiftFromEdge, radialLayout, cornerMenuLayout };
+  return { chooseRestingLayout, choosePopupLayout, chooseDragVerticalLayout, capsuleShift, radialLayout, cornerMenuLayout };
 });

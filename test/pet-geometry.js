@@ -61,87 +61,67 @@ assert.deepStrictEqual(
   'a tall popup clamped to the screen top must not masquerade as a pet edge drag',
 );
 
-// ── 横向贴边 ──────────────────────────────────────────────────────────────────
-// 2026-09-16 的回归：横向曾与竖直共用同一个 threshold，而调用方传的是竖直方向的
-// 实测值（216/218px）—— 于是「离屏幕左/右缘 200 多像素」就算贴边，回中还要 2×
-// ≈ 436px 的双侧余量，1440 宽的屏幕上猫待在右下角时永远处于贴边态。
-// 我第一版的修法是把横向整个删掉（恒 center），结果猫左右也不能贴边了：本体只有
-// 120 宽而窗口 320 宽，center 锚点下窗内偏移约 100px，主进程 applyPetSize 把窗口
-// 钳进工作区时正好把这 100px 吃掉，松手就弹回中间。
-// 所以横向判定必须回来，但问的是**真贴边了吗**（edgeGap，默认 3px），不是「离边
-// 缘两百来像素」。下面三条按「贴死 / 差一点 / 明显没贴」把边界钉住。
-for (const [name, windowRect, petRect, expected] of [
-  // 猫本体就在工作区左缘上
-  ['贴死左缘', { x: 0, y: 400, width: 320, height: 340 }, { x: 0, y: 200, width: 120, height: 140 }, 'left'],
-  // 窗口右缘吃满工作区，猫困在窗口里 100px（透明留白）—— inferHorizontalFrameClamp 的场景
-  ['贴死右缘', { x: 1120, y: 400, width: 320, height: 340 }, { x: 200, y: 200, width: 120, height: 140 }, 'right'],
-  // 这条才是真正堵住原 bug 的：离左缘 200px，旧代码（threshold 218）会判成 left
-  ['离左缘 200px', { x: 100, y: 400, width: 320, height: 340 }, { x: 100, y: 200, width: 120, height: 140 }, 'center'],
-  // 对称的右侧：猫右边缘离工作区右缘 200px
-  ['离右缘 200px', { x: 1020, y: 400, width: 320, height: 340 }, { x: 100, y: 200, width: 120, height: 140 }, 'center'],
+// ── 横向：没有贴边态了 ────────────────────────────────────────────────────────
+// 2026-09-17：横向贴边整套退役。它从来不是功能，是变通 —— 那时主进程 applyPetSize
+// 钳的是**透明窗口**，窗口 520 宽而猫只有 120 宽、左右各 200px 留白，猫想待在离屏幕
+// 缘 200px 以内时窗口原点会被钳掉、猫被推走（屏幕左右各一条 200px 的「环带」，即用户
+// 报的 E3/E4）。把整列 align-items 甩到窗口缘、让猫的窗内偏移变成 0，正是为了让反解
+// 出的原点刚好落在工作区缘上、绕开那次钳制。
+// 现在钳的对象是猫本体（main.js clampCatOrigin），窗口原点允许悬出屏幕，工作区内每
+// 个像素都直接可达：真贴边自然成立，也不再有对齐翻转造成的中间帧（E1）。
+// 所以横向恒 'center'，且**任何**几何输入都不能把它改掉 —— 这一组就是钉这件事。
+for (const [name, windowRect, petRect] of [
+  ['猫本体贴死左缘', { x: 0, y: 400, width: 320, height: 340 }, { x: 0, y: 200, width: 120, height: 140 }],
+  ['窗口贴右缘、猫困在留白里', { x: 1120, y: 400, width: 320, height: 340 }, { x: 200, y: 200, width: 120, height: 140 }],
+  ['离左缘 200px', { x: 100, y: 400, width: 320, height: 340 }, { x: 100, y: 200, width: 120, height: 140 }],
+  ['离右缘 200px', { x: 1020, y: 400, width: 320, height: 340 }, { x: 100, y: 200, width: 120, height: 140 }],
+  ['窗口悬出屏幕左侧（钳猫之后的合法状态）', { x: -200, y: 400, width: 520, height: 340 }, { x: 200, y: 200, width: 120, height: 140 }],
 ]) {
   assert.strictEqual(
     geometry.chooseRestingLayout({ workArea, windowRect, petRect, threshold: 218 }).horizontal,
-    expected,
-    `${name}：横向只认真贴边，不能借用竖直方向的阈值`,
+    'center',
+    `${name}：横向恒居中，不允许任何贴边态回来`,
   );
 }
+// 退役的两个入参就算被老调用方传进来，也不能重新激活横向分支。
+assert.strictEqual(
+  geometry.chooseRestingLayout({
+    workArea,
+    windowRect: { x: 0, y: 400, width: 320, height: 340 },
+    petRect: { x: 100, y: 200, width: 120, height: 140 },
+    threshold: 218,
+    edgeGap: 3,
+    inferHorizontalFrameClamp: true,
+  }).horizontal,
+  'center',
+  '退役入参（edgeGap / inferHorizontalFrameClamp）不能重新激活横向贴边',
+);
 
-// ── 弹窗的横向对齐 ────────────────────────────────────────────────────────────
-// 2026-09-16 的第三个回归：我曾让 choosePopupLayout 横向恒返回 'center'，注释里的
-// 理由（「卡片跟着贴边反而会把猫挪走」）正好说反了 —— 恒 center 才会把猫挪走。
-// 窗口要从 320 涨到 520，center 对齐下猫的窗内偏移变成 200；主进程 applyPetSize
-// 把窗口钳回工作区时正好吃掉这 200px。用户实测：「喵在靠边的位置，点击以后弹出来
-// 的气泡会自动把喵移动到靠中间，关了气泡以后又回到边缘」。
-//
-// 正确的判据不是「猫贴边了吗」，而是「哪种对齐能让 520 的窗口装进工作区、同时不必
-// 挪动猫」。下面按猫的**屏幕像素**钉住这件事。
+// ── 弹窗横向：也没有对齐可挑了 ────────────────────────────────────────────────
+// 旧的 popupHorizontal 解的是「哪种对齐能让 520 的窗口装进工作区、同时不必挪动猫」——
+// 那个问题只在**钳窗口**的前提下才存在。钳猫之后窗口原点允许悬出屏幕，帧宽从 320 涨到
+// 520 时猫一动不动，于是横向恒 'center'，popupWidth 入参退役。
 {
-  const popupW = 520;
   const petWidth = 120;
-  // 猫在屏幕上的位置 → 期望的对齐。左侧 200px 内只有 left 能让窗口不出屏；
-  // 右侧对称；中间 center 可行就必须选 center（否则会在两种对齐间摆动）。
-  for (const [petScreenX, expected, why] of [
-    [0, 'left', '贴死左缘：center 会让窗口原点落到 -200，必须靠左对齐'],
-    [199, 'left', '离左缘 199px：center 仍会把窗口顶出屏幕'],
-    [200, 'center', '离左缘刚好 200px：center 恰好可行，必须选 center'],
-    [660, 'center', '屏幕正中：center 可行'],
-    [1120, 'center', '猫右缘离工作区右缘刚好 200px：center 恰好可行'],
-    [1121, 'right', '再往右 1px：center 会把窗口顶出右边'],
-    [1320, 'right', '贴死右缘'],
-  ]) {
-    assert.strictEqual(
-      geometry.choosePopupLayout({
-        workArea,
-        windowRect: { x: petScreenX, y: 400, width: petWidth, height: 340 },
-        petRect: { x: 0, y: 200, width: petWidth, height: 120 },
-        popupHeight: 360,
-        popupWidth: popupW,
-      }).horizontal,
-      expected,
-      `猫在屏幕 x=${petScreenX}：${why}`,
-    );
-  }
-
-  // 选中的对齐必须真的让 520 窗口既装进工作区、又不挪猫 —— 这条比上面的逐点期望
-  // 更本质，逐 3px 全扫一遍。
+  // 逐 3px 全扫：任何猫位置、任何弹窗宽度下横向都必须是 center，一次都不许摆动
+  // （对齐摆动就是 E1 那种中间帧的来源）。
   for (let petScreenX = 0; petScreenX <= workArea.width - petWidth; petScreenX += 3) {
-    const h = geometry.choosePopupLayout({
-      workArea,
-      windowRect: { x: petScreenX, y: 400, width: petWidth, height: 340 },
-      petRect: { x: 0, y: 200, width: petWidth, height: 120 },
-      popupHeight: 360,
-      popupWidth: popupW,
-    }).horizontal;
-    const inset = h === 'left' ? 0 : h === 'right' ? popupW - petWidth : (popupW - petWidth) / 2;
-    const winX = petScreenX - inset;
-    assert(
-      winX >= workArea.x && winX + popupW <= workArea.x + workArea.width,
-      `猫在屏幕 x=${petScreenX} 选了 ${h}：520 的弹窗帧必须完整落在工作区内（窗口原点 ${winX}）`,
-    );
+    for (const popupWidth of [320, 520, 1600]) {
+      assert.strictEqual(
+        geometry.choosePopupLayout({
+          workArea,
+          windowRect: { x: petScreenX, y: 400, width: petWidth, height: 340 },
+          petRect: { x: 0, y: 200, width: petWidth, height: 120 },
+          popupHeight: 360,
+          popupWidth,
+        }).horizontal,
+        'center',
+        `猫在屏幕 x=${petScreenX}、弹窗宽 ${popupWidth}：弹窗横向恒居中`,
+      );
+    }
   }
 
-  // 没有宽度信息（早期调用、旧测试）时保持居中，不要瞎猜。
+  // 没有宽度信息（早期调用、旧测试）时同样居中。
   assert.strictEqual(
     geometry.choosePopupLayout({
       workArea,
@@ -152,61 +132,25 @@ for (const [name, windowRect, petRect, expected] of [
     'center',
     '拿不到 popupWidth 时横向保持居中',
   );
-
-  // 弹窗比整个工作区还宽：怎么放都会被钳，对称溢出而不是甩到一侧。
-  assert.strictEqual(
-    geometry.choosePopupLayout({
-      workArea,
-      windowRect: { x: 0, y: 400, width: 320, height: 340 },
-      petRect: { x: 0, y: 200, width: 120, height: 120 },
-      popupHeight: 360,
-      popupWidth: 1600,
-    }).horizontal,
-    'center',
-    '宽过工作区的弹窗对称溢出',
-  );
 }
 
-// 帧宽不能影响横向贴边判定。2026-09-16 的回归就死在这里：胶囊的 --chip-shift
-// （transform）撑大了 #compact-row.scrollWidth，measuredRestingWidth 把它当内容宽
-// 量了进去，帧宽从 320 被顶到 381 —— 一脚跨过当时 360 的 inferHorizontalFrameClamp
-// 上限，横向判定被关掉，猫被 applyPetSize 钳到离边缘 130px。用户实测：「出现调用
-// 工具的尺寸/思考中，图标自动往中间移动了一点，不靠边了」。
-// 而且额度徽标全开时胶囊本身就 480 宽（帧宽 504），根本不用泄漏也早就过 360 —— 那
-// 个上限在横向维度上从来就不成立。这组把「任何帧宽下都得认贴边」钉死。
-for (const frame of [320, 338, 360, 361, 381, 504, 688, 900]) {
-  // 窗口右缘/左缘吃满工作区，猫本体困在窗口里 100px 透明留白 —— 只有 infer 分支能救。
-  assert.strictEqual(
-    geometry.chooseRestingLayout({
-      workArea,
-      windowRect: { x: 0, y: 400, width: frame, height: 340 },
-      petRect: { x: 100, y: 200, width: 120, height: 120 },
-      threshold: 218,
-    }).horizontal,
-    'left',
-    `帧宽 ${frame}：窗口贴左缘、猫内缩 100px 必须仍判成 left`,
-  );
-  assert.strictEqual(
-    geometry.chooseRestingLayout({
-      workArea,
-      windowRect: { x: 1440 - frame, y: 400, width: frame, height: 340 },
-      petRect: { x: frame - 220, y: 200, width: 120, height: 120 },
-      threshold: 218,
-    }).horizontal,
-    'right',
-    `帧宽 ${frame}：窗口贴右缘、猫内缩 100px 必须仍判成 right`,
-  );
-  // 真的在屏幕中间：任何帧宽下都不能误判成贴边。
-  assert.strictEqual(
-    geometry.chooseRestingLayout({
-      workArea,
-      windowRect: { x: 500, y: 400, width: frame, height: 340 },
-      petRect: { x: 100, y: 200, width: 120, height: 120 },
-      threshold: 218,
-    }).horizontal,
-    'center',
-    `帧宽 ${frame}：屏幕中间不能误判成贴边`,
-  );
+// 帧宽同样不能影响横向。2026-09-16 的回归死在这里：胶囊的 --chip-shift（transform）
+// 撑大了 #compact-row.scrollWidth，measuredRestingWidth 把它当内容宽量了进去，帧宽从
+// 320 被顶到 381 —— 一脚跨过当时 360 的横向判定上限，猫被 applyPetSize 钳到离边缘
+// 130px。用户实测：「出现调用工具的尺寸/思考中，图标自动往中间移动了一点，不靠边了」。
+// 横向退役之后这类「帧宽跨过某个阈值 → 猫被搬走」的耦合从原理上就没有了。这一组把它钉死。
+for (const frame of [320, 338, 360, 361, 381, 504, 520, 688, 900]) {
+  for (const [name, windowRect, petRect] of [
+    ['窗口贴左缘、猫内缩', { x: 0, y: 400, width: frame, height: 340 }, { x: 100, y: 200, width: 120, height: 120 }],
+    ['窗口贴右缘、猫内缩', { x: 1440 - frame, y: 400, width: frame, height: 340 }, { x: Math.max(0, frame - 220), y: 200, width: 120, height: 120 }],
+    ['屏幕中间', { x: 500, y: 400, width: frame, height: 340 }, { x: 100, y: 200, width: 120, height: 120 }],
+  ]) {
+    assert.strictEqual(
+      geometry.chooseRestingLayout({ workArea, windowRect, petRect, threshold: 218 }).horizontal,
+      'center',
+      `帧宽 ${frame}、${name}：帧宽不许影响横向`,
+    );
+  }
 }
 
 // ── 胶囊按需最小位移 ──────────────────────────────────────────────────────────
@@ -240,51 +184,13 @@ for (const frame of [320, 338, 360, 361, 381, 504, 688, 900]) {
     '没有胶囊时没有位移');
 }
 
-// ── 胶囊按需内缩（贴边对齐修正版）────────────────────────────────────────────
-// capsuleShift 假设胶囊本来就居中在猫下方（只在 center 对齐成立）。贴边时整列被
-// align-items 拉到窗口缘，胶囊的 flex 中心偏到了猫的一侧（差 (胶囊宽-猫宽)/2），
-// 再拿 capsuleShift 算位移就会把「没真贴边的猫」的胶囊也甩到边上（用户报的第二个
-// bug）。capsuleShiftFromEdge 先按对齐把 flex 中心算出来，再让它尽量回到猫下方、
-// 但整条不出工作区。猫本体 120 宽、胶囊 520 宽 → 半宽 260。
-{
-  const shift = (catScreenX, horizontal) =>
-    geometry.capsuleShiftFromEdge({ catScreenX, catWidth: 120, capsuleWidth: 520, workArea, horizontal });
-
-  // 居中对齐下退化成 capsuleShift：flex 中心=猫中心，贴死左缘时只右移刚好不出屏。
-  assert.strictEqual(shift(0, 'center'), 204, 'center 对齐贴死左缘：只右移刚好不出屏的距离');
-  assert.strictEqual(shift(1320, 'center'), -204, 'center 对齐贴死右缘：只左移刚好不出屏的距离');
-  assert.strictEqual(shift(660, 'center'), 0, 'center 对齐屏幕中央：本来就居中，不动');
-
-  // 核心回归：猫没真贴边、但弹窗贴右打开（horizontal=right）时，胶囊要回到猫正下方，
-  // 而不是被甩到边上。flex 中心在右对齐下 = 猫右缘 - 半宽 = 460，猫中心 660 → 补 +200。
-  assert.strictEqual(shift(600, 'right'), 200, 'right 对齐、猫离右缘还有 240px：胶囊回到猫中心');
-  assert.strictEqual(shift(600, 'left'), -200, 'left 对齐、猫离左缘还有 600px：胶囊回到猫中心');
-
-  // 真贴边时：胶囊和猫一起贴边，位移只把胶囊往内收刚好不出屏的 4px（margin），协调不甩。
-  assert.strictEqual(shift(1320, 'right'), -4, 'right 对齐真贴死右缘：只往内收 4px，协调贴边');
-  assert.strictEqual(shift(0, 'left'), 4, 'left 对齐真贴死左缘：只往内收 4px，协调贴边');
-
-  // 窄胶囊（比猫还窄）：居中对齐下任何位置都不动；贴边对齐下只做「回到猫正下方」
-  // 的小位移（(猫宽-胶囊宽)/2 = 10px），绝不会被甩到屏外。
-  const narrow = (catScreenX, horizontal) =>
-    geometry.capsuleShiftFromEdge({ catScreenX, catWidth: 120, capsuleWidth: 100, workArea, horizontal });
-  assert.strictEqual(narrow(0, 'center'), 0, '窄胶囊居中对齐贴死左缘也不动');
-  assert.strictEqual(narrow(1320, 'center'), 0, '窄胶囊居中对齐贴死右缘也不动');
-  assert.strictEqual(narrow(0, 'left'), 10, '窄胶囊贴左对齐只补 10px 回到猫正下方');
-  assert.strictEqual(narrow(1320, 'right'), -10, '窄胶囊贴右对齐只补 10px 回到猫正下方');
-
-  // 脏输入不能变成 NaN 位移。
-  assert.strictEqual(
-    geometry.capsuleShiftFromEdge({ catScreenX: NaN, catWidth: 120, capsuleWidth: 520, workArea, horizontal: 'right' }),
-    0,
-    '无效猫位置必须落回 0',
-  );
-  assert.strictEqual(
-    geometry.capsuleShiftFromEdge({ catScreenX: 600, catWidth: 120, capsuleWidth: 0, workArea, horizontal: 'right' }),
-    0,
-    '没有胶囊时没有位移',
-  );
-}
+// capsuleShiftFromEdge 已删（2026-09-17）：它解的是「贴边时整列被 align-items 拉到窗口
+// 缘、胶囊的 flex 中心偏到猫的一侧」这个问题，而横向贴边整套已退役 —— flex 中心恒在猫
+// 正下方，capsuleShift 就够了。断言它不再存在，防止连同横向贴边一起被复活。
+assert.strictEqual(typeof geometry.capsuleShiftFromEdge, 'undefined',
+  'capsuleShiftFromEdge 必须保持退役：横向贴边没了，flex 中心恒在猫正下方');
+assert.strictEqual(typeof geometry.popupHorizontal, 'undefined',
+  'popupHorizontal 必须保持退役：钳猫之后帧宽不影响猫的位置，没有对齐可挑');
 
 assert.strictEqual(
   geometry.chooseDragVerticalLayout({

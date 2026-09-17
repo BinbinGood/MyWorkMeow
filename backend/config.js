@@ -59,7 +59,13 @@ function sanitize(raw) {
   };
   if (!raw || typeof raw !== 'object') return out;
   if (raw.petPosition && Number.isFinite(raw.petPosition.x) && Number.isFinite(raw.petPosition.y)) {
+    // w = 存盘那一刻的窗口帧宽。猫在窗口里居中，窗内偏移 = (帧宽-猫宽)/2，所以
+    // 只存原点、不存帧宽的话，重建窗口（帧宽 320）时猫会相对存盘时（帧宽 520）
+    // 左移 100px，越开越偏。老配置没有 w，main.js 按 BASE_W 兜底。
     out.petPosition = { x: Math.round(raw.petPosition.x), y: Math.round(raw.petPosition.y) };
+    if (Number.isFinite(raw.petPosition.w) && raw.petPosition.w > 0) {
+      out.petPosition.w = Math.round(raw.petPosition.w);
+    }
   }
   if (Number.isInteger(raw.onboardingVersion) && raw.onboardingVersion >= 0) {
     out.onboardingVersion = raw.onboardingVersion;
