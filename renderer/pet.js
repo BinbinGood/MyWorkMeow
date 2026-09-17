@@ -1740,6 +1740,13 @@ let radialOpen = false;
 const IDLE_SLEEP_MS = 6 * 60 * 1000;
 const PURR_HOLD_MS = 1100;
 const PURR_DISPLAY_MS = 6200;
+// 点击容差（屏幕像素，曼哈顿距离）。拖动手势一旦越过 4px 阈值就置 moved，而且
+// 不可回退；但真人点击（触控板尤其）在按下到松开之间常有几像素漂移，于是整次
+// 点击被误判成拖动吞掉 —— 用户看到的就是「频繁点击喵，气泡有时不弹、喵毫无反应」。
+// 所以在松手时用**最终**位移复核一次：指针回到起点附近就仍按点击处理，过程中的
+// 窗口漂移交给 settleEdgeLayout 归位。取值必须 < 10，否则会破坏既有的
+// 「拖动超过 4px 不误打开速览」语义（那条用例的最终位移正好是 10px）。
+const CLICK_SLOP = 8;
 const PURR_DAY_STORAGE_KEY = 'workmeow.purr-payday-day';
 // 额度详情采用显式点击，而不是原生 title。离开触发区/详情卡后留一点缓冲，
 // 让鼠标可以从胶囊移动到卡片；卡片打开期间每 30 秒刷新一次倒计时文案。
@@ -2927,24 +2934,34 @@ function finishDrag(el, e, cancelled) {
   if (!g || g.el !== el) return;
   if (e && Number.isFinite(e.pointerId) && e.pointerId !== g.pid) return;
   const gesture = g;
-  const wasMove = gesture.moved;
   const wasPurr = gesture.purrTriggered;
+  // 拖动的「是否成立」用松手时的**最终**位移复核，而不是过程中那个不可回退的
+  // moved 标志：手抖/触控板漂移几像素不该把一次点击吞掉。cancelled 时一律按
+  // 拖动收尾（保持原有语义：打断就是打断）。判为点击时，过程中已发生的窗口
+  // 漂移 ≤ CLICK_SLOP 像素，随后由 settleEdgeLayout 归位。
+  const endSlop = e
+    ? Math.abs(pointerScreenX(e) - gesture.sx) + Math.abs(pointerScreenY(e) - gesture.sy)
+    : Infinity;
+  const dragged = gesture.moved && (cancelled || endSlop > CLICK_SLOP);
   clearTimeout(gesture.holdTimer);
-  if (wasMove && !cancelled) flushQueuedDragMove(gesture);
+  if (dragged && !cancelled) flushQueuedDragMove(gesture);
   else cancelQueuedDragMove(gesture);
   el.classList.remove('dragging');
   g = null;
   try { el.releasePointerCapture(gesture.pid); } catch {}
   try { window.pet.endWinDrag(gesture.id); } catch {}
-  if (wasMove) {
+  if (dragged) {
     if (peekOpen) closePeek();
     // END_WIN_DRAG is sent after the final position, so the queued size/anchor
     // settlement cannot revive an already released movement gesture.
     setTimeout(settleEdgeLayout, 0);
-  } else if (!wasPurr && !cancelled) {
+  } else {
+    // 点击救回：手势曾越线但松手时已回到起点附近，窗口可能被拖偏了几像素，
+    // 同样要 settle 回静息锚点。
+    if (gesture.moved) setTimeout(settleEdgeLayout, 0);
     // 左键短按 = 按当前优先级打开待处理卡/行动中心/工作速览；
     // 拖动仍由上面的 4px 阈值独立裁决，不会误触点击。
-    handleCatClick();
+    if (!wasPurr && !cancelled) handleCatClick();
   }
 }
 

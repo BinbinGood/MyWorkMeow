@@ -557,6 +557,52 @@ async function main() {
       assert.strictEqual(cancelledWorld.calls.filter(([name]) => name === 'setWinPos').length, 0);
       assert.strictEqual(cancelledWorld.calls.filter(([name]) => name === 'endWinDrag').length, 1);
     });
+
+    // 2026-09-17：点击容差。手势一旦越过 4px 阈值就把 moved 置位且不可回退，但真人
+    // 点击（触控板尤其）在按下→松开之间常有几像素漂移，于是整次点击被当成拖动吞掉
+    // ——用户看到的就是「频繁点击喵，气泡有时不弹、喵毫无反应」。松手时用**最终**
+    // 位移复核，指针回到起点附近就仍按点击处理。
+    const slipWorld = world();
+    slipWorld.elements('peek').classList.add('hidden');
+    slipWorld.handlers.stats(working);
+    slipWorld.window.screenX = 100;
+    slipWorld.window.screenY = 100;
+    const slipCat = slipWorld.elements('cat');
+    slipCat.dispatch('pointerdown', { button: 0, pointerId: 9, screenX: 110, screenY: 110, clientX: 10, clientY: 10 });
+    slipCat.dispatch('pointermove', { button: 0, pointerId: 9, screenX: 116, screenY: 110, clientX: 16, clientY: 10 });
+    slipCat.dispatch('pointerup', { button: 0, pointerId: 9, screenX: 116, screenY: 110, clientX: 16, clientY: 10 });
+    check('按下时漂移 6px 的短按仍算点击（手抖不该吞掉点击）', () => {
+      assert(!slipWorld.elements('peek').classList.contains('hidden'),
+        '6px 漂移在点击容差内，必须按点击处理并打开速览');
+    });
+
+    const wobbleWorld = world();
+    wobbleWorld.elements('peek').classList.add('hidden');
+    wobbleWorld.handlers.stats(working);
+    wobbleWorld.window.screenX = 100;
+    wobbleWorld.window.screenY = 100;
+    const wobbleCat = wobbleWorld.elements('cat');
+    wobbleCat.dispatch('pointerdown', { button: 0, pointerId: 10, screenX: 110, screenY: 110, clientX: 10, clientY: 10 });
+    wobbleCat.dispatch('pointermove', { button: 0, pointerId: 10, screenX: 120, screenY: 110, clientX: 20, clientY: 10 });
+    wobbleCat.dispatch('pointermove', { button: 0, pointerId: 10, screenX: 110, screenY: 110, clientX: 10, clientY: 10 });
+    wobbleCat.dispatch('pointerup', { button: 0, pointerId: 10, screenX: 110, screenY: 110, clientX: 10, clientY: 10 });
+    check('抖出去又回到起点的短按仍算点击', () => {
+      assert(!wobbleWorld.elements('peek').classList.contains('hidden'),
+        '最终位移为 0，应按点击处理');
+    });
+
+    const farWorld = world();
+    farWorld.elements('peek').classList.add('hidden');
+    farWorld.handlers.stats(working);
+    farWorld.window.screenX = 100;
+    farWorld.window.screenY = 100;
+    const farCat = farWorld.elements('cat');
+    farCat.dispatch('pointerdown', { button: 0, pointerId: 11, screenX: 110, screenY: 110, clientX: 10, clientY: 10 });
+    farCat.dispatch('pointermove', { button: 0, pointerId: 11, screenX: 130, screenY: 110, clientX: 30, clientY: 10 });
+    farCat.dispatch('pointerup', { button: 0, pointerId: 11, screenX: 130, screenY: 110, clientX: 30, clientY: 10 });
+    check('松手时仍离起点 20px 的拖动不算点击（点击容差不该吃掉拖动）', () => {
+      assert(farWorld.elements('peek').classList.contains('hidden'));
+    });
   }
 
   console.log('[R12] 素材可达性与静态兜底');
