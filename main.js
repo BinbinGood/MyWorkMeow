@@ -1424,13 +1424,26 @@ function keepCatOnScreen() {
 }
 
 // ── tray ──────────────────────────────────────────────────────────────────────
+// 菜单栏图标的目标逻辑尺寸（pt）。macOS 的 Wi-Fi / 电量那类自带图标，墨迹只有
+// 12~14pt —— 上下留白才是「像不像系统图标」的关键。这里原先写的是 32pt 的框，
+// 而 salary-cat-tray.png 的猫本体占了画布 92%，等效 29.5pt：比菜单栏本身还高
+// （实测刘海机型 33pt、非刘海 24pt），于是顶满上下、还连带拖出一块底色方块。
+// 18pt 的框 ⇒ 猫本体约 16.6pt，落在系统图标与第三方图标之间。
+// 想再调只改这一个数：16 ≈ 与系统图标齐平，20 ≈ 仍明显偏大。
+const TRAY_ICON_PT = 18;
+// 位图按 2x 出、再声明 scaleFactor=2：逻辑尺寸仍是 TRAY_ICON_PT，位图是 2 倍像素，
+// Retina 下才不糊。直接把 256px 原图交给 Tray 的话，AppKit 会按 256pt 摆进来。
+const TRAY_ICON_SCALE = 2;
+
 function buildTray() {
   let img;
   try {
     // 托盘始终使用月薪喵头像；额度只在右键菜单里展示。
-    img = nativeImage.createFromPath(path.join(__dirname, 'assets', 'salary-cat-tray.png'));
-    if (img && !img.isEmpty()) {
-      img = img.resize({ width: 32, height: 32 });
+    const src = nativeImage.createFromPath(path.join(__dirname, 'assets', 'salary-cat-tray.png'));
+    if (src && !src.isEmpty()) {
+      const px = TRAY_ICON_PT * TRAY_ICON_SCALE;
+      const scaled = src.resize({ width: px, height: px, quality: 'best' });
+      img = nativeImage.createFromBuffer(scaled.toPNG(), { scaleFactor: TRAY_ICON_SCALE });
     }
   } catch {}
   tray = new Tray(img || nativeImage.createEmpty());

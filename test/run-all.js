@@ -51,6 +51,7 @@ const TESTS = Object.freeze([
   'chip-display.js',
   'popup-style.js',
   'branding.js',
+  'tray-icon.js',
   'opencode-plugin.js',
   'notify-policy.js',
 ]);
