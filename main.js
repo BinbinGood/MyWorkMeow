@@ -175,34 +175,42 @@ function targetSize(st) {
   return { w: BASE_W, h: BASE_H };
 }
 
+// 锚点只承载**竖直**信息了（见 anchoredPetOriginY / applyPetSize 的横向分支）：
+// screenX / xOffset / xAlign 三个横向字段渲染端还在发，但主进程一个都不读，所以
+// 也不校验 —— 校验一个没人消费的字段只会让人以为它还在参与决策。
+// width 仍然要校验：横向钳制的对象是「可见锚点那一块」，需要它的宽度。
 function validPetAnchor(anchor) {
   if (!anchor || typeof anchor !== 'object') return null;
-  const numeric = ['screenX', 'screenY', 'width', 'height', 'xOffset', 'yOffset'];
+  const numeric = ['screenY', 'width', 'height', 'yOffset'];
   if (!numeric.every((key) => Number.isFinite(anchor[key]))) return null;
   if (!(anchor.width > 0) || !(anchor.height > 0)) return null;
-  if (!['left', 'center', 'right'].includes(anchor.xAlign)) return null;
   if (!['top', 'bottom'].includes(anchor.yAlign)) return null;
   return anchor;
 }
 
-// 从「桌宠本体在屏幕上的位置」反解窗口原点。
-// xAlign 白名单挡住脏值。渲染端现在恒发 'center'（横向贴边那套 align-items 机制
-// 已于 2026-09-17 退役），left/right 两条分支留着只为兼容旧渲染端/旧锚点，
-// 不再是任何功能的实现手段 —— 「左右能真贴边」现在由下面 applyPetSize 的
-// **钳猫**做到：窗口原点允许落到工作区外，钳的是猫本体那 120px。
-function anchoredPetOrigin(anchor, width, height) {
-  let localX;
-  if (anchor.xAlign === 'left') localX = anchor.xOffset;
-  else if (anchor.xAlign === 'right') localX = width - anchor.xOffset - anchor.width;
-  else localX = width / 2 + anchor.xOffset - anchor.width / 2;
-
+// 从「桌宠本体在屏幕上的**竖直**位置」反解窗口原点的 y。
+//
+// 2026-09-17（F3）：横向反解整个删掉了，因为它是「关气泡猫概率性左移」的病根。
+// 原来横向也走这套「渲染端量屏幕位置 → 主进程反解原点」，把 anchoredLayoutPayload
+// 的 xOffset（= rect.left + rect.width/2 - window.innerWidth/2）代进来之后，
+// rect.left 和 rect.width **整项抵消**，净结果只剩两个量：
+//     新原点 = round(window.screenX - (目标帧宽 - window.innerWidth) / 2)
+// 而这两个量是 Chromium 在 setBounds 之后**分帧**刷新的。两个都新 → 对；两个都旧
+// → 也对（误差抵消）；**一新一旧 → 错，错量恰好是半个帧宽差**。真机 Electron 探针
+// 抓到过那一帧：screenX 还是旧的 500、innerWidth 已是新的 520，算出的猫偏左 84px，
+// 而 84 = (688-520)/2。窗口只有一帧宽，所以是「有概率」。
+// 按真实节拍（关气泡只有一拍 rAF）跑 8 轮开关的净漂移：静息帧 520 → 0（帧宽不变，
+// 那对坐标压根进不了公式）；522 → 5；560 → 80（漂一次停一次，正是用户说的「不是
+// 每次都有」）；688 → 84。**只要静息帧宽 ≠ 520 就会漂**，而静息帧宽是内容内蕴的
+// （.chip / .sessions 都是 width:max-content，随会话名和徽标线性增长，没有上限）。
+// 竖直方向留着这套是安全的：帧高在开关气泡时本来就要变，猫在列里的位置只有渲染端
+// 知道（上/下锚 + 胶囊高度），主进程推不出来。而竖直是钳窗口的，一新一旧的组合只会
+// 让猫在自己那一列里偏一点、不会累积成单向漂移。E2 会把帧高也固定下来。
+function anchoredPetOriginY(anchor, height) {
   const localY = anchor.yAlign === 'top'
     ? anchor.yOffset
     : height - anchor.yOffset - anchor.height;
-  return {
-    x: Math.round(anchor.screenX - localX),
-    y: Math.round(anchor.screenY - localY),
-  };
+  return Math.round(anchor.screenY - localY);
 }
 
 // 把**猫本体**钳进工作区，返回窗口原点。
@@ -224,8 +232,8 @@ function anchoredPetOrigin(anchor, width, height) {
 //
 // 竖直方向**不用**这个函数，继续钳窗口：高弹窗绝不能把猫和底部按钮顶出屏幕。
 //
-// inset 由调用方给（有锚点时从 anchoredPetOrigin 精确反解，三条 xAlign 分支都对，
-// 不预设居中），所以这个函数对旧锚点也成立。
+// inset 由调用方给。现在它恒等于 (帧宽 - 锚点宽)/2（#stage 恒 align-items:center），
+// 是纯算术，不掺任何渲染端读回来的坐标 —— 那是 F3 的教训，见 anchoredPetOriginY。
 function clampCatOrigin(wa, catScreenX, catWidth, inset) {
   const catW = catWidth > 0 ? catWidth : PET_BODY_W;
   const maxCatX = Math.max(wa.x, wa.x + wa.width - catW);
@@ -251,26 +259,27 @@ function applyPetSize(st, requestedAnchor) {
     const width = Math.min(w, wa.width);
     h = Math.min(h, wa.height);
     const anchor = validPetAnchor(requestedAnchor);
-    const anchored = anchor ? anchoredPetOrigin(anchor, width, h) : null;
     const bottom = b.y + b.height;
-    // 猫此刻在屏幕上的位置与它在目标帧里的窗内偏移。
-    // 有锚点：screenX 是渲染端量出来的权威值，inset 从 anchoredPetOrigin 反解
-    // （screenX - 原点 = localX，三条 xAlign 分支都精确）。
-    // 无锚点（早期调用 / 异常路径）：按「当前窗口居中」推，这也是 CSS 的默认对齐。
-    const catW = anchor ? anchor.width : PET_BODY_W;
-    const catScreenX = anchor ? anchor.screenX : b.x + (b.width - PET_BODY_W) / 2;
-    const inset = anchored ? anchor.screenX - anchored.x : (width - PET_BODY_W) / 2;
+    // 横向：全部由主进程自己算，**一个渲染端读回来的坐标都不用**。
+    // #stage 恒 align-items:center，所以可见锚点永远居中在视口里，它此刻的屏幕位置
+    // 就是 b.x + (b.width - 锚点宽)/2，而它在目标帧里的窗内偏移是 (帧宽 - 锚点宽)/2。
+    // b 来自 win.getBounds()，是主进程手上的权威值、不会过期。两式相减锚点宽整项抵消：
+    //     新原点 = round(b.x + (b.width - 帧宽) / 2)
+    // 也就是「帧宽变多少，原点就往回让一半」，猫钉在原地。锚点宽只剩下界定钳制范围
+    // 这一个作用（隐藏猫身时锚点是胶囊、不是那 120px，所以还是要读 anchor.width）。
+    const catW = anchor && anchor.width > 0 ? anchor.width : PET_BODY_W;
+    const catScreenX = b.x + (b.width - catW) / 2;
+    const inset = (width - catW) / 2;
     const x = clampCatOrigin(wa, catScreenX, catW, inset);
-    let y = anchored ? anchored.y : Math.round(bottom - h);
+    let y = anchor ? anchoredPetOriginY(anchor, h) : Math.round(bottom - h);
     y = Math.min(Math.max(y, wa.y), wa.y + wa.height - h);
     if (same(x, y, width, h)) return;
     win.setBounds({ x, y, width, height: h });
   } catch {
     const anchor = validPetAnchor(requestedAnchor);
-    const anchored = anchor ? anchoredPetOrigin(anchor, w, h) : null;
     const bottom = b.y + b.height;
-    const x = anchored ? anchored.x : b.x;
-    const y = anchored ? anchored.y : Math.round(bottom - h);
+    const x = Math.round(b.x + (b.width - w) / 2);
+    const y = anchor ? anchoredPetOriginY(anchor, h) : Math.round(bottom - h);
     if (same(x, y, w, h)) return;
     win.setBounds({ x, y, width: w, height: h });
   }

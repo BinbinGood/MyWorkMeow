@@ -41,38 +41,50 @@ const FRAME_H = 340;    // BASE_H
 // 允许悬出屏幕的最大量。
 const catInset = (frameW) => (frameW - CAT) / 2;
 
-// renderer/pet.js anchoredLayoutPayload 的 xOffset —— 注意 viewportW 是**当前**帧宽
-// （窗口还没 resize），而 main.js 反解时用的是**目标**帧宽。这个不对称是真实存在的，
-// 模型必须照抄，不能图省事两边都用目标帧宽。
+// renderer/pet.js anchoredLayoutPayload 的 xOffset。
+// 注意 viewportW 是**当前**帧宽（窗口还没 resize），而反解时用的是**目标**帧宽 ——
+// 这个不对称是真实存在的，也正是 F3 的病灶所在（见下面 legacyOriginX）。
+// 主进程 2026-09-17 之后不再消费这个值，但渲染端还在发（applyCapsuleShift 要用），
+// 所以模型留着它，用来证明「新算法不再依赖它」。
 function anchorXOffset(frameNow) {
   return catInset(frameNow) + CAT / 2 - frameNow / 2;
 }
 
-// main.js anchoredPetOrigin 的 localX（center 分支；left/right 两条留着只为兼容
-// 旧锚点，渲染端恒发 center，所以模型只走这一条）。
-function anchorLocalX(frameTarget, xOffset) {
-  return frameTarget / 2 + xOffset - CAT / 2;
+// F3 之前主进程的横向反解（已删）。把 anchoredLayoutPayload 的 screenX / xOffset
+// 代进 anchoredPetOrigin 的 center 分支之后，rect.left 与 rect.width **整项抵消**，
+// 净结果只剩两个渲染端读数：
+//     原点 = round(window.screenX - (目标帧宽 - window.innerWidth) / 2)
+// 这两个量由 Chromium 在 setBounds 之后**分帧**刷新，一新一旧就错半个帧宽差。
+// 留在模型里当反向对照（见下面 F3 那一组）：它必须还会漂，否则说明模型失真了。
+function legacyOriginX(screenXRead, innerWidthRead, frameTarget) {
+  const rectLeft = catInset(innerWidthRead);              // #stage 恒居中
+  const screenX = screenXRead + rectLeft;                 // payload 的 anchor.screenX
+  const xOffset = anchorXOffset(innerWidthRead);
+  const localX = frameTarget / 2 + xOffset - CAT / 2;     // 旧 anchoredPetOrigin
+  return Math.round(screenX - localX);
 }
 
 // 一次 setPetSize：从（当前窗口原点、当前帧宽）走到（目标帧宽），返回主进程实际
 // 落定的窗口原点与猫的屏幕位置。
 //
-// 关键改动：钳的是**猫**。猫钳进 [wa.x, waRight - CAT]，再按 inset 反解原点 ——
-// 原点因此允许 < wa.x 或 > waRight - frameTarget，这正是环带消失的原因。
+// 2026-09-17（F3）：横向**完全**由主进程自己算，一个渲染端读数都不用。
+//   猫此刻的屏幕位置 = b.x + (b.width - 猫宽)/2   ← b 来自 win.getBounds()，权威、不过期
+//   目标帧里的窗内偏移 = (目标帧宽 - 猫宽)/2
+// 相减猫宽抵消 → 新原点 = round(b.x + (b.width - 目标帧宽)/2)。所以下面这个函数
+// **没有** screenX / innerWidth 入参，这本身就是修复的形状。
+// 钳的是**猫**：猫钳进 [wa.x, waRight - CAT]，再按 inset 反解原点 —— 原点因此允许
+// < wa.x 或 > waRight - frameTarget，这正是环带消失的原因。
 // 抄自 main.js clampCatOrigin + applyPetSize 的横向分支。
 function step(workArea, winX, frameNow, frameTarget) {
   const waRight = workArea.x + workArea.width;
-  const screenX = winX + catInset(frameNow);
-
-  const xOffset = anchorXOffset(frameNow);
-  const localX = anchorLocalX(frameTarget, xOffset);
-  const rawCatX = Math.round(screenX - localX) + catInset(frameTarget);
+  const catScreenX = winX + catInset(frameNow);
+  const inset = catInset(frameTarget);
 
   // clampCatOrigin：钳猫，再反解原点。
   const maxCatX = Math.max(workArea.x, waRight - CAT);
-  const catX = Math.min(Math.max(rawCatX, workArea.x), maxCatX);
-  const settled = Math.round(catX - catInset(frameTarget));
-  return { winX: settled, catX: settled + catInset(frameTarget) };
+  const catX = Math.min(Math.max(catScreenX, workArea.x), maxCatX);
+  const settled = Math.round(catX - inset);
+  return { winX: settled, catX: settled + inset };
 }
 
 // 落位到不动点，返回收敛后的状态与用掉的轮数。
@@ -460,13 +472,180 @@ function restoreCatX(saved, savedW, frameWidth, workArea) {
   }
 }
 
+// ── 回归 F3：渲染端读数分帧刷新 → 关气泡时猫概率性左移 ────────────────────────
+// 用户实测：「把猫放在离边缘还有一点空间的位置，点击气泡，关闭气泡。还是有概率往左
+// 移动。主屏幕、副屏幕都会出现。但不是每次都有。」
+//
+// 为什么上面所有断言都抓不到它：它们（包括 F2 那组链式漂移）都把「渲染端量到的坐标」
+// 当成和主进程同步的。真实链条里不是 —— window.screenX 和 window.innerWidth 是
+// Chromium 在 setBounds 之后**分帧**刷新的两个值，真机探针抓到过那一帧：screenX 还是
+// 旧的 500、innerWidth 已经是新的 520，算出的猫偏左 84px，而 84 = (688-520)/2。
+// 这个 suite 的 step() 以前是**同步**的，所以这个时相差在模型里根本不存在。
+//
+// 下面第一组是纯代数，把三种时相都摆出来；第二组链式跑，证明「新算法从形状上就不可能
+// 有这个问题」（step() 连 screenX / innerWidth 两个入参都没有）。
+{
+  const correctOrigin = (winX, frame, tW) => Math.round(winX + (frame - tW) / 2);
+
+  // 第一组：一致的一对读数（都新 / 都旧）都算得对 —— 这正是「不是每次都有」的原因；
+  // 只有一新一旧才错，错量恰好是半个帧宽差。
+  // 只用偶数帧宽：奇数帧宽的「上一拍原点」本身带 .5（那是 F2 的病，已在上面单独覆盖），
+  // 混进来会让这一组的等式不再精确，掩盖真正要证的东西。
+  let mixedLeak = 0;
+  let worstLeak = 0;
+  for (const R of RESTING_WIDTHS) {
+    // 开气泡 R→520 与关气泡 520→R 两个方向都走一遍。
+    for (const [frame, tW] of [[R, POPUP_W], [POPUP_W, R]]) {
+      const winTrue = 700;
+      const prevFrame = tW;                                 // 开关气泡就是这两个帧宽来回
+      const prevWin = winTrue + (frame - prevFrame) / 2;     // 同一只猫、上一拍的窗口原点
+      const want = correctOrigin(winTrue, frame, tW);
+
+      assert.strictEqual(legacyOriginX(winTrue, frame, tW), want,
+        `静息帧${R} ${frame}→${tW}：两个读数都新时旧算法本来是对的`);
+      assert.strictEqual(legacyOriginX(prevWin, prevFrame, tW), want,
+        `静息帧${R} ${frame}→${tW}：两个读数都旧时误差互相抵消，旧算法也是对的`
+        + '（这就是为什么用户说「不是每次都有」）');
+
+      for (const [name, sx, iw] of [
+        ['screenX 旧、innerWidth 新', prevWin, frame],
+        ['screenX 新、innerWidth 旧', winTrue, prevFrame],
+      ]) {
+        const err = legacyOriginX(sx, iw, tW) - want;
+        if (R === POPUP_W) {
+          assert.strictEqual(err, 0,
+            `静息帧 520：帧宽压根没变，${name} 也不该有误差（这就是为什么帧宽恰好 520 时永远不漂）`);
+          continue;
+        }
+        assert.strictEqual(Math.abs(err), Math.abs(frame - tW) / 2,
+          `静息帧${R} ${frame}→${tW} ${name}：旧算法的误差应当恰好是半个帧宽差`
+          + `${Math.abs(frame - tW) / 2}，实际 ${err}`);
+        mixedLeak++;
+        worstLeak = Math.max(worstLeak, Math.abs(err));
+        // 两种时相的符号相反（一个右偏一个左偏），所以屏幕上看到的净方向取决于哪一个
+        // 读数落后。真机实测是净左移（probe：静息帧 688 连开关 8 轮净 -84）。这里只钉
+        // 幅度，不钉方向 —— 钉方向就是把一次观测当成机制。
+      }
+    }
+  }
+  assert(mixedLeak > 20, `F3 的时相组合覆盖太少（只有 ${mixedLeak} 组）`);
+  assert.strictEqual(worstLeak, (900 - POPUP_W) / 2,
+    `最大误差应当是最宽静息帧的半个帧宽差 ${(900 - POPUP_W) / 2}，实际 ${worstLeak}`);
+
+  // 第二组：链式，逐拍看猫在屏幕上的位置。
+  //
+  // 这里**不能**断言「旧算法净漂移」—— 我第一版就是那么写的，结果 legacyDrift = 0。
+  // 原因：把落后一帧建模成「恒定落后一拍」是确定性的，于是误差每两轮自相抵消（真机
+  // probe 在静息帧 900 上量到的正是这个：890/1080/890/1080… 来回摆、净漂移 0）。真实
+  // 的病是**有概率**落后，所以净漂移取决于运气，不是机制。机制是「某一拍猫就是不在它
+  // 该在的地方」—— 用户看到的就是那一跳。所以这里比的是**逐拍偏差**。
+  function legacyBeats(workArea, restingW, catX0, rounds) {
+    const inset = catInset(restingW);
+    let win = Math.round(catX0 - inset);
+    const start = win + inset;
+    let frame = restingW;
+    let prevWin = win;                 // 落后一帧的 window.screenX
+    let worst = 0;
+    const waRight = workArea.x + workArea.width;
+    const maxCatX = Math.max(workArea.x, waRight - CAT);
+    const beat = (tW) => {
+      // 渲染端读到的是旧原点 + 新帧宽（probe 1 抓到的那一帧就是这个形状：
+      // screenX 还是 500、innerWidth 已经是 520）。
+      const raw = legacyOriginX(prevWin, frame, tW);
+      const catX = Math.min(Math.max(raw + catInset(tW), workArea.x), maxCatX);
+      worst = Math.max(worst, Math.abs(catX - start));
+      prevWin = win;
+      win = Math.round(catX - catInset(tW));
+      frame = tW;
+    };
+    for (let k = 0; k < rounds; k++) {
+      for (let i = 0; i < 3; i++) beat(POPUP_W);
+      beat(restingW);
+      beat(restingW);
+    }
+    return { start, worst, end: win + inset };
+  }
+
+  // 新算法的逐拍版本：同一个位置、同样的节拍，但 step() 没有 screenX / innerWidth
+  // 入参，所以「落后一帧」这件事在它眼里根本不存在 —— 逐拍偏差必须恒为 0。
+  function freshBeats(workArea, restingW, catX0, rounds) {
+    const inset = catInset(restingW);
+    let win = Math.round(catX0 - inset);
+    const start = win + inset;
+    let frame = restingW;
+    let worst = 0;
+    const beat = (tW) => {
+      const next = step(workArea, win, frame, tW);
+      worst = Math.max(worst, Math.abs(next.catX - start));
+      win = next.winX;
+      frame = tW;
+    };
+    for (let k = 0; k < rounds; k++) {
+      for (let i = 0; i < 3; i++) beat(POPUP_W);
+      beat(restingW);
+      beat(restingW);
+    }
+    return { start, worst, end: win + inset };
+  }
+
+  let legacyJumps = 0;
+  let newSafe = 0;
+  for (const [workArea, label] of SCREENS) {
+    const waRight = workArea.x + workArea.width;
+    for (const restingW of RESTING_WIDTHS) {
+      for (let catX = workArea.x + 250; catX <= waRight - CAT - 250; catX += 137) {
+        const legacy = legacyBeats(workArea, restingW, catX, DRIFT_ROUNDS);
+        if (restingW === POPUP_W) {
+          assert.strictEqual(legacy.worst, 0,
+            `${label} 猫x=${catX}：静息帧恰好 520 时帧宽压根不变，连旧算法都不会动猫 ——`
+            + '这就是为什么这个 bug 只在胶囊长到 520 以上时才出现');
+        } else {
+          assert.strictEqual(legacy.worst, Math.abs(restingW - POPUP_W) / 2,
+            `${label} 静息帧${restingW} 猫x=${catX}：旧算法的最大逐拍偏差应当是半个帧宽差`
+            + `${Math.abs(restingW - POPUP_W) / 2}，实际 ${legacy.worst}`);
+          legacyJumps++;
+        }
+
+        const fresh = freshBeats(workArea, restingW, catX, DRIFT_ROUNDS);
+        newSafe++;
+        assert.strictEqual(fresh.worst, 0,
+          `${label} 静息帧${restingW} 猫x=${catX}：新算法连开关 ${DRIFT_ROUNDS} 轮，`
+          + `猫最多偏了 ${fresh.worst}px —— 横向原点必须只由 win.getBounds() 推，`
+          + '一掺渲染端读数就会把 F3 放回来');
+        assert.strictEqual(fresh.end, fresh.start,
+          `${label} 静息帧${restingW} 猫x=${catX}：新算法 ${DRIFT_ROUNDS} 轮后净漂移 `
+          + `${fresh.end - fresh.start}px`);
+      }
+    }
+  }
+  assert(legacyJumps > 50,
+    `旧算法本该在「screenX 落后一帧」时把猫挪走（这是 F3 的病灶），实测只有 ${legacyJumps} 组 —— `
+    + '要么模型失真了，要么 legacyOriginX 已经不代表被删掉的那段代码，两种情况都得重看');
+  assert(newSafe > 50, `F3 对照扫描覆盖太少（只有 ${newSafe} 组）`);
+}
+
 // ── 模型忠实度 ───────────────────────────────────────────────────────────────
 // 上面每个公式都是从下面这些行抄来的。它们一旦改写，这个 suite 的结论就不再代表
 // 真实链条 —— 那时应该同步改模型，而不是让一个已经失真的模型继续绿着。
-assert(/localX = anchor\.xOffset;/.test(mainJs)
-  && /localX = width - anchor\.xOffset - anchor\.width;/.test(mainJs)
-  && /localX = width \/ 2 \+ anchor\.xOffset - anchor\.width \/ 2;/.test(mainJs),
-  'anchoredPetOrigin 的三条 localX 分支变了，本 suite 的反解模型需要同步');
+//
+// F3 的核心断言就是这几条**否定**式：横向原点只许由 win.getBounds() 推，一个渲染端
+// 读回来的横向坐标都不许掺。旧的 anchoredPetOrigin 三条 localX 分支必须保持删除。
+assert(/const catScreenX = b\.x \+ \(b\.width - catW\) \/ 2;/.test(mainJs)
+  && /const inset = \(width - catW\) \/ 2;/.test(mainJs),
+  'applyPetSize 的横向原点必须由 win.getBounds() 推出（猫宽整项抵消 → '
+  + '新原点 = round(b.x + (b.width - 帧宽)/2)），本 suite 的 step() 需要同步');
+assert(!/localX = anchor\.xOffset;/.test(mainJs)
+  && !/localX = width - anchor\.xOffset - anchor\.width;/.test(mainJs)
+  && !/localX = width \/ 2 \+ anchor\.xOffset - anchor\.width \/ 2;/.test(mainJs),
+  '横向反解（anchoredPetOrigin 的三条 localX 分支）不能回来：它净剩下 '
+  + 'round(window.screenX - (目标帧宽 - window.innerWidth)/2)，而这两个读数分帧刷新，'
+  + '一新一旧就把猫挪走半个帧宽差（F3）');
+assert(/function anchoredPetOriginY\(anchor, height\)/.test(mainJs)
+  && !/function anchoredPetOrigin\(/.test(mainJs),
+  '锚点反解必须只剩竖直一维（anchoredPetOriginY）');
+assert(!/anchor\.(?:screenX|xOffset|xAlign)[^\n]*[;)]/.test(
+  mainJs.split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n')),
+  '主进程不许再读 anchor 的任何横向字段（screenX / xOffset / xAlign）');
 // 横向钳制：钳猫，不钳窗口。旧的钳窗口那一行必须不在（它是环带的唯一成因）。
 assert(/function clampCatOrigin\(/.test(mainJs)
   && /const catX = Math\.min\(Math\.max\(catScreenX, wa\.x\), maxCatX\);/.test(mainJs)
