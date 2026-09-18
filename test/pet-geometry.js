@@ -269,8 +269,10 @@ for (const frame of [320, 338, 360, 361, 381, 504, 520, 688, 900]) {
   // 真机主靶：帧 520、猫贴死左缘。
   //   peek 320：帧内余量 (520-320)/2 = 100 < 原上限 104 → 位移被压到 100
   //   ask 340： 帧内余量 (520-340)/2 =  90 < 原上限 114 → 位移被压到  90
-  // 修前 probeEdge 靶 A 实测 popShift=104、peek L=204 R=524、clipRight=4，与「压之前是
-  // 104」逐位吻合；压到 100 之后 R=520，正好贴住帧缘不被裁。
+  // 这两个数都**实测过**，不是纯算术：
+  //   probeEdge 靶 A（peek）修前 popShift=104、L=204 R=524、clipRight=4；压到 100 后 R=520 贴住帧缘。
+  //   probeAsk A/B（ask）修前 popShift=114、L=204 R=544、clipRight=24；修后 90、L=180 R=520、clip 0。
+  //   右缘对称实测：修前 -114、L=-24 R=316、clipLeft=24；修后 -90、L=0 R=340、clip 0。
   assert.strictEqual(framed(60, 320, 520), 100, 'peek 在 520 帧里最多只能移动帧内余量 100');
   assert.strictEqual(framed(60, 340, 520), 90, 'ask/bubble 在 520 帧里最多只能移动帧内余量 90');
   assert.strictEqual(framed(1380, 340, 520), -90, '右缘对称');

@@ -110,8 +110,14 @@
   //   peek 320 在 520 帧里：余量 100 < 原上限 104 → 原来最多被帧裁 4px
   //   ask/bubble 340：      余量  90 < 原上限 114 → 原来最多被帧裁 24px
   // 被裁掉的恰好是位移**去向**那一侧，也就是**远离屏幕边缘**那一侧 —— 精确对上用户的
-  // 「不是靠近屏幕边缘不完整，而是另一边」。probeEdge 靶 A 真机与算术逐位吻合
-  // （catX=0 → popShift=104px、peek L=204 R=524、clipRight=4）。
+  // 「不是靠近屏幕边缘不完整，而是另一边」。
+  //
+  // 两个数都**真机实测过**，不是纯算术（probes/probeEdge.py 靶 A + probeAsk.py A/B）：
+  //   peek 320 修前 catX=0    → popShift=104px  L=204 R=524  clipRight=4
+  //   ask  340 修前 catX=0    → popShift=114px  L=204 R=544  clipRight=24   修后 90px / L=180 R=520 / 0
+  //   ask  340 修前 catX=1560 → popShift=-114px L=-24 R=316  clipLeft =24   修后 -90px / L=0 R=340 / 0
+  // A/B 的做法：在渲染端把 capsuleShift 包一层、剥掉 frameWidth 入参（等价修前），
+  // 同一轮、同一位置、同一个弹窗，只差这一个参数。
   //
   // 默认 Infinity = 不压，所以这是**按调用点选择加入**的：只有 applyPopupShift 传它
   // （弹窗态帧宽由 fitPopup 钉在 POPUP_W）。--chip-shift 那一路暂不传 —— 胶囊的帧宽是
@@ -122,6 +128,11 @@
   // 都饱和到**同一个**更小的上限，两者依然相等。
   // 代价是贴边时的 4px 屏幕留白在弹窗那一路必然丢掉（帧内余量本来就不含它）——
   // 帧宽 520 + 弹窗宽 340 + 猫可贴死屏幕缘，三者数学上不能同时满足。
+  // 340 宽的弹窗贴死缘时还差 20px：(340-120)/2 - (520-340)/2 = 110 - 90 = 20。
+  // 这 20px **实测是出屏，不是帧裁**（probeAsk.py：clipLeft=clipRight=0、offScreen=20，
+  // 猫x=0 时弹窗落在屏幕 -20..320）—— 弹窗在自己那个 520 帧里内容完整，只是探到屏幕外，
+  // 是任何窗口程序贴屏幕缘时的常规表现。所以**不动 POPUP_W**：抬到 568 才能归零，
+  // 要连带改 catInset 200→220 和一大票钉死的数，代价远大于「少探出 20px」。
   // ⚠️ 签名必须留在**一行**：test/popup-style.js 用 /function capsuleShift\([\s\S]*?\n  \}/
   // 截函数体，多行签名里那个 `\n  })` 会把非贪婪匹配提前截断，函数体 pin 就空转变绿。
   function capsuleShift({ petCenterX, capsuleWidth, workArea, margin = 4, petWidth = PET_BODY_W, frameWidth = Infinity }) {

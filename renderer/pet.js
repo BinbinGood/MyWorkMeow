@@ -694,10 +694,18 @@ function applyPopupShift(petScreenX, petWidth) {
     // 那一侧，正是用户说的「不是靠近屏幕边缘不完整，而是另一边」。
     //   peek 320：余量 100 < 旧上限 104 → 最多裁 4px
     //   ask/bubble 340：余量 90 < 旧上限 114 → 最多裁 24px
+    // 这两个数**真机实测过**（probes/probeEdge.py 靶 A、probes/probeAsk.py A/B），不是纯算术：
+    //   peek 修前 catX=0    → popShift=104px  L=204 R=524  clipRight=4
+    //   ask  修前 catX=0    → popShift=114px  L=204 R=544  clipRight=24  修后 90px  L=180 R=520  clip 0
+    //   ask  修前 catX=1560 → popShift=-114px L=-24 R=316  clipLeft =24  修后 -90px L=0   R=340  clip 0
+    // 猫在**左**缘裁**右**边、猫在**右**缘裁**左**边 —— 正是用户说的那一侧。
     // 所以必须传 frameWidth，让 capsuleShift 再压一层帧内余量。
     // 帧宽此刻恒是 POPUP_W：任一弹窗可见时 fitPopup 都会 setRequestedPetSize(POPUP_W, …)。
     // 代价：猫贴死屏幕缘时，弹窗那 4px 屏幕留白必然丢掉（帧内余量不含 margin）——
     // 帧宽 520 + 弹窗宽 340 + 猫可贴死屏幕缘，三者数学上不能同时满足。
+    // 340 宽的弹窗因此还会探出屏幕 20px，**实测是出屏、不是帧裁**（probeAsk.py：
+    // clipLeft=clipRight=0、offScreen=20，猫x=0 时弹窗落在屏幕 -20..320）——
+    // 帧内内容完整，所以**不动 POPUP_W**（抬到 568 才能归零，代价见 shared/pet-geometry.js）。
     let widest = 0;
     for (const el of [peekEl, askEl, bubble, thinkEl]) {
       if (!el || el.hidden || el.classList.contains('hidden')) continue;

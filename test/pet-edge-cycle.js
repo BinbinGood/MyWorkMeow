@@ -474,10 +474,13 @@ for (const [workArea, label] of SCREENS) {
       // peek 320：100-100 = 0（完美，一像素不亏）
       // ask/bubble 340：110-90 = 20（贴死缘时近侧 20px 出屏）
       // 这 20px 是**数学上关不掉**的：帧宽 520 + 弹窗宽 340 + 猫可贴死屏幕缘，三者
-      // 不能同时成立。要它归零得把 POPUP_W 提到 340+2*110 = 560 以上（含 4px 留白则
-      // 568）。**先别改** —— 改 POPUP_W 会连带动 catInset 200→220 和一大票钉死的数，
-      // 而出屏亏的是**近侧**（屏幕缘那一侧），那是任何窗口程序在屏幕缘的常规表现，
-      // 和用户报的「另一边不完整」不是一回事。要不要抬帧宽由 probe #10 实测决定。
+      // 不能同时成立。要它归零得把 POPUP_W 提到 340+2*110 = 560 以上（含 4px 留白则 568）。
+      // **决定：不改。** probe #10（probes/probeAsk.py）实测了这 20px 的归属：
+      //   ask @ 左缘 猫x=0    → L=180 R=520 clipLeft=clipRight=0，屏幕 -20..320，offScreenLeft=20
+      //   ask @ 右缘 猫x=1560 → L=0   R=340 clipLeft=clipRight=0，屏幕 1360..1700，offScreenRight=20
+      // 即：弹窗在自己那个 520 帧里**内容完整**，只是探到屏幕外 —— 任何窗口程序贴屏幕缘
+      // 时的常规表现，和用户报的「另一边不完整」不是一回事。抬 POPUP_W 要连带动
+      // catInset 200→220 和一大票钉死的数，代价远大于「少探出 20px」。
       assert(left >= workArea.x - offScreenBudget - 0.5 && left + popW <= waRight + offScreenBudget + 0.5,
         `${label} ${name}(${popW}宽) 猫x=${catX}：弹窗落在 ${left}..${left + popW}，`
         + `探出工作区 ${workArea.x}..${waRight} 且超过了 ${offScreenBudget}px 的容差`
@@ -489,8 +492,11 @@ for (const [workArea, label] of SCREENS) {
       //   peek 320：余量 100 < 上限 104 → 最多裁 4px
       //   ask/bubble 340：余量 90 < 上限 114 → 最多裁 24px
       // 裁掉的恰好是位移**去向**的那一侧，也就是**远离屏幕边缘**那一侧 —— 精确对上
-      // 用户的「不是靠近屏幕边缘不完整，而是另一边」。probeEdge 靶 A 真机实测
-      // （catX=0 → popShift=104px、peek L=204 R=524、clipRight=4）与算术逐位吻合。
+      // 用户的「不是靠近屏幕边缘不完整，而是另一边」。两个数都真机实测过：
+      //   probeEdge 靶 A（peek 320）修前 catX=0    → popShift=104px  L=204 R=524 clipRight=4
+      //   probeAsk  A/B（ask  340）修前 catX=0    → popShift=114px  L=204 R=544 clipRight=24
+      //   probeAsk  A/B（ask  340）修前 catX=1560 → popShift=-114px L=-24 R=316 clipLeft=24
+      //   三者修后 clipLeft=clipRight=0。
       // 修法：capsuleShift 收 frameWidth，再压一层帧内余量（见 shared/pet-geometry.js）。
       // ⚠️ 这一条是 H2 的判定性回归。上面那条工作区断言逐 1px 扫了 20000+ 个位置
       // 却抓不到 H2，就是因为它只看 left 的屏幕坐标、从不看帧内坐标。
