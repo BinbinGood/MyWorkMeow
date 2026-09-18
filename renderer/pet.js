@@ -684,8 +684,20 @@ function applyPopupShift(petScreenX, petWidth) {
     // 2026-09-17：capsuleShift 现在按 (弹窗宽 - 猫宽)/2 封顶，所以位移最多把弹窗
     // 挪到与猫齐缘。传 petWidth 是必须的 —— 不传就按默认 120 算，猫宽本来也恒是
     // 120，但显式传值才能保证隐藏猫身等特殊态下上限跟着实际锚点走。
-    // 已验（逐 1px 全扫）：封顶之后 320/340 宽的弹窗在猫位于工作区内的任何位置
-    // 都不会被裁 —— 猫贴死缘时需要的位移恰好等于上限。
+    //
+    // 2026-09-18（H2）：上一版这里写「已验（逐 1px 全扫）…任何位置都不会被裁」——
+    // **那是错的**，而且错在关键处：那次全扫只看弹窗的**屏幕**坐标，从没看过它在
+    // 自己那个 POPUP_W 宽的窗口帧里的坐标。真正在裁内容的是 renderer/pet.css:3-7 的
+    // html,body{overflow:hidden}，它裁的是帧。#stage 的 align-items:center 先把弹窗
+    // 居中在 520 帧里（每侧余量 (520-弹窗宽)/2），--pop-shift 再往一侧加位移，位移
+    // 一旦超过那点余量就被帧裁 —— 裁的是位移**去向**那一侧，也就是**远离屏幕边缘**
+    // 那一侧，正是用户说的「不是靠近屏幕边缘不完整，而是另一边」。
+    //   peek 320：余量 100 < 旧上限 104 → 最多裁 4px
+    //   ask/bubble 340：余量 90 < 旧上限 114 → 最多裁 24px
+    // 所以必须传 frameWidth，让 capsuleShift 再压一层帧内余量。
+    // 帧宽此刻恒是 POPUP_W：任一弹窗可见时 fitPopup 都会 setRequestedPetSize(POPUP_W, …)。
+    // 代价：猫贴死屏幕缘时，弹窗那 4px 屏幕留白必然丢掉（帧内余量不含 margin）——
+    // 帧宽 520 + 弹窗宽 340 + 猫可贴死屏幕缘，三者数学上不能同时满足。
     let widest = 0;
     for (const el of [peekEl, askEl, bubble, thinkEl]) {
       if (!el || el.hidden || el.classList.contains('hidden')) continue;
@@ -699,6 +711,7 @@ function applyPopupShift(petScreenX, petWidth) {
         capsuleWidth: widest,
         workArea: wa,
         petWidth: Number(petWidth),
+        frameWidth: POPUP_W,
       });
     }
   }

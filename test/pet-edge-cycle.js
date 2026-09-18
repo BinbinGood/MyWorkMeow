@@ -460,13 +460,44 @@ for (const [workArea, label] of SCREENS) {
         petCenterX: catX + CAT / 2,
         capsuleWidth: popW,
         workArea,
+        frameWidth: POPUP_W,
       });
       // align-items: center → 弹窗在帧内居中；再加 relative left 的位移。
-      const left = winX + (POPUP_W - popW) / 2 + shift;
+      const inFrame = (POPUP_W - popW) / 2 + shift;
+      const left = winX + inFrame;
       popupChecked++;
-      assert(left >= workArea.x - 0.5 && left + popW <= waRight + 0.5,
+      // ── 屏幕容差：两个封顶取小之后**必然**剩下的那点亏空 ──
+      // capsuleShift 想要的位移上限是 (弹窗宽-猫宽)/2（+margin，margin 只买留白不买
+      // 可见性，所以这里不算），而帧内每侧余量只有 (帧宽-弹窗宽)/2。取小之后，猫贴死
+      // 屏幕缘时弹窗最多还能亏这么多像素在屏幕外：
+      const offScreenBudget = Math.max(0, (popW - CAT) / 2 - (POPUP_W - popW) / 2);
+      // peek 320：100-100 = 0（完美，一像素不亏）
+      // ask/bubble 340：110-90 = 20（贴死缘时近侧 20px 出屏）
+      // 这 20px 是**数学上关不掉**的：帧宽 520 + 弹窗宽 340 + 猫可贴死屏幕缘，三者
+      // 不能同时成立。要它归零得把 POPUP_W 提到 340+2*110 = 560 以上（含 4px 留白则
+      // 568）。**先别改** —— 改 POPUP_W 会连带动 catInset 200→220 和一大票钉死的数，
+      // 而出屏亏的是**近侧**（屏幕缘那一侧），那是任何窗口程序在屏幕缘的常规表现，
+      // 和用户报的「另一边不完整」不是一回事。要不要抬帧宽由 probe #10 实测决定。
+      assert(left >= workArea.x - offScreenBudget - 0.5 && left + popW <= waRight + offScreenBudget + 0.5,
         `${label} ${name}(${popW}宽) 猫x=${catX}：弹窗落在 ${left}..${left + popW}，`
-        + `探出工作区 ${workArea.x}..${waRight}（--pop-shift 补偿失效）`);
+        + `探出工作区 ${workArea.x}..${waRight} 且超过了 ${offScreenBudget}px 的容差`
+        + `（--pop-shift 补偿失效）`);
+      // ── H2：还得留在**自己那个 520 宽的窗口帧**里 ──
+      // 上面那条只管屏幕，而真正在裁内容的是 renderer/pet.css:3-7 的
+      // html,body{overflow:hidden} —— 它裁的是帧，不是屏幕。修前两个封顶互不知情：
+      // capsuleShift 的上限是 (弹窗宽-猫宽)/2+margin，帧内每侧余量是 (520-弹窗宽)/2，
+      //   peek 320：余量 100 < 上限 104 → 最多裁 4px
+      //   ask/bubble 340：余量 90 < 上限 114 → 最多裁 24px
+      // 裁掉的恰好是位移**去向**的那一侧，也就是**远离屏幕边缘**那一侧 —— 精确对上
+      // 用户的「不是靠近屏幕边缘不完整，而是另一边」。probeEdge 靶 A 真机实测
+      // （catX=0 → popShift=104px、peek L=204 R=524、clipRight=4）与算术逐位吻合。
+      // 修法：capsuleShift 收 frameWidth，再压一层帧内余量（见 shared/pet-geometry.js）。
+      // ⚠️ 这一条是 H2 的判定性回归。上面那条工作区断言逐 1px 扫了 20000+ 个位置
+      // 却抓不到 H2，就是因为它只看 left 的屏幕坐标、从不看帧内坐标。
+      assert(inFrame >= -0.5 && inFrame + popW <= POPUP_W + 0.5,
+        `${label} ${name}(${popW}宽) 猫x=${catX}：弹窗在帧内落在 ${inFrame}..${inFrame + popW}，`
+        + `探出 0..${POPUP_W} 的窗口帧 → 被 html,body{overflow:hidden} 裁掉`
+        + `（--pop-shift=${shift} 超过了帧内余量 ${(POPUP_W - popW) / 2}）`);
     }
   }
 }

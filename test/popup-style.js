@@ -223,6 +223,30 @@ assert(/PetGeometry\.capsuleShift\(/.test(js) && /--chip-shift/.test(js),
     assert(/capsuleShift\(\{[\s\S]*?petWidth:/.test(src),
       `${caller} must forward petWidth so the cap tracks the real anchor width`);
   }
+
+  // ── 2026-09-18（H2）：第二层封顶「帧内余量」，按调用点选择加入 ──
+  // 用户实测：「喵在屏幕边缘的时候，气泡弹窗的消息不完整。不是靠近屏幕边缘不完整，
+  // 而是另一边。」上面那层封顶只保证「不出**屏幕**」，而真正在裁内容的是
+  // renderer/pet.css:3-7 的 html,body{overflow:hidden} —— 它裁的是**窗口帧**。
+  // #stage 的 align-items:center 先把弹窗居中在帧里（每侧余量 (帧宽-弹窗宽)/2），
+  // --pop-shift 再往一侧加位移，超出余量的部分被帧裁 —— 裁的正是位移**去向**那一侧，
+  // 也就是**远离屏幕边缘**那一侧，逐字对上用户的描述。
+  assert(/frame - width/.test(fn) && /frameWidth = Infinity/.test(fn),
+    'capsuleShift must also cap at the in-frame margin (frameWidth), defaulting to Infinity = no cap');
+  {
+    const pop = js.match(/function applyPopupShift\([\s\S]*?\n\}/)?.[0] || '';
+    assert(/capsuleShift\(\{[\s\S]*?frameWidth: POPUP_W/.test(pop),
+      'applyPopupShift must pass frameWidth: POPUP_W — otherwise the shift can exceed the in-frame '
+      + 'margin and html,body{overflow:hidden} clips the popup on the side AWAY from the screen edge (H2)');
+    // 反面：--chip-shift 那一路**不许**传。胶囊的帧宽不是常量 POPUP_W，而是
+    // restingFrameWidth() 的 max(POPUP_W, 内容宽+24)（520..900），而且压这层会改掉
+    // 「猫贴边时胶囊仍留 4px 屏幕留白」的现行观感。⚠️ 宽胶囊理论上有同款帧裁隐患，
+    // 但那得先量过真机再动 —— 顺手加上去等于静默改观感。
+    const chip = js.match(/function applyCapsuleShift\([\s\S]*?\n\}/)?.[0] || '';
+    assert(chip && !/frameWidth/.test(chip),
+      'applyCapsuleShift must NOT pass frameWidth: the resting frame width is variable '
+      + '(restingFrameWidth(), 520..900) and capping there silently drops the capsule 4px edge gap');
+  }
 }
 // 2026-09-16：上一版注释在这里断言「transform 量不到 measuredRestingWidth 里去」，
 // 那句话是错的。transform 不参与**布局**，但会把祖先的 scrollWidth 撑大：实测

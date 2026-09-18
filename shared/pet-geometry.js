@@ -103,7 +103,28 @@
   // 那个「过期」位移本来就是正确值，不需要额外的主进程回报通道。
   // 反过来说：上限一旦不含 margin，贴边时的位移会被削（204→200）而出屏时也是 200，
   // 虽然仍然相等、自愈仍成立，但会白丢那 4px 留白。所以 margin 必须算进上限。
-  function capsuleShift({ petCenterX, capsuleWidth, workArea, margin = 4, petWidth = PET_BODY_W }) {
+  //
+  // 2026-09-18（H2）：上面那个上限只保证「不出**屏幕**」，从不管「不出**窗口帧**」——
+  // 而真正在裁内容的是 renderer/pet.css:3-7 的 html,body{overflow:hidden}，它裁的是帧。
+  // 传了 frameWidth 就再压一层「帧内每侧余量 (帧宽-被摆物宽)/2」：
+  //   peek 320 在 520 帧里：余量 100 < 原上限 104 → 原来最多被帧裁 4px
+  //   ask/bubble 340：      余量  90 < 原上限 114 → 原来最多被帧裁 24px
+  // 被裁掉的恰好是位移**去向**那一侧，也就是**远离屏幕边缘**那一侧 —— 精确对上用户的
+  // 「不是靠近屏幕边缘不完整，而是另一边」。probeEdge 靶 A 真机与算术逐位吻合
+  // （catX=0 → popShift=104px、peek L=204 R=524、clipRight=4）。
+  //
+  // 默认 Infinity = 不压，所以这是**按调用点选择加入**的：只有 applyPopupShift 传它
+  // （弹窗态帧宽由 fitPopup 钉在 POPUP_W）。--chip-shift 那一路暂不传 —— 胶囊的帧宽是
+  // restingFrameWidth() 的 max(POPUP_W, 内容宽+24)，压这层会改「贴边留 4px」的现行观感，
+  // 得单独量过再动。⚠️ 宽胶囊理论上有同款帧裁隐患，单独记账。
+  //
+  // 两层封顶叠加不破坏上面那条「不需要主进程回报通道」的自愈性质：出屏与贴边两种输入
+  // 都饱和到**同一个**更小的上限，两者依然相等。
+  // 代价是贴边时的 4px 屏幕留白在弹窗那一路必然丢掉（帧内余量本来就不含它）——
+  // 帧宽 520 + 弹窗宽 340 + 猫可贴死屏幕缘，三者数学上不能同时满足。
+  // ⚠️ 签名必须留在**一行**：test/popup-style.js 用 /function capsuleShift\([\s\S]*?\n  \}/
+  // 截函数体，多行签名里那个 `\n  })` 会把非贪婪匹配提前截断，函数体 pin 就空转变绿。
+  function capsuleShift({ petCenterX, capsuleWidth, workArea, margin = 4, petWidth = PET_BODY_W, frameWidth = Infinity }) {
     const wa = normalizeRect(workArea);
     const width = Math.max(0, Number(capsuleWidth) || 0);
     const center = Number(petCenterX);
@@ -119,8 +140,14 @@
     // 胶囊比猫窄时上限只剩 margin：它横向整个落在猫的跨度里，猫在屏内它就在屏内，
     // 猫出屏它就该一起出屏，更大的位移只会让它脱离猫。
     const body = Math.max(0, Number(petWidth) || 0);
-    const cap = Math.max(0, (width - body) / 2) + pad;
-    const capped = (v) => clamp(v, -cap, cap);
+    let cap = Math.max(0, (width - body) / 2) + pad;
+    // 帧内余量（见上方注释）。帧比被摆物还窄时余量为 0 → 不许位移，只能对称溢出。
+    const frame = Number(frameWidth);
+    if (Number.isFinite(frame)) cap = Math.min(cap, Math.max(0, (frame - width) / 2));
+    // `|| 0` 是为了归一 -0：cap 现在可以恰好等于 0（帧不比弹窗宽），此时
+    // clamp(负溢出, -0, 0) 会产出 -0。产品侧 String(-0) === '0' 所以无害，但漏出去会让
+    // 调用方任何 Object.is / assert.strictEqual 比较莫名其妙（本行就是测试抓出来的）。
+    const capped = (v) => clamp(v, -cap, cap) || 0;
 
     const overflowLeft = minLeft - (center - half);
     if (overflowLeft > 0) return capped(Math.round(overflowLeft));

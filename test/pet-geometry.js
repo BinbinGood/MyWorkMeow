@@ -243,6 +243,64 @@ for (const frame of [320, 338, 360, 361, 381, 504, 520, 688, 900]) {
       }
     }
   }
+
+  // ── frameWidth：第二层封顶（帧内余量）────────────────────────────────────
+  // 2026-09-18（H2）。用户实测：「喵在屏幕边缘的时候，气泡弹窗的消息不完整。不是靠近
+  // 屏幕边缘不完整，而是另一边。」成因是上面那套封顶只保证「不出**屏幕**」，而真正在
+  // 裁内容的是 renderer/pet.css:3-7 的 html,body{overflow:hidden} —— 它裁的是**窗口帧**。
+  // #stage 的 align-items:center 先把弹窗居中在帧里（每侧余量 (帧宽-弹窗宽)/2），
+  // --pop-shift 再往一侧加位移，超过余量的部分就被帧裁掉 —— 裁的是位移**去向**那一侧，
+  // 也就是**远离屏幕边缘**那一侧，精确对上用户的描述。
+  const framed = (petCenterX, capsuleWidth, frameWidth) =>
+    geometry.capsuleShift({ petCenterX, capsuleWidth, workArea, frameWidth });
+
+  // 默认不压：不传 frameWidth 时行为必须和上面所有 fixture 完全一致（按调用点选择加入，
+  // --chip-shift 那一路的帧宽是变的 restingFrameWidth()，暂不传）。
+  // ⚠️ 这两条必须**真的省略**这个参数，而不是显式传 Infinity —— 变异测试（M5）证明：
+  // 把默认值从 Infinity 改成 520，显式传 Infinity 的断言全绿，只有省略参数的能抓到。
+  // 默认值一旦变成有限数，--chip-shift 那一路会被连带压顶，改掉「贴边留 4px」的观感。
+  assert.strictEqual(geometry.capsuleShift({ petCenterX: 60, capsuleWidth: 520, workArea }), 204,
+    '省略 frameWidth 时必须完全不压（默认值必须是 Infinity，不能是任何有限帧宽）');
+  assert.strictEqual(geometry.capsuleShift({ petCenterX: 60, capsuleWidth: 620, workArea }), 254,
+    '省略 frameWidth 且弹窗宽过 520：仍然不压，否则默认值偷偷在压顶');
+  assert.strictEqual(framed(60, 520, Infinity), 204, '显式 Infinity 必须完全不压');
+  assert.strictEqual(framed(60, 520, NaN), 204, '脏 frameWidth 必须退化成不压，而不是压成 0');
+
+  // 真机主靶：帧 520、猫贴死左缘。
+  //   peek 320：帧内余量 (520-320)/2 = 100 < 原上限 104 → 位移被压到 100
+  //   ask 340： 帧内余量 (520-340)/2 =  90 < 原上限 114 → 位移被压到  90
+  // 修前 probeEdge 靶 A 实测 popShift=104、peek L=204 R=524、clipRight=4，与「压之前是
+  // 104」逐位吻合；压到 100 之后 R=520，正好贴住帧缘不被裁。
+  assert.strictEqual(framed(60, 320, 520), 100, 'peek 在 520 帧里最多只能移动帧内余量 100');
+  assert.strictEqual(framed(60, 340, 520), 90, 'ask/bubble 在 520 帧里最多只能移动帧内余量 90');
+  assert.strictEqual(framed(1380, 340, 520), -90, '右缘对称');
+
+  // 压过之后必须**恰好**贴住帧缘：多一像素就被裁，少一像素就白丢可见宽度。
+  for (const w of [160, 320, 340, 496, 519]) {
+    const s = framed(60, w, 520);
+    const inFrame = (520 - w) / 2 + s;
+    assert(inFrame >= 0 && inFrame + w <= 520,
+      `弹窗${w} 贴左缘：帧内落在 ${inFrame}..${inFrame + w}，探出 0..520 会被 overflow:hidden 裁掉`);
+  }
+
+  // 压顶不能破坏自愈（上面那条「出屏位移 == 钳定位移」）：两种输入都饱和到**同一个**
+  // 更小的上限，依然相等。它一旦不成立就必须补主进程回报通道。
+  for (const w of [160, 340, 520]) {
+    for (const out of [1, 120, 900]) {
+      assert.strictEqual(framed(workArea.x - out + 60, w, 520), framed(workArea.x + 60, w, 520),
+        `弹窗${w} 向左出屏 ${out}px：加了帧内封顶之后，自愈（出屏位移==钳定位移）必须仍然成立`);
+    }
+  }
+
+  // 帧比弹窗还窄 → 余量为负。必须夹回 0（不许位移，只能对称溢出），
+  // 否则 clamp(v, -cap, cap) 的上下界反相，位移会被甩到**错误方向**。
+  // ⚠️ 这一条是变异测试（M4）发现的覆盖缺口：实现里写了 max(0,…) 但没有 fixture 钉住。
+  assert.strictEqual(framed(60, 340, 320), 0, '帧比弹窗窄：余量为负必须夹回 0，不许反向位移');
+  assert.strictEqual(framed(1380, 340, 200), 0, '帧远窄于弹窗：同样只能对称溢出');
+  // 而且必须是 +0 不是 -0。cap 能恰好等于 0 是这一版新出现的（原先 cap ≥ margin = 4），
+  // 此时 clamp(负溢出, -0, 0) 产出 -0；String(-0) === '0' 所以 CSS 侧无害，但会让调用方
+  // 的 Object.is/strictEqual 比较莫名其妙。strictEqual 分不出 ±0，所以显式用 Object.is。
+  assert(Object.is(framed(1380, 340, 200), 0), '位移 0 必须是 +0，不能把 -0 漏给调用方');
 }
 
 // capsuleShiftFromEdge 已删（2026-09-17）：它解的是「贴边时整列被 align-items 拉到窗口
