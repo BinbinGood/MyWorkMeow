@@ -1729,7 +1729,21 @@ function closePeek() {
   peekOpen = false;
   peekLayoutSig = '';
   peekPrimarySessionId = '';
-  window.pet.blurPet();
+  // ⚠️ 这里**刻意不调** window.pet.blurPet()（H1）。blurPet 现在只剩「把焦点还给用户
+  // 原来在用的编辑器」这一重职责，而 #peek 里没有任何输入框（全仓库只有 #ask 有
+  // textarea），它从来就没有焦点可还。
+  //
+  // 而主动失焦本身有两个已实测的代价：
+  //  1. 透明窗失焦 → visibilityState=hidden → 合成器停止提交帧 = 猫在屏幕上消失再出现
+  //     （用户原话「左键气泡消失后的时候，喵也没了。然后再出现」；上游已由 petWin 的
+  //     backgroundThrottling:false 堵住，这里是第二道正交的保险）；
+  //  2. w.blur() 会让主进程单方面 releaseClickThrough(st)，而渲染端的 mouseIgnoring
+  //     不知情 → 双向 desync，窗口永久停在「该穿透时不穿透」（实测：desync 后每个
+  //     mousemove 都被早退守卫吞成 SKIP，IPC 一次都不发）。
+  //
+  // 曾经以为它不能删，因为它是 F4（贴边开关气泡后猫朝屏幕中心漂）的触发源 —— 已被
+  // A/B 12 例证伪：两组 frameChanges 全 0，真正修掉 F4 的是 enableLargerThanScreen。
+  // ⚠️ hideAsk() 里的 blurPet() 不许照此删除：那里有真输入框，删了会一直霸占焦点。
   if (!askActive && !actionPopOpen) resetPetSize();
 }
 
@@ -3457,9 +3471,22 @@ window.addEventListener('blur', () => {
 // quota group is a deliberate click target in either layout. The rest of the
 // visible capsule remains click-through so hovering it never creates a popup.
 const HIT_SEL = '#cat,#stage.cat-hidden #chip,#chip-quota,#quota-popover,#radial,#notepad,#action-pop,#ask,#peek';
+// ⚠️ 这里**刻意没有** `if (on === mouseIgnoring) return;` 早退守卫。它看起来只是去重，
+// 实际是穿透态永久锁死的后半段（实测，probeSync）：主进程的三处失焦复位
+// （PET_BLUR / win 'blur' / 心跳 !isFocused()）都**单方面**把 st.mouseIgnoring 改成
+// false 并下发 setIgnoreMouseEvents(false)，而渲染端毫不知情 —— 没有任何 main→renderer
+// 的回传通道（shared/ipc-channels.js 里 SET_IGNORE_MOUSE 是单向的）。
+//
+// 于是两侧对不上之后：渲染端本地仍是 true，每个 mousemove 都算出 on=true，每次都被
+// 这条守卫吞掉，IPC 一次都不发。实测 rlog 全是 SKIP（[[8032,1,'SKIP'],[8232,1,'SKIP']]），
+// 窗口永久停在「该穿透时不穿透」，4s 心跳每 4 秒重新制造一次。
+//
+// 所以这里改成**无状态地每次都下发**：mousemove 是权威的命中测试，让它每一次都重新
+// 断言真相，两侧就不可能长期对不上。去重挪到主进程侧（SET_IGNORE_MOUSE handler），
+// 那里的 st.mouseIgnoring 才真的是「我们最后一次下发给 OS 的值」。
+// 代价只是一个布尔量的 IPC，量级远小于这个回调里本来就有的 elementFromPoint + closest。
 let mouseIgnoring = false;
 function setMouseIgnore(on) {
-  if (on === mouseIgnoring) return;
   mouseIgnoring = on;
   try { window.pet.setIgnoreMouse(on); } catch {}
 }

@@ -478,6 +478,27 @@ function makePetWindow(agent) {
       nodeIntegration: false,
       sandbox: true,
       autoplayPolicy: 'no-user-gesture-required',
+      // 默认值（true）下，窗口一失焦 Chromium 就把它当「后台」降级：document 进
+      // visibilityState='hidden'，合成器**停止向屏幕提交帧**。对不透明窗口这只是省电，
+      // 对 transparent:true 的桌宠却是「屏幕上什么都没有」—— 用户原话：
+      // 「左键气泡消失后的时候，喵也没了。然后再出现」。
+      //
+      // 依据是实测不是文档 —— A/B 各独立启动、各 4 轮 × 左右键，走用户的真实点击路径
+      // （sendInputEvent 点猫开/关 peek，配 app.focus({steal:true}) 拿到真 NSWindow 焦点）：
+      //   A 默认（本项未设）：左键 visibilityChange **2 次/轮 × 3/3 有效轮**；右键 0/4
+      //   B 本项 = false：    左键 0/4；右键 0/4
+      // A 组左键每轮都是同一序列（时刻取自 round3，单位 ms）：
+      //   [833.1,'blur'] [835.0,'vis:hidden'] [835.5,'vis:visible']
+      // blur 后 1.9ms 进 hidden，0.5ms 后回 visible。
+      //
+      // 「只有左键」对得上代码：closePeek() 会 blurPet() → w.blur()，而右键的
+      // closeRadial() 不 blur，所以右键那一路窗口不失焦、零闪烁。
+      //
+      // ⚠️ 这个现象 rAF 采样查不到：hidden 只影响合成器是否向屏幕提交帧，主线程的 rAF
+      // 照跑、DOM 几何/src/opacity 全部正常。同一批探针实测 visChangeCount:2 而
+      // hiddenFrames:0、122 帧/1965ms≈16.1ms 一帧没丢。前四轮探针全靠 rAF 逐帧采样，
+      // 所以对这条根因结构性地盲 —— 别再用「rAF 没掉帧」当合成层无恙的证据。
+      backgroundThrottling: false,
     },
   });
   applyWindowBranding(win);
@@ -487,9 +508,14 @@ function makePetWindow(agent) {
   // ?agent= 仅保留兼容参数；单宠模式始终由统一的 all 形象渲染。
   win.loadFile(path.join(__dirname, 'renderer', 'pet.html'), { query: { agent } });
 
-  // mouseIgnoring=true：透明窗启动即穿透，renderer 命中测试后再接管（pet.js 同款默认）
+  // mouseIgnoring 的口径是「我们最后一次真的下发给 OS 的值」，所以初始值必须是 false ——
+  // 新建的 BrowserWindow 就是不穿透的，这里从不调 setIgnoreMouseEvents(true)。启动即穿透
+  // 是**渲染端**做的：pet.js 模块顶层一次 setMouseIgnore(true) 走 IPC 打进来。
+  // ⚠️ 这里曾写 true（注释「透明窗启动即穿透」），与 OS 实际状态不符。它在 SET_IGNORE_MOUSE
+  // 没有去重时恰好无害，但加上去重后会把渲染端那唯一一次启动下发吞掉 —— 窗口开局整个
+  // 520×744 透明帧都拦住点击。语义对了这个坑才不存在。
   const st = {
-    agent, win, customSize: null, mouseIgnoring: true,
+    agent, win, customSize: null, mouseIgnoring: false,
     dragId: null, dragSeq: -1, lastEndedDragId: null,
   };
   // 'closed' 之后绝不能再碰 win.webContents（抛 "Object has been destroyed"，主进程
@@ -1509,8 +1535,16 @@ function registerIpc() {
     const st = stateOfSender(e.sender);
     const w = st && st.win && !st.win.isDestroyed() ? st.win : null;
     if (!w) return;
-    st.mouseIgnoring = !!ignore; // 记录 renderer 期望的穿透状态
-    try { w.setIgnoreMouseEvents(!!ignore, { forward: true }); } catch {}
+    const want = !!ignore;
+    // 去重放在这一侧，不放渲染端（renderer/pet.js 的 setMouseIgnore 那段注释写了为什么）：
+    // 这里的 st.mouseIgnoring 是「我们最后一次真的下发给 OS 的值」，三处失焦复位
+    // （releaseClickThrough）也写它，所以它和 OS 状态永远一致；渲染端那个同名本地变量
+    // 看不到那三处复位，拿它去重就会把「重新进入穿透」的下发吞掉（实测 rlog 全 SKIP）。
+    // ⚠️ 语义要求 st.mouseIgnoring 初始值必须是 false（见 makePetWindow 里的 st 字面量）：
+    // 写成 true 会让渲染端启动那唯一一次 setMouseIgnore(true) 在这里被吞掉。
+    if (st.mouseIgnoring === want) return;
+    st.mouseIgnoring = want;
+    try { w.setIgnoreMouseEvents(want, { forward: true }); } catch {}
   });
 
 }

@@ -192,6 +192,15 @@ assert(!/x = Math\.min\(Math\.max\(x, wa\.x\), wa\.x \+ wa\.width - width\);/.te
     'the first BrowserWindow in main.js must still be the transparent pet window');
   assert(/enableLargerThanScreen:\s*true/.test(petWin),
     'the pet window must set enableLargerThanScreen: macOS clamps an off-screen frame back into the work area on blur, and closePeek() blurs — that is what moves the cat toward screen centre (F4)');
+  // H1：backgroundThrottling 的默认值是 true，失焦即把窗口当后台降级 —— document 进
+  // visibilityState='hidden'，合成器停止向屏幕提交帧。不透明窗口只是省电，transparent
+  // 的桌宠等于「屏幕上什么都没有」（用户原话：「左键气泡消失后的时候，喵也没了。然后
+  // 再出现」）。实测 A/B 各 4 轮 × 左右键：默认组左键 visibilityChange 2 次/轮 × 3/3
+  // 有效轮（blur→1.9ms→hidden→0.5ms→visible）、右键 0/4；设 false 的一组 0/8。
+  // ⚠️ rAF 采样查不到它（hidden 期间主线程 rAF 照跑、DOM 几何全正常，实测
+  // visChangeCount:2 而 hiddenFrames:0），所以这条只能靠静态钉住，别指望测试抓回归。
+  assert(/backgroundThrottling:\s*false/.test(petWin),
+    'the pet window must set backgroundThrottling: false — at the default (true) a blurred transparent window goes visibilityState=hidden and stops submitting compositor frames, i.e. the cat vanishes and reappears (H1)');
 }
 // 胶囊比猫宽，居中在猫正下方时可能探出工作区。补偿走 --chip-shift（按需最小位移），
 // 且必须是 transform —— margin 会挤压兄弟节点、把整列的布局宽度推出去。

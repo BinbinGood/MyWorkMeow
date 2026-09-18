@@ -831,6 +831,34 @@ assert(!/forward:true keeps mousemove flowing/.test(mainJs),
   'SET_IGNORE_MOUSE 上方那句「forward:true 保证 renderer 一直收到 mousemove」是错的：'
   + '失焦窗口收不到 mousemove（实测 0 个），这个错误假设不许回来');
 
+// ── 穿透态去重必须在主进程侧，不许在渲染端（H1 根因 B）────────────────────────
+// G1 的修法（releaseClickThrough 单方面复位主进程侧状态位）留下一个独立 bug：渲染端
+// 的同名本地变量看不到那三处复位，两侧对不上之后渲染端的早退守卫会把每一次「重新进入
+// 穿透」都吞掉。实测（probeSync，真机）：
+//   afterRealBlur          渲染 true / 主 false   OS 收到 ignore(false)  ← 主进程单方面复位
+//   moveAgainOnTransparent 渲染 true / 主 false   OS **零调用**          ← 渲染端 SKIP 吞掉
+//   rlog: [[8032,1,'SKIP'],[8232,1,'SKIP']]
+// 窗口于此永久停在「该穿透时不穿透」，4s 心跳每 4 秒重新制造一次。
+// （Round 0/2 没复现 —— win.blur() 在窗口已失焦时是空操作。这解释了用户说的「**可能**
+// 会卡住」。）
+//
+// 修法是把去重从渲染端挪到主进程侧。三条不变量互相咬合，缺一条就漏：
+assert(!/on === mouseIgnoring/.test(petJsCode),
+  '渲染端 setMouseIgnore 不许有早退守卫：它看不到主进程那三处失焦复位，两侧 desync 后会把'
+  + '「重新进入穿透」的 IPC 全部吞成 SKIP，窗口永久停在该穿透时不穿透（实测）');
+assert(/if \(st\.mouseIgnoring === want\) return;/.test(mainJsCode),
+  'SET_IGNORE_MOUSE 必须在主进程侧去重：渲染端守卫拆掉后每个 mousemove 都会来一次，'
+  + '这里的 st.mouseIgnoring 才真的等于「最后一次下发给 OS 的值」');
+// 这一条最容易在重构里被「顺手改回来」：注释「透明窗启动即穿透」读着很对，但 OS 那侧
+// 新窗口本来就不穿透，主进程从不调 setIgnoreMouseEvents(true) —— 启动即穿透是渲染端
+// 模块顶层那一次 setMouseIgnore(true) 走 IPC 做的。写成 true 会被上面那条去重吞掉，
+// 窗口开局整个 520×744 透明帧都拦住点击。
+assert(/mouseIgnoring: false,/.test(mainJsCode),
+  'petState 的 mouseIgnoring 初始值必须是 false：它的口径是「最后一次下发给 OS 的值」，'
+  + '而新建窗口本来就不穿透；写 true 会让渲染端启动那唯一一次下发被去重吞掉');
+assert(!/mouseIgnoring: true/.test(mainJsCode),
+  'petState 的 mouseIgnoring 不许初始化成 true（理由同上一条）');
+
 // 渲染端：blur 之后 askHover 卡在 true 会让 isInteracting() 永真（同一条 mousemove 断流链）。
 assert(/window\.addEventListener\('blur',[\s\S]{0,600}?askHover = false/.test(petJsCode),
   'blur 监听必须清 askHover：它只靠 mousemove 命中测试和 pointerleave 维护，失焦后两者都停摆');
@@ -846,6 +874,45 @@ assert(/if \(!askActive && !peekOpen\) resetPetSize\(\);/.test(petJsCode),
   'closeActionPop 的 resetPetSize 必须让位于还开着的 ask/peek');
 assert(/if \(!askActive && !actionPopOpen && !peekOpen\) resetPetSize\(\);/.test(petJsCode),
   'closeQuotaPopover 的 resetPetSize 必须让位于还开着的 ask/actionPop/peek');
+
+// ── closePeek 不许主动失焦（H1）──────────────────────────────────────────────
+// blurPet 现在只剩「把焦点还给用户原来在用的编辑器」这一重职责，而 #peek 里没有任何
+// 输入框（全仓库只有 #ask 有 textarea），它从来就没有焦点可还。而主动失焦有两个已实测
+// 的代价，两条都直接对上用户「只有左键、只有气泡消失后」的线索：
+//  1. 透明窗失焦 → visibilityState=hidden → 合成器停止向屏幕提交帧 = 猫消失再出现。
+//     实测 A/B 各 4 轮 × 左右键：默认组左键 visChange 2 次/轮 × 3/3 有效轮、右键 0/4。
+//     （上游已由 petWin 的 backgroundThrottling:false 堵住 —— 这条是正交的第二道保险。）
+//  2. w.blur() → 主进程单方面 releaseClickThrough(st)，渲染端的 mouseIgnoring 不知情 →
+//     双向 desync，窗口永久停在「该穿透时不穿透」。
+// 曾以为它不能删，因为它是 F4（贴边开关气泡后猫朝屏幕中心漂）的触发源 —— 已被 A/B
+// 12 例证伪（两组 frameChanges 全 0），真正修掉 F4 的是 enableLargerThanScreen。
+// ⚠️ 这条**只钉 closePeek**。hideAsk() 里的 blurPet() 必须留着：那里有真输入框。
+{
+  // 用括号计数取函数体，不用正则：函数里现在有一大段解释为什么不调 blurPet 的注释，
+  // 而 codeOnly() 按行首判注释、行尾注释仍会被看见 —— 用 [\s\S]*? 去框范围很容易
+  // 要么吃到下一个函数、要么被自己的说明文字绊倒。
+  const fnBody = (src, name) => {
+    const at = src.search(new RegExp('function\\s+' + name + '\\s*\\(\\)\\s*\\{'));
+    if (at < 0) return null;
+    const open = src.indexOf('{', at);
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) return src.slice(open, i + 1);
+    }
+    return null;
+  };
+  const closePeekBody = fnBody(petJsCode, 'closePeek');
+  assert(closePeekBody, 'closePeek 必须还在');
+  assert(!/blurPet/.test(closePeekBody),
+    'closePeek 不许调 blurPet：peek 没有输入框（没焦点可还），而主动失焦会让透明窗进 '
+    + 'visibilityState=hidden（猫消失再出现，H1）并制造穿透态 desync；F4 早已由 '
+    + 'enableLargerThanScreen 承担（A/B 12 例 frameChanges 全 0）');
+  // 反向保险：别把这条 pin 读成「blurPet 该整体退役」。
+  const hideAskBody = fnBody(petJsCode, 'hideAsk');
+  assert(hideAskBody && /blurPet/.test(hideAskBody),
+    'hideAsk 必须保留 blurPet：#ask 里有真输入框（#ask-text），不还焦点就会一直霸占它');
+}
 
 // 弹窗溢出补偿：--pop-shift 必须是 relative left（不能是 transform —— .peek/.ask/.think
 // 的入场动画 keyframes 结尾是 transform:none，会把位移擦掉；也不能是 margin —— 会挤压
