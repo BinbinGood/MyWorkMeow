@@ -446,46 +446,66 @@ assert(checked > 10000, `全扫覆盖太少（只有 ${checked} 个位置），�
 // 悬出屏幕，于是 .peek（320 宽）会落在 wa.x-100、.ask（340 宽）落在 wa.x-110 ——
 // 探出屏幕外被裁。旧代码里 #stage.edge-left 把整列拉到窗口左缘（那个缘被钳在 wa.x）
 // 顺手保护了弹窗，横向贴边删掉时这层保护一起没了。
-// 补偿走 --pop-shift（renderer/pet.js applyPopupShift，复用 capsuleShift 的
+// 补偿走 --pop-shift + catShift（renderer/pet.js popupShiftPlan，复用 capsuleShift 的
 // 「按需最小位移」口径）。这里逐 1px 全扫，确认补偿之后没有任何位置会裁到内容。
+//
+// 2026-09-18（H3）：这一段整体重写过。H2 的模型是「一个位移，按 frameWidth 压一层」，
+// 剩下的亏空（.ask 出屏 20px、阴影被帧墙吃掉）当时判为「属于预期」。**两条都被用户的
+// 眼睛推翻了**：「喵靠在右边，左边缘的阴影也没了」「贴边那一侧的圆弧都没了」。
+// 现在的模型是**两个位移**，复刻 popupShiftPlan：
+//   ideal    = capsuleShift(不传 frameWidth)                 总需求量
+//   tight    = max(0, (520 - 弹窗宽)/2 - SHADOW)             帧内安全余量（含阴影）
+//   popShift = clamp(ideal, ±tight)                          帧内这一半
+//   catShift = popShift - ideal                              溢出这一半，帧去动
+// 帧原点因此是 catX - catInset(520) - catShift（主进程按锚点反向挪帧，
+// main.js:333 的 inset = anchor.screenX - anchored.x 把偏移读回去），而猫的屏幕
+// 位置**不变** —— 这是这套修法的全部要点，下面 catScreen 那条断言就是钉它。
+const POPUP_SHADOW_SPREAD = 26;
 const POPUPS = [['peek', 320], ['ask', 340], ['bubble', 340]];
 let popupChecked = 0;
 for (const [workArea, label] of SCREENS) {
   const waRight = workArea.x + workArea.width;
   for (const [name, popW] of POPUPS) {
     for (let catX = workArea.x; catX <= waRight - CAT; catX += 1) {
-      // 弹窗帧恒 520 宽，猫居中 → 原点 = catX - inset。
-      const winX = catX - catInset(POPUP_W);
-      const shift = geometry.capsuleShift({
+      const ideal = geometry.capsuleShift({
         petCenterX: catX + CAT / 2,
         capsuleWidth: popW,
         workArea,
-        frameWidth: POPUP_W,
       });
+      const tight = Math.max(0, (POPUP_W - popW) / 2 - POPUP_SHADOW_SPREAD);
+      const shift = Math.max(-tight, Math.min(tight, ideal));
+      const catShift = Math.round(shift - ideal);
+      // 猫在帧内往中心挪 catShift → 帧原点反向挪同样多，猫的屏幕 x 恒等于 catX。
+      const winX = catX - catInset(POPUP_W) - catShift;
       // align-items: center → 弹窗在帧内居中；再加 relative left 的位移。
       const inFrame = (POPUP_W - popW) / 2 + shift;
       const left = winX + inFrame;
       popupChecked++;
-      // ── 屏幕容差：两个封顶取小之后**必然**剩下的那点亏空 ──
-      // capsuleShift 想要的位移上限是 (弹窗宽-猫宽)/2（+margin，margin 只买留白不买
-      // 可见性，所以这里不算），而帧内每侧余量只有 (帧宽-弹窗宽)/2。取小之后，猫贴死
-      // 屏幕缘时弹窗最多还能亏这么多像素在屏幕外：
-      const offScreenBudget = Math.max(0, (popW - CAT) / 2 - (POPUP_W - popW) / 2);
-      // peek 320：100-100 = 0（完美，一像素不亏）
-      // ask/bubble 340：110-90 = 20（贴死缘时近侧 20px 出屏）
-      // 这 20px 是**数学上关不掉**的：帧宽 520 + 弹窗宽 340 + 猫可贴死屏幕缘，三者
-      // 不能同时成立。要它归零得把 POPUP_W 提到 340+2*110 = 560 以上（含 4px 留白则 568）。
-      // **决定：不改。** probe #10（probes/probeAsk.py）实测了这 20px 的归属：
-      //   ask @ 左缘 猫x=0    → L=180 R=520 clipLeft=clipRight=0，屏幕 -20..320，offScreenLeft=20
-      //   ask @ 右缘 猫x=1560 → L=0   R=340 clipLeft=clipRight=0，屏幕 1360..1700，offScreenRight=20
-      // 即：弹窗在自己那个 520 帧里**内容完整**，只是探到屏幕外 —— 任何窗口程序贴屏幕缘
-      // 时的常规表现，和用户报的「另一边不完整」不是一回事。抬 POPUP_W 要连带动
-      // catInset 200→220 和一大票钉死的数，代价远大于「少探出 20px」。
-      assert(left >= workArea.x - offScreenBudget - 0.5 && left + popW <= waRight + offScreenBudget + 0.5,
+      // ── 不变式 1：总位移一分不少 ──────────────────────────────────────────
+      // 拆分只是换承担者。注意是**减**：弹窗相对猫的位移 = 弹窗在帧内右移 popShift
+      // 加上猫在帧内左移 catShift（catShift 为负就是左移），所以 popShift - catShift。
+      // 这条一破，弹窗的屏幕落点就不再是 capsuleShift 保证的那个。
+      assert(Math.abs((shift - catShift) - ideal) <= 0.5,
+        `${label} ${name} 猫x=${catX}：popShift(${shift}) - catShift(${catShift}) ≠ ideal(${ideal})`);
+      // ── 不变式 2：猫一动不动 ──────────────────────────────────────────────
+      // catShift 是**给猫加的**帧内偏移，帧反向挪同样多才能抵掉。这条是整套修法的
+      // 命门：实测（probeRealPath2.py）开窗 200 帧 + 关窗 278 帧零跳变，模型这边
+      // 也必须恒等。
+      const catScreen = winX + catInset(POPUP_W) + catShift;
+      assert(catScreen === catX,
+        `${label} ${name} 猫x=${catX}：帧移没抵掉 catShift，猫跑到 ${catScreen}`);
+      // ── 断言 A：弹窗不出屏 ────────────────────────────────────────────────
+      // H3 之后**零容差**。H2 这里还留着一个 offScreenBudget：
+      //   offScreenBudget = max(0, (popW-CAT)/2 - (POPUP_W-popW)/2)
+      //   peek 320 → 0；ask/bubble 340 → 20
+      // 那 20px 当时判为「数学上关不掉，得把 POPUP_W 抬到 568」。**错了** ——
+      // 关不掉的前提是「帧原点只能是 catX-200」，而帧原点可以动。实测
+      // probeRealPath2.py：.ask 贴右缘盒子屏幕 [1360,1700]→[1336,1676]，出屏 20→0，
+      // POPUP_W 一个字节没动。所以这里改成不给容差。
+      assert(left >= workArea.x - 0.5 && left + popW <= waRight + 0.5,
         `${label} ${name}(${popW}宽) 猫x=${catX}：弹窗落在 ${left}..${left + popW}，`
-        + `探出工作区 ${workArea.x}..${waRight} 且超过了 ${offScreenBudget}px 的容差`
-        + `（--pop-shift 补偿失效）`);
-      // ── H2：还得留在**自己那个 520 宽的窗口帧**里 ──
+        + `探出工作区 ${workArea.x}..${waRight}（H3 之后这里零容差：帧会跟着挪）`);
+      // ── 断言 B：弹窗留在自己那个 520 宽的窗口帧里 ──────────────────────────
       // 上面那条只管屏幕，而真正在裁内容的是 renderer/pet.css:3-7 的
       // html,body{overflow:hidden} —— 它裁的是帧，不是屏幕。修前两个封顶互不知情：
       // capsuleShift 的上限是 (弹窗宽-猫宽)/2+margin，帧内每侧余量是 (520-弹窗宽)/2，
@@ -496,14 +516,22 @@ for (const [workArea, label] of SCREENS) {
       //   probeEdge 靶 A（peek 320）修前 catX=0    → popShift=104px  L=204 R=524 clipRight=4
       //   probeAsk  A/B（ask  340）修前 catX=0    → popShift=114px  L=204 R=544 clipRight=24
       //   probeAsk  A/B（ask  340）修前 catX=1560 → popShift=-114px L=-24 R=316 clipLeft=24
-      //   三者修后 clipLeft=clipRight=0。
-      // 修法：capsuleShift 收 frameWidth，再压一层帧内余量（见 shared/pet-geometry.js）。
-      // ⚠️ 这一条是 H2 的判定性回归。上面那条工作区断言逐 1px 扫了 20000+ 个位置
-      // 却抓不到 H2，就是因为它只看 left 的屏幕坐标、从不看帧内坐标。
+      // ⚠️ 这一条是 H2 的判定性回归。断言 A 逐 1px 扫了 20000+ 个位置却抓不到 H2，
+      // 就是因为它只看 left 的屏幕坐标、从不看帧内坐标。
       assert(inFrame >= -0.5 && inFrame + popW <= POPUP_W + 0.5,
         `${label} ${name}(${popW}宽) 猫x=${catX}：弹窗在帧内落在 ${inFrame}..${inFrame + popW}，`
         + `探出 0..${POPUP_W} 的窗口帧 → 被 html,body{overflow:hidden} 裁掉`
         + `（--pop-shift=${shift} 超过了帧内余量 ${(POPUP_W - popW) / 2}）`);
+      // ── 断言 C：H3 的判定性回归 —— 阴影也得在帧里 ──────────────────────────
+      // 断言 B 只钳**盒子**，而 box-shadow 画在盒子外面（实测 .peek 21.5px、
+      // .ask 21px，getBoundingClientRect 量不到，只能 capturePage 扫 alpha）。
+      // H2 钳对了盒子、漏了阴影，盒子贴死帧墙 → 近侧阴影被 overflow:hidden 整块吃掉，
+      // 这就是用户报的「喵靠在右边，左边缘的阴影也没了」。
+      assert(inFrame - POPUP_SHADOW_SPREAD >= -0.5
+             && inFrame + popW + POPUP_SHADOW_SPREAD <= POPUP_W + 0.5,
+        `${label} ${name}(${popW}宽) 猫x=${catX}：盒子+阴影在帧内落在 `
+        + `${inFrame - POPUP_SHADOW_SPREAD}..${inFrame + popW + POPUP_SHADOW_SPREAD}，`
+        + `阴影被帧裁 → 近侧阴影消失（H3 的原始症状）`);
     }
   }
 }

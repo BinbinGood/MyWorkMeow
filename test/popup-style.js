@@ -218,7 +218,7 @@ assert(/PetGeometry\.capsuleShift\(/.test(js) && /--chip-shift/.test(js),
   const fn = read('shared/pet-geometry.js').match(/function capsuleShift\([\s\S]*?\n  \}/)?.[0] || '';
   assert(/petWidth = PET_BODY_W/.test(fn) && /\(width - body\) \/ 2\) \+ pad/.test(fn),
     'capsuleShift must cap its displacement at the cat-flush-to-edge value: the raw overflow is unbounded and detaches the capsule from an off-screen cat');
-  for (const caller of ['applyCapsuleShift', 'applyPopupShift']) {
+  for (const caller of ['applyCapsuleShift', 'popupShiftPlan']) {
     const src = js.match(new RegExp(`function ${caller}\\([\\s\\S]*?\\n\\}`))?.[0] || '';
     assert(/capsuleShift\(\{[\s\S]*?petWidth:/.test(src),
       `${caller} must forward petWidth so the cap tracks the real anchor width`);
@@ -234,10 +234,40 @@ assert(/PetGeometry\.capsuleShift\(/.test(js) && /--chip-shift/.test(js),
   assert(/frame - width/.test(fn) && /frameWidth = Infinity/.test(fn),
     'capsuleShift must also cap at the in-frame margin (frameWidth), defaulting to Infinity = no cap');
   {
-    const pop = js.match(/function applyPopupShift\([\s\S]*?\n\}/)?.[0] || '';
-    assert(/capsuleShift\(\{[\s\S]*?frameWidth: POPUP_W/.test(pop),
-      'applyPopupShift must pass frameWidth: POPUP_W — otherwise the shift can exceed the in-frame '
-      + 'margin and html,body{overflow:hidden} clips the popup on the side AWAY from the screen edge (H2)');
+    // ── 2026-09-18（H3）：弹窗那一路**改成不传 frameWidth**了 ──────────────
+    // H2 在这里传 POPUP_W 把位移一压了事，代价是盒子贴死帧墙。用户随后报了两件事：
+    // 「喵靠在右边，左边缘的阴影也没了」和「贴边那一侧的圆弧都没了」——
+    // box-shadow 画在盒子**外面**，贴墙就被 overflow:hidden 整块吃掉；而 340 宽的
+    // .ask 还会探出屏幕 20px，圆弧正好长在那 20px 里。H2 钳错了矩形：钳的是盒子，
+    // 该钳的是「盒子 + 阴影」，而且钳不下的那部分不该丢掉 —— 该让帧去动。
+    // 现在 popupShiftPlan 把总位移 ideal（不压帧宽）拆成两半：
+    //   tight    = max(0, (POPUP_W - 弹窗宽)/2 - POPUP_SHADOW_SPREAD)   ← 含阴影
+    //   popShift = clamp(ideal, ±tight)        帧内这一半，走 --pop-shift
+    //   catShift = round(popShift - ideal)     溢出这一半，给猫加帧内偏移，由帧移吸收
+    // 实测（probes/probeRealPath2.py，走真实 fitPopup→IPC→applyPetSize 链路，四靶全绿）：
+    // 近侧阴影 0→21/21.5px、远侧不减、.ask 出屏 20→0、猫屏幕 x 恒定、帧宽恒 520、
+    // 开窗 200 帧 + 关窗 278 帧零跳变。POPUP_W 没动。
+    const pop = js.match(/function popupShiftPlan\([\s\S]*?\n\}/)?.[0] || '';
+    // 只查「传参」那个形态（frameWidth:），不查裸词 —— 函数里的注释正是在讲 H2 为什么
+    // 传过、为什么现在不传，查裸词会被自己的注释绊倒。
+    assert(pop && !/frameWidth\s*:/.test(pop),
+      'popupShiftPlan must NOT pass frameWidth: H2 did, and pinning the box flush against the frame '
+      + 'wall is exactly what ate the near-side shadow and the flush-side rounded corner (H3). '
+      + 'The overflow goes to catShift instead.');
+    assert(/const POPUP_SHADOW_SPREAD = \d+;/.test(js),
+      'POPUP_SHADOW_SPREAD must exist: getBoundingClientRect does not include box-shadow, so the '
+      + 'in-frame cap has to subtract the measured spread (.peek 21.5px, .ask 21px) explicitly');
+    assert(/- POPUP_SHADOW_SPREAD\)/.test(pop),
+      'the in-frame cap (tight) must subtract POPUP_SHADOW_SPREAD — capping at the bare centring '
+      + 'margin is the H2 bug');
+    // 不变式 popShift - catShift ≡ ideal：总位移一分不少，只是换了承担者（是**减**——
+    // 弹窗在帧内右移 popShift、猫在帧内左移 |catShift|，叠加才是 ideal；算术全扫在
+    // test/pet-edge-cycle.js 的「不变式 1」）。写死成减法而不是「另算一遍」，就是为了
+    // 让这条在算术上不可能破。
+    assert(/catShift: Math\.round\(popShift - ideal\)/.test(pop),
+      'catShift must be derived as (popShift - ideal) so the invariant popShift + catShift === ideal '
+      + 'holds by construction: recomputing it independently lets the two halves drift and the cat jumps');
+
     // 反面：--chip-shift 那一路**不许**传。胶囊的帧宽不是常量 POPUP_W，而是
     // restingFrameWidth() 的 max(POPUP_W, 内容宽+24)（520..900），而且压这层会改掉
     // 「猫贴边时胶囊仍留 4px 屏幕留白」的现行观感。⚠️ 宽胶囊理论上有同款帧裁隐患，
@@ -246,6 +276,49 @@ assert(/PetGeometry\.capsuleShift\(/.test(js) && /--chip-shift/.test(js),
     assert(chip && !/frameWidth/.test(chip),
       'applyCapsuleShift must NOT pass frameWidth: the resting frame width is variable '
       + '(restingFrameWidth(), 520..900) and capping there silently drops the capsule 4px edge gap');
+  }
+
+  // ── catShift 的落地：三条都是「换个写法就静默坏掉」的地方 ────────────────────
+  {
+    const shift = js.match(/function applyCatShift\([\s\S]*?\n\}/)?.[0] || '';
+    // 只能用 position:relative + left。margin 会挤兄弟节点、把整列布局宽度推出去，
+    // 再喂回 measuredRestingWidth → 帧宽（2026-09-16 的教训）；transform 不参与布局，
+    // 但**会**把祖先的 scrollWidth 撑大（实测 --chip-shift 204px 时 #compact-row
+    // .scrollWidth 275→479），同样喂回帧宽。relative 的 left 只在绘制期偏移 ——
+    // 实测四靶里 #compact-row.scrollWidth 一个字节都没变。
+    assert(/position = v \? 'relative' : ''/.test(shift) && /\.left = v \? /.test(shift),
+      'applyCatShift must use position:relative + left');
+    assert(!/margin/.test(shift) && !/transform/.test(shift),
+      'applyCatShift must not use margin (squeezes siblings into the frame width) or transform '
+      + '(inflates ancestor scrollWidth) — both feed back into measuredRestingWidth');
+    // 归零必须把两个属性都清干净、让 #compact-row 退回 static，否则白白保持一层
+    // 绘制层提升（它在 pet.html 里排在所有弹窗之后，relative 会把它提到弹窗之上）。
+    assert(/: ''/.test(shift), 'applyCatShift must clear the properties on zero, not leave position:relative parked');
+
+    // 落点：必须在 anchoredLayoutPayload 里、measureEdgeRect **之前**。screenX 由
+    // **旧** rect 定住（猫此刻真实的屏幕位置），rect 取的是**新** rect（含本次偏移），
+    // 两者之差正是主进程要反向吸收的那一段。挪到函数外面，Δ 会被算进 screenX，
+    // 主进程就把猫真的推走了。
+    const payload = js.match(/function anchoredLayoutPayload\([\s\S]*?\n\}/)?.[0] || '';
+    const iShift = payload.indexOf('applyCatShift(');
+    const iRect = payload.indexOf('measureEdgeRect(next)');
+    assert(iShift > 0 && iRect > 0 && iShift < iRect,
+      'applyCatShift must run inside anchoredLayoutPayload BEFORE measureEdgeRect: screenX comes '
+      + 'from the OLD rect and rect from the NEW one, and their delta is what the main process '
+      + 'cancels out. Move it and the cat really moves.');
+
+    // 关窗的归零链：fitRestingFrame 的去重必须比 appliedCatShift。关窗时宽高两项
+    // 必然同时命中（静息帧宽 max(520,…) 恰好也是 520），去重一早退 →
+    // setRequestedPetSize 不发 → anchoredLayoutPayload 不跑 → 归零的机会不存在
+    // （探针 #14 实测残留 30/50/-50px）。残留不是化妆问题：main.js:398/1570 两处
+    // inset 都写死 (帧宽-120)/2、不看锚点，下一次拓扑事件猫就横跳；且 persistPos
+    // 只在 popup 模式早退，关窗后会把偏了的原点存盘。
+    const fit = js.match(/function fitRestingFrame\([\s\S]*?\n  \}\);\n\}/)?.[0] || '';
+    assert(fit, 'fitRestingFrame must exist (the dedup pin below needs its body)');
+    assert(/appliedCatShift === 0\) return;/.test(fit),
+      'fitRestingFrame dedup must also require appliedCatShift === 0: on close the width and height '
+      + 'both match, so without this term the early return swallows the whole zeroing chain and the '
+      + 'cat keeps a stale in-frame offset (measured: 30/50/-50px)');
   }
 }
 // 2026-09-16：上一版注释在这里断言「transform 量不到 measuredRestingWidth 里去」，
