@@ -32,9 +32,26 @@ const petJs = fs.readFileSync(path.join(root, 'renderer/pet.js'), 'utf8');
 const mainJs = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const petCss = fs.readFileSync(path.join(root, 'renderer/pet.css'), 'utf8');
 
+// 「某个东西必须保持退役」这类反向断言只能看**代码**：退役的理由本身就写在注释里
+// （「inferHorizontalFrameClamp 曾是永真的死门，正是 E3/E4 环带的直接原因」），
+// 拿整份文件去 test 会被自己的说明文字绊倒。只剥「整行都是注释」的行 —— 不按 // 的
+// 位置切，避免把 'http://…' 之类字符串里的内容当注释、误删真代码而变成假通过。
+const codeOnly = (src) => src.split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
+const petJsCode = codeOnly(petJs);
+const mainJsCode = codeOnly(mainJs);
+
 const CAT = 120;        // #cat 是 120×120
+const CAT_H = 120;      // #cat 同样写死 120 高，且无 transform
 const POPUP_W = 520;    // renderer/pet.js 的 POPUP_W
-const FRAME_H = 340;    // BASE_H
+
+// ── 竖直常量（2026-09-18，E2）────────────────────────────────────────────────
+// 帧高从「跟着内容变」改成**恒定** 744 = POPUP_BOTTOM(200) + ASK_VIEWPORT_MAX_H(520) + 24。
+// 实测（probeF/probeI）：开关气泡时窗口高度与 y 原点分帧落地，屏幕上看到的相位错帧
+// 幅度**恰好等于帧高差**；把差压到 0 → 16/16 例零闪现。所以 delta 归零就是修法本身。
+// 旧的 `const FRAME_H = 340; // BASE_H` 是个定义后从未使用的死变量，这里换成真在用的一组。
+const FRAME_H_CONST = 744;   // main.js / renderer/pet.js 的 PET_FRAME_H
+const BASE_FRAME_H = 340;    // 老配置（petPosition 无 h）与测试桩的兜底口径
+const BELOW_RESERVE = 28;    // main.js RESTING_BELOW_RESERVE：猫下方胶囊那一截
 
 // 猫在窗口里的横向偏移。横向贴边退役后 #stage 恒 align-items: center，所以这是
 // 一个只由帧宽决定的常量 —— 不再依赖任何「对齐」状态。这个 inset 就是窗口原点
@@ -75,7 +92,45 @@ function step(workArea, winX, frameNow, frameTarget) {
   return { winX: settled, catX: settled + catInset(frameTarget) };
 }
 
-// 落位到不动点，返回收敛后的状态与用掉的轮数。
+// ── 竖直向模型（2026-09-18，E2）──────────────────────────────────────────────
+// 抄自 main.js clampCatOriginY + applyPetSize 的竖直分支，以及渲染端
+// anchoredLayoutPayload 的 yAlign / yOffset。两种布局：
+//   yAlign 'bottom'（edgeLayout.vertical === 'above'，常态）：#stage 是
+//     justify-content:flex-end，整列贴帧**底** → 猫下方那一截（belowContent，
+//     胶囊 margin-top 2 + min-height 21 那种）是真内容，必须整段可见。
+//   yAlign 'top'（#stage.edge-below，猫贴屏幕顶）：整列贴帧**顶**，猫是
+//     order:0 排第一 → 猫上方几乎没东西（aboveContent≈0），猫下方那 600 多像素
+//     是空的透明帧尾、**不是**内容，所以下界只保护 RESTING_BELOW_RESERVE。
+function catLocalY(frameH, layout) {
+  return layout.yAlign === 'top' ? layout.aboveContent : frameH - layout.belowContent - CAT_H;
+}
+
+// 一次 setPetSize 的竖直分支：从（当前窗口 y、当前帧高）走到（目标帧高）。
+// 注意 yOffset 用**当前**帧高量（渲染端 viewportH 是 window.innerHeight，窗口还没
+// resize），而 localY 用**目标**帧高反解 —— 和横向那个不对称同源，模型必须照抄。
+function stepY(workArea, winY, frameNow, frameTarget, layout) {
+  const catScreenY = winY + catLocalY(frameNow, layout);
+  // anchoredLayoutPayload：yOffset = yAlign === 'top' ? rect.top : viewportH - rect.bottom
+  const yOffset = layout.yAlign === 'top' ? layout.aboveContent : layout.belowContent;
+  // anchoredPetOrigin：localY = yAlign === 'top' ? yOffset : height - yOffset - anchor.height
+  const localY = layout.yAlign === 'top' ? yOffset : frameTarget - yOffset - CAT_H;
+  const anchoredY = Math.round(catScreenY - localY);
+  const insetY = catScreenY - anchoredY;            // applyPetSize: anchor.screenY - anchored.y
+  const belowReserve = layout.yAlign === 'bottom'
+    ? Math.max(0, frameTarget - insetY - CAT_H)
+    : BELOW_RESERVE;
+  // clampCatOriginY：上界只要求猫顶 >= wa.y（猫上方那几百像素透明留白允许悬出屏幕
+  // 上方，靠 enableLargerThanScreen 撑着）；下界连猫下方的内容一起保护。
+  const maxCatY = Math.max(workArea.y, workArea.y + workArea.height - CAT_H - belowReserve);
+  const clamped = Math.min(Math.max(catScreenY, workArea.y), maxCatY);
+  const settledWinY = Math.round(clamped - insetY);
+  return { winY: settledWinY, catY: settledWinY + insetY, insetY, belowReserve };
+}
+
+// 该屏幕上的实际帧高：main.js applyPetSize 的 `h = Math.min(h, wa.height)`。
+const effFrameH = (workArea) => Math.min(FRAME_H_CONST, workArea.height);
+
+
 //
 // 钳猫之后横向不再有「两种对齐来回摆动」的可能（对齐维度整体没了），所以这里预期
 // **一轮**就收敛。上界仍留 6 轮并断言收敛：真正不能接受的是来回摆动，那会让猫抽搐。
@@ -460,6 +515,202 @@ function restoreCatX(saved, savedW, frameWidth, workArea) {
   }
 }
 
+// ── 竖直向：可达性全扫 ───────────────────────────────────────────────────────
+// 2026-09-18（E2）。横向那套全扫（钳猫之后工作区内每个 x 都可达）现在竖直也要成立：
+// 帧高恒 744 而猫只有 120 高，猫上方约 596px、下方约 20px 都是透明留白，钳窗口会让
+// 屏幕上下各出现一条几百像素的死区。这一组按**猫本体**铺点，每个 y 都必须落位不动。
+//
+// LAYOUTS 覆盖两种竖直布局的真实形状：
+//   above（yAlign 'bottom'）—— 整列贴帧底，猫下方是胶囊 / 会话点那一截；
+//   edge-below（yAlign 'top'）—— 整列贴帧顶，猫是 order:0 排第一。
+const LAYOUTS = [
+  { yAlign: 'bottom', belowContent: 23, aboveContent: 0, label: 'above/胶囊 23' },
+  { yAlign: 'bottom', belowContent: 28, aboveContent: 0, label: 'above/胶囊+会话点 28' },
+  { yAlign: 'bottom', belowContent: 60, aboveContent: 0, label: 'above/胶囊换行 60' },
+  { yAlign: 'bottom', belowContent: 200, aboveContent: 0, label: 'above/POPUP_BOTTOM 200' },
+  { yAlign: 'top', belowContent: 0, aboveContent: 0, label: 'edge-below/猫贴帧顶' },
+  { yAlign: 'top', belowContent: 0, aboveContent: 6, label: 'edge-below/帧顶留 6px' },
+];
+
+let vertReach = 0;
+for (const [workArea, label] of SCREENS) {
+  const frameH = effFrameH(workArea);
+  const waBottom = workArea.y + workArea.height;
+  for (const layout of LAYOUTS) {
+    const reserve = layout.yAlign === 'bottom' ? layout.belowContent : BELOW_RESERVE;
+    const maxCatY = Math.max(workArea.y, waBottom - CAT_H - reserve);
+    for (let catY = workArea.y; catY <= maxCatY; catY += 1) {
+      const winY = Math.round(catY - catLocalY(frameH, layout));
+      const r = stepY(workArea, winY, frameH, frameH, layout);
+      assert.strictEqual(r.catY, catY,
+        `${label} / ${layout.label}：猫在屏幕 y=${catY} 必须落位不动，实际停在 ${r.catY}`);
+      // 幂等：再走一拍不许再动（会动就说明有摆动，屏幕上就是抽搐）。
+      const again = stepY(workArea, r.winY, frameH, frameH, layout);
+      assert.strictEqual(again.catY, catY, `${label} / ${layout.label}：y=${catY} 第二拍又动了`);
+      vertReach += 1;
+    }
+  }
+}
+assert(vertReach > 30000, `竖直可达性覆盖太少（${vertReach}），别把这组削瘦了`);
+
+// ── 竖直向：帧允许探出，猫和猫下方的内容不许 ─────────────────────────────────
+// 这是恒高方案的地基。帧高 744、猫 120，猫贴屏幕顶时帧顶必须能落在 wa.y 上方约
+// 596px（靠 makePetWindow 的 enableLargerThanScreen 撑着）；猫贴屏幕底时 edge-below
+// 那条帧尾同样合法地探出下沿。反过来，猫本体和猫下方那一截内容一个像素都不许出界。
+let vertOverhang = 0;
+for (const [workArea, label] of SCREENS) {
+  const frameH = effFrameH(workArea);
+  const waBottom = workArea.y + workArea.height;
+  for (const layout of LAYOUTS) {
+    const reserve = layout.yAlign === 'bottom' ? layout.belowContent : BELOW_RESERVE;
+    const maxCatY = Math.max(workArea.y, waBottom - CAT_H - reserve);
+    for (const catY of [workArea.y, workArea.y + 1, Math.round((workArea.y + maxCatY) / 2), maxCatY]) {
+      // 故意从一个**出界**的输入出发（拖动途中猫真的会被拖出屏幕），断言钳制把猫拉回来。
+      for (const nudge of [-800, -120, 0, 120, 800]) {
+        const winY = Math.round(catY + nudge - catLocalY(frameH, layout));
+        const r = stepY(workArea, winY, frameH, frameH, layout);
+        assert(r.catY >= workArea.y && r.catY + CAT_H <= waBottom,
+          `${label} / ${layout.label}：猫本体必须留在工作区内（catY=${r.catY}）`);
+        assert(r.catY + CAT_H + reserve <= waBottom,
+          `${label} / ${layout.label}：猫下方那 ${reserve}px 内容必须完整可见（catY=${r.catY}）`);
+        vertOverhang += 1;
+      }
+    }
+    // 猫顶贴死工作区上缘时，帧顶必须允许探出上方（否则就是钳窗口，屏幕顶部会出现死区）。
+    if (layout.yAlign === 'bottom' && frameH > CAT_H + layout.belowContent) {
+      const winY = Math.round(workArea.y - catLocalY(frameH, layout));
+      const r = stepY(workArea, winY, frameH, frameH, layout);
+      assert.strictEqual(r.catY, workArea.y, `${label} / ${layout.label}：猫必须能贴死工作区上缘`);
+      assert(r.winY < workArea.y,
+        `${label} / ${layout.label}：猫贴顶时帧原点必须探出工作区上方（实际 ${r.winY} vs wa.y=${workArea.y}）`);
+    }
+    // edge-below：猫贴死下界时帧尾探出下沿同样合法（那是空的透明留白，不是内容）。
+    if (layout.yAlign === 'top') {
+      const catY = Math.max(workArea.y, waBottom - CAT_H - BELOW_RESERVE);
+      const r = stepY(workArea, Math.round(catY - layout.aboveContent), frameH, frameH, layout);
+      assert.strictEqual(r.catY, catY, `${label} / ${layout.label}：猫必须能贴到下界`);
+      if (frameH > CAT_H + BELOW_RESERVE + layout.aboveContent) {
+        assert(r.winY + frameH > waBottom,
+          `${label} / ${layout.label}：edge-below 的帧尾必须允许探出工作区下沿`);
+      }
+    }
+  }
+}
+assert(vertOverhang > 500, `悬出不变量覆盖太少（${vertOverhang}）`);
+
+// ── 竖直向：开关气泡帧高 delta 必须为 0 ──────────────────────────────────────
+// E2 的直接回归防线。实测（probeF/probeI）：屏幕上那次「往上消失再出现」的幅度
+// **恰好等于开关气泡的帧高差**，把差压到 0 → 16/16 例零闪现。所以只要帧高在
+// 静息 / 弹窗两态相等，缺陷就没有立足之地。
+// 这里同时验一遍完整的开→关一轮：猫的屏幕 y 逐拍不动。
+let vertCycles = 0;
+for (const [workArea, label] of SCREENS) {
+  const restingH = effFrameH(workArea);
+  for (const popupContentH of [80, 120, 240, 340, 520, 900]) {
+    // 弹窗内容高度**不**参与帧高 —— 这正是恒高：popupHeight 只喂 popupEdgeLayout 判上下让位。
+    const popupH = effFrameH(workArea);
+    assert.strictEqual(popupH, restingH,
+      `${label}：弹窗内容高 ${popupContentH} 不许改变帧高（静息 ${restingH} vs 弹窗 ${popupH}）`);
+  }
+  const waBottom = workArea.y + workArea.height;
+  for (const layout of LAYOUTS) {
+    const reserve = layout.yAlign === 'bottom' ? layout.belowContent : BELOW_RESERVE;
+    const maxCatY = Math.max(workArea.y, waBottom - CAT_H - reserve);
+    for (let catY = workArea.y; catY <= maxCatY; catY += 7) {
+      let cur = Math.round(catY - catLocalY(restingH, layout));
+      // fitPopup 连下发两拍，第三拍验幂等；随后 closePeek → resetPetSize → fitRestingFrame。
+      for (const beat of [0, 1, 2, 3, 4]) {
+        const r = stepY(workArea, cur, restingH, restingH, layout);
+        assert.strictEqual(r.catY, catY,
+          `${label} / ${layout.label}：开关气泡第 ${beat} 拍猫从 y=${catY} 漂到了 ${r.catY}`);
+        cur = r.winY;
+      }
+      vertCycles += 1;
+    }
+  }
+}
+assert(vertCycles > 4000, `开关气泡竖直覆盖太少（${vertCycles}）`);
+
+// ── 竖直向：跨版本恢复不许跳位 ───────────────────────────────────────────────
+// persistPos 存的 y 是**帧原点**，而帧高从 340 变成了 744。旧配置里没有 h，若按 744
+// 解读会算成猫下移 404px 再被钳回屏幕底 —— 升级后第一次启动喵就跳位。
+// main.js restoreWindowOrigin 的口径是**帧底**：originY = saved.y + savedH - frameHeight，
+// 再按新帧高的 insetY 反推猫。照抄它验证。
+function restoreCatY(saved, savedH, frameHeight, workArea) {
+  const h = Number.isFinite(savedH) && savedH > 0 ? savedH : BASE_FRAME_H;
+  const originY = saved.y + h - frameHeight;
+  const insetY = frameHeight - CAT_H - BELOW_RESERVE;
+  const catY = originY + insetY;
+  const maxCatY = Math.max(workArea.y, workArea.y + workArea.height - CAT_H - BELOW_RESERVE);
+  const clamped = Math.min(Math.max(catY, workArea.y), maxCatY);
+  const originOut = Math.round(clamped - insetY);
+  return originOut + insetY;
+}
+{
+  const small = { x: 0, y: 24, width: 1440, height: 876 };
+  // 老配置（无 h）必须按 340 解读：猫落在 saved.y + 340 - 120 - 28 = saved.y + 192。
+  assert.strictEqual(restoreCatY({ y: 400 }, undefined, FRAME_H_CONST, small), 400 + 192,
+    '老配置（无 h）必须按 BASE_H(340) 的帧底解读，猫不许因为帧高涨到 744 就下移 404px');
+  // 有 h 时按存的值解读，同样落在「帧底 - 148」。
+  assert.strictEqual(restoreCatY({ y: 100 }, FRAME_H_CONST, FRAME_H_CONST, small), 100 + 744 - 148,
+    '新配置按存的帧高解读');
+  // 核心不变量：帧高怎么变，猫的屏幕 y 都由**帧底**决定 → 同一份存盘、不同新帧高，猫不动。
+  for (const savedH of [340, 520, 624, 744, 900]) {
+    for (const frameH of [340, 520, 744, 876]) {
+      const want = 300 + savedH - 148;   // 帧底 300+savedH，猫顶 = 帧底 - 120 - 28
+      if (want < small.y || want > small.y + small.height - CAT_H - BELOW_RESERVE) continue;
+      assert.strictEqual(restoreCatY({ y: 300 }, savedH, frameH, small), want,
+        `存盘帧高 ${savedH} → 新帧高 ${frameH}：猫的屏幕 y 必须不变（帧底才是不变量）`);
+    }
+  }
+  // 换过分辨率 / 拔过外接屏：整块在屏幕外的存盘位置必须把猫拉回可见区，且猫下方留量完整。
+  assert.strictEqual(restoreCatY({ y: 2000 }, 744, 744, small), small.y + small.height - CAT_H - BELOW_RESERVE,
+    '存盘位置在屏幕下方之外时，猫必须被拉回到「胶囊仍完整可见」的下界');
+  assert.strictEqual(restoreCatY({ y: -1500 }, 744, 744, small), small.y,
+    '存盘位置在屏幕上方之外时，猫必须被拉回工作区上缘');
+  // 真机两块屏都走一遍（含负原点副屏）。
+  for (const [workArea, label] of SCREENS.slice(0, 2)) {
+    const lo = workArea.y;
+    const hi = workArea.y + workArea.height - CAT_H - BELOW_RESERVE;
+    for (const savedY of [-9999, workArea.y - 200, workArea.y + 300, 99999]) {
+      const got = restoreCatY({ y: savedY }, 744, effFrameH(workArea), workArea);
+      assert(got >= lo && got <= hi, `${label}：恢复后的猫 y=${got} 必须落在 [${lo}, ${hi}]`);
+    }
+  }
+}
+
+// ── 竖直向：小屏削高 ─────────────────────────────────────────────────────────
+// applyPetSize 有 `h = Math.min(h, wa.height)`。wa.height < 744 的屏（清单里的
+// 1024×744 那块 → 744 恰好等号；更矮的屏会真被削）上帧高变小，但**该屏之内仍恒定**，
+// 所以 E2 在那块屏上也不复现。跨屏拖动那一刻帧高会变一次 —— 已知残留，如实钉住它的
+// 边界：允许帧高变，但猫的屏幕位置不许因此漂移（帧底口径保证了这一点）。
+{
+  const tiny = { x: 0, y: 24, width: 1280, height: 600 };   // 比 744 矮，帧高被削到 600
+  assert.strictEqual(effFrameH(tiny), 600, '矮屏上帧高必须被 Math.min 削到工作区高度');
+  assert.strictEqual(effFrameH({ x: 0, y: 24, width: 1024, height: 744 }), 744,
+    'wa.height 恰为 744 时不许被削');
+  // 该屏之内恒定：任何弹窗内容高度都算出同一个帧高。
+  for (const contentH of [80, 200, 340, 520, 900]) {
+    assert.strictEqual(effFrameH(tiny), 600, `矮屏 / 弹窗内容 ${contentH}：帧高在该屏内必须恒定`);
+  }
+  // 矮屏上可达性同样成立（猫仍能贴上缘与下界）。
+  for (const layout of LAYOUTS) {
+    const reserve = layout.yAlign === 'bottom' ? layout.belowContent : BELOW_RESERVE;
+    if (CAT_H + reserve > tiny.height) continue;
+    for (const catY of [tiny.y, tiny.y + tiny.height - CAT_H - reserve]) {
+      const r = stepY(tiny, Math.round(catY - catLocalY(effFrameH(tiny), layout)), effFrameH(tiny), effFrameH(tiny), layout);
+      assert.strictEqual(r.catY, catY, `矮屏 / ${layout.label}：猫在 y=${catY} 必须落位不动`);
+    }
+  }
+  // 跨屏：从 744 帧的大屏拖到 600 帧的矮屏，猫留在两块屏都可见的位置时不许漂。
+  const big = SCREENS[0][0];
+  const catY = Math.max(big.y, tiny.y) + 200;
+  const savedFrameBottom = catY + CAT_H + BELOW_RESERVE;   // 帧底 == 内容底
+  const restored = restoreCatY({ y: savedFrameBottom - 744 }, 744, effFrameH(tiny), tiny);
+  assert.strictEqual(restored, catY,
+    '跨屏那次帧高变化允许存在，但猫的屏幕位置不许跟着漂（帧底口径）');
+}
+
 // ── 模型忠实度 ───────────────────────────────────────────────────────────────
 // 上面每个公式都是从下面这些行抄来的。它们一旦改写，这个 suite 的结论就不再代表
 // 真实链条 —— 那时应该同步改模型，而不是让一个已经失真的模型继续绿着。
@@ -476,21 +727,65 @@ assert(/const x = clampCatOrigin\(wa, catScreenX, catW, inset\);/.test(mainJs),
   'applyPetSize 必须走 clampCatOrigin，本 suite 的钳制模型需要同步');
 assert(!/x = Math\.min\(Math\.max\(x, wa\.x\), wa\.x \+ wa\.width - width\);/.test(mainJs),
   '钳窗口那一行不能回来：它是屏幕左右各 200px 环带（E3/E4）的唯一成因');
-// 竖直方向仍然钳窗口 —— 高弹窗不能把猫和底部按钮顶出屏幕。这一维没跟着改。
-assert(/y = Math\.min\(Math\.max\(y, wa\.y\), wa\.y \+ wa\.height - h\);/.test(mainJs),
-  '竖直钳制必须保留：高弹窗会把猫和底部按钮顶出屏幕');
+// 竖直钳制：2026-09-18（E2）也改成钳猫了。帧高恒 744 而猫 120，钳窗口会让屏幕上下
+// 各出现几百像素的死区（和横向那条 200px 环带同构）。但下界必须连**猫下方的内容**
+// 一起保护 —— 那是胶囊 / 会话点，被顶出屏幕就读不到了。
+assert(/function clampCatOriginY\(/.test(mainJsCode)
+  && /const maxCatY = Math\.max\(wa\.y, wa\.y \+ wa\.height - catH - reserve\);/.test(mainJsCode)
+  && /const catY = Math\.min\(Math\.max\(catScreenY, wa\.y\), maxCatY\);/.test(mainJsCode)
+  && /return Math\.round\(catY - insetY\);/.test(mainJsCode),
+  'clampCatOriginY 的钳猫算术变了，本 suite 的 stepY() 需要同步');
+assert(/const y = clampCatOriginY\(wa, catScreenY, catH, belowReserve, insetY\);/.test(mainJsCode),
+  'applyPetSize 必须走 clampCatOriginY，本 suite 的竖直钳制模型需要同步');
+// belowReserve 分两种布局：yAlign 'bottom' 按帧尾算（帧底 == 内容底），'top'
+// （#stage.edge-below）时帧尾是空的透明留白、不是内容，只能保护 RESTING_BELOW_RESERVE。
+// 拿同一个式子算 'top' 会把 744 全当成「必须可见」，maxCatY 退化成 wa.y，猫一进
+// edge-below 就被甩到工作区上缘（1024×744 那块屏上实测跳 126px）。
+assert(/anchor\.yAlign === 'bottom' \? Math\.max\(0, h - insetY - catH\) : RESTING_BELOW_RESERVE/.test(mainJsCode),
+  'belowReserve 必须按 yAlign 分流：edge-below 的帧尾是透明留白，不是要保护的内容');
+assert(!/y = Math\.min\(Math\.max\(y, wa\.y\), wa\.y \+ wa\.height - h\);/.test(mainJsCode),
+  '竖直钳窗口那一行不能回来：帧高恒 744、猫 120，它会让屏幕上下各出现几百像素死区');
+// keepCatOnScreen（换分辨率 / 插拔外接屏 / 动 Dock 时的兜底）必须与 applyPetSize
+// **同一套口径**。它横向早就钳猫了，竖直却漏了一条钳窗口的 `min(max(b.y, wa.y),
+// wa.bottom - b.height)`：猫贴屏幕顶时帧原点合法地在 -569（探针实测），那一行会把窗口
+// 硬拉回 242、猫从 30 跳到 841。也就是贴顶的猫只要碰上任一次屏幕拓扑变化就被甩走。
+// 找屏幕同样必须用**猫**的坐标：帧原点 -569 落在所有屏幕之外，
+// getDisplayNearestPoint 会挑错那块屏，然后按它的工作区钳。
+assert(/const y = clampCatOriginY\(wa, catY, PET_BODY_H, RESTING_BELOW_RESERVE, insetY\);/.test(mainJsCode),
+  'keepCatOnScreen 的竖直兜底必须走 clampCatOriginY，不能钳窗口');
+assert(/getDisplayNearestPoint\(\{ x: Math\.round\(catX\), y: Math\.round\(catY\) \}\)/.test(mainJsCode),
+  'keepCatOnScreen 必须按猫的坐标找屏幕：帧原点可能在所有屏幕之外');
+assert(!/y = Math\.min\(Math\.max\(b\.y, wa\.y\), wa\.y \+ wa\.height - b\.height\);/.test(mainJsCode),
+  'keepCatOnScreen 里竖直钳窗口那一行不能回来：它会把贴屏幕顶的猫甩到中下部');
+// 帧高恒定：E2 的成因是开关气泡改帧高，幅度恰等于帧高差。两端必须同源。
+assert(/const PET_FRAME_H = 744;/.test(mainJsCode),
+  '主进程的 PET_FRAME_H 必须是常量 744');
+assert(/const PET_FRAME_H = POPUP_BOTTOM \+ ASK_VIEWPORT_MAX_H \+ 24;/.test(petJsCode),
+  '渲染端的 PET_FRAME_H 必须由 POPUP_BOTTOM + ASK_VIEWPORT_MAX_H + 24 推出，与主进程同源');
+assert(/return \{ w, h: PET_FRAME_H \};/.test(mainJsCode) && !/customSize\.h/.test(mainJsCode),
+  'targetSize 的高度必须恒为 PET_FRAME_H，不许再跟 customSize.h 走（那就是 E2 的成因）');
 // xAlign 恒 center：横向对齐维度已退役，本 suite 的 catInset 才能是纯常量。
 assert(/const xAlign = 'center';/.test(petJs),
   'anchoredLayoutPayload 的 xAlign 必须恒为 center，本 suite 的 catInset 才成立');
 assert(/const xOffset = rect\.left \+ rect\.width \/ 2 - viewportW \/ 2;/.test(petJs)
   && /yOffset = yAlign === 'top' \? rect\.top : viewportH - rect\.bottom/.test(petJs),
   'anchoredLayoutPayload 的 xOffset/yOffset 变了，本 suite 的锚点模型需要同步');
-// 竖直的 infer 吸附分支保留（横向那两条已删）。
-assert(/allowSnap && next\.vertical === 'below' && wr\.y <= wa\.y \+ 3 && oldPet\.y > 18\) screenY = wa\.y;/.test(petJs)
-  && /anchoredLayoutPayload\(nextLayout, !options\.popup\)/.test(petJs),
-  'anchoredLayoutPayload 的竖直 infer 分支变了（弹窗路径禁用吸附），本 suite 需要同步');
-assert(!/inferHorizontalFrameClamp/.test(petJs),
+// 竖直的两条 infer 吸附分支已**整体退役**（连带 allowSnap 参数和 RESTING_FRAME_MAX_H）。
+// 它们的前提是「主进程钳的是窗口」——「窗口被钳在屏幕顶而猫还困在窗口里」这个状态在
+// 竖直钳猫之后不存在了。而且恒高先一步废掉了它们的门（wr.height <= 360 恒 false）。
+// 留着就是死门，上一次留下的死门（永真的 inferHorizontalFrameClamp）正是 E3/E4 那条
+// 环带没被拦住的直接原因 —— 所以这里钉的是「不许回来」。
+assert(!/allowSnap/.test(petJsCode),
+  '竖直 infer 吸附的 allowSnap 门必须保持退役：钳猫之后「窗口被钳住而猫还没到边」不存在了');
+assert(!/RESTING_FRAME_MAX_H/.test(petJsCode),
+  'RESTING_FRAME_MAX_H 必须保持退役：帧高恒 744 之后任何 `wr.height <= 360` 的门都恒 false');
+assert(/const anchor = anchoredLayoutPayload\(nextLayout\);/.test(petJsCode)
+  && /function anchoredLayoutPayload\(next\) \{/.test(petJsCode),
+  'anchoredLayoutPayload 必须保持单参数签名（第二个 allowSnap 参数已随吸附分支一起退役）');
+assert(!/inferHorizontalFrameClamp/.test(petJsCode),
   '横向 infer 门必须保持退役：钳猫之后「窗口被钳住而猫还没到边」这个状态不存在了');
+assert(!/inferVerticalFrameClamp/.test(petJsCode),
+  '竖直 infer 门必须保持退役：与横向同一个论证（竖直钳猫后猫到边就是窗口到边）');
 assert(/const POPUP_W = 520;/.test(petJs), '本 suite 的 POPUP_W 必须跟渲染端一致');
 // 弹窗溢出补偿：--pop-shift 必须是 relative left（不能是 transform —— .peek/.ask/.think
 // 的入场动画 keyframes 结尾是 transform:none，会把位移擦掉；也不能是 margin —— 会挤压
@@ -500,4 +795,5 @@ assert(/function applyPopupShift\(/.test(petJs) && /--pop-shift/.test(petJs),
 assert(/\.peek, \.ask, \.bubble, \.think \{[^}]*left:\s*var\(--pop-shift/.test(petCss),
   '--pop-shift 必须走 relative left：transform 会被入场动画擦掉，margin 会挤压布局');
 
-console.log(`pet edge cycle checks passed (${checked} cycles, ${reachable} reachability, ${popupChecked} popup)`);
+console.log(`pet edge cycle checks passed (${checked} cycles, ${reachable} reachability, ${popupChecked} popup`
+  + `, ${vertReach} vertical reachability, ${vertCycles} vertical cycles)`);

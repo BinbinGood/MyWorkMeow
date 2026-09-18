@@ -497,14 +497,33 @@ const choiceKey = (c) => {
   return (c.sessionId || '') + '|' + (c.project || '') + '|' + (c.question || '');
 };
 
-// 动态定高：弹层贴 pet 上方(bottom:200)，把窗口高度调到刚好容纳内容，
-// 避免固定大窗口留白 / 顶屏被下移。先扩到目标宽度再量高度：如果在基础
-// 320px 窄窗里先测，长文本会被过度换行，错误地把弹层撑到整屏高。
+// 先扩到目标宽度再量高度：如果在基础 320px 窄窗里先测，长文本会被过度换行，
+// 错误地把弹层撑到整屏高。（帧**高**不再跟内容走，见 PET_FRAME_H。）
 const POPUP_W = 520;
 const POPUP_BOTTOM = 200;
 const ASK_VIEWPORT_MAX_H = 520;
+// 桌宠帧高**恒定**（2026-09-17，E2）。
+//
+// 用户原话：「任务气泡点击出现，点其他位置消失的时候……现在是往上消失，然后再出现，
+// 给人的感觉还是卡卡的」。探针实测：开/关气泡时窗口**高度**与 **y 原点**分帧落地，
+// 屏幕上看到的相位错帧**幅度恰好等于两次帧高之差**；把这个差人为压到 0（开关气泡
+// 不改高度）→ 16/16 例零闪现，差保持原样 → 16 例中 7 例可见。
+// 微观机制这里明确留空 —— 早先注释里「合成器还持有旧表面并裁掉顶部」那个说法是
+// 推测且已证伪，不要再传播。能确定的只有上面这条相关性。
+//
+// 于是帧高恒取「弹窗最高时需要的那个值」：POPUP_BOTTOM + ASK_VIEWPORT_MAX_H + 24。
+// main.js 的 PET_FRAME_H 是同一个推导写死成 744，改一处必须改两处，
+// test/popup-style.js 钉住了它们相等。小屏（工作区不足 744 高）由主进程
+// applyPetSize 的 Math.min 削一次，该屏内仍恒定。
+const PET_FRAME_H = POPUP_BOTTOM + ASK_VIEWPORT_MAX_H + 24;
+// 老的「静息帧高」。帧高恒定（PET_FRAME_H）之后它不再是任何窗口的真实高度，还剩
+// 两个用途：
+//   ① 读 window.innerHeight 拿不到有效值时的兜底值（测试 DOM 桩里就是 340）；
+//   ② restingTopRoom 的基准 —— 「静息态本来给气泡留了多高」。这一项才是它现在的
+//      主要语义：340 是历史上「刚好裹住内容」的那个帧高，减掉猫高和猫下方那一截
+//      （胶囊）剩下的就是气泡的可用高度，也就是上/下让位的阈值。
+// 别再拿它当「当前帧是不是静息帧」的判据 —— 恒高之后没有这种判据。
 const BASE_PET_FRAME_H = 340;
-const RESTING_FRAME_MAX_H = 360;
 let fitPopupSeq = 0;
 // 只有竖直方向有贴边态。横向那半套已于 2026-09-17 退役：它存在的唯一目的是绕开
 // 「主进程钳窗口」这个前提（窗口 520 宽而猫 120 宽，钳窗口会把猫从屏幕左右各 200px
@@ -552,32 +571,23 @@ function setStageEdgeLayout(next) {
 // Changing the flex anchor moves the pet inside the transparent BrowserWindow.
 // This payload lets the main process move/resize that window in the opposite
 // direction, so the visible pet stays on exactly the same screen pixel.
-function anchoredLayoutPayload(next, allowSnap = true) {
+//
+// 这里**不做任何吸附**。2026-09-17（E2）之前有两条竖直吸附分支：窗口被钳在工作区
+// 上/下缘、而猫还困在窗口的透明留白里时，按「用户其实想把猫贴到那条边」把 screenY
+// 拉到边上。那两条分支的前提是「主进程钳的是窗口」—— 竖直改钳猫（main.js
+// clampCatOriginY）之后猫本体到边和窗口到边是同一件事，「窗口被拦住而猫没到边」
+// 这个状态不再存在，无从推断也无需推断。横向那条对应分支在同一天以同样的论证退役。
+// 顺带一提它们已经先被恒高废掉了：门是 `wr.height <= RESTING_FRAME_MAX_H(360)`，
+// 帧高恒 744 之后恒 false。留着就是死代码，而上一次留下的死门（永真的
+// inferHorizontalFrameClamp）正是 E3/E4 那条环带没被拦住的直接原因。
+function anchoredLayoutPayload(next) {
   const before = petGeometrySnapshot();
   if (!before) { setStageEdgeLayout(next); return null; }
   const oldPet = before.petRect;
-  const wa = before.workArea;
-  const waBottom = wa.y + wa.height;
   const wr = before.windowRect;
-  const compactVerticalFrame = wr.height <= RESTING_FRAME_MAX_H;
-  let screenX = wr.x + oldPet.x;
-  let screenY = wr.y + oldPet.y;
+  const screenX = wr.x + oldPet.x;
+  const screenY = wr.y + oldPet.y;
 
-  // 竖直方向：窗口已被钳在工作区上/下缘、而猫还困在窗口的透明留白里，说明系统在
-  // 用户的猫本体到边之前就把窗口拦住了。按「用户其实想把猫贴到那条边」处理，吸附
-  // **猫本体**而不是帧。
-  //
-  // allowSnap=false 于弹窗路径（setRequestedPetSize 传 !options.popup）：吸附的
-  // 语义是「兑现拖拽意图」，只在拖拽松手/静息复位时合法。弹窗打开时没有拖拽意图。
-  //
-  // 需要 compactVerticalFrame 这个前提：高弹窗被钳到屏顶时会伪装成顶部拖拽，必须
-  // 按帧高排除。横向**没有**对应分支 —— 横向现在钳的是猫，窗口原点允许悬出屏幕，
-  // 「窗口被拦住而猫没到边」这种状态不再存在，无从推断，也无需推断。
-  if (compactVerticalFrame && allowSnap && next.vertical === 'below' && wr.y <= wa.y + 3 && oldPet.y > 18) screenY = wa.y;
-  if (compactVerticalFrame && allowSnap && next.vertical === 'above'
-    && wr.y + wr.height >= waBottom - 3 && wr.height - oldPet.y - oldPet.height > 18) {
-    screenY = waBottom - oldPet.height;
-  }
   // 测「目标布局」下猫的窗内偏移。临时切 class、同步测 rect、立刻恢复：整段在一个
   // 同步块里跑完，浏览器不会在中间 paint，所以不产生「先挪一帧再弹回」的抖动；flex
   // 的真正落地仍由调用方延后到 resize 事件（pendingEdgeLayout），与窗口重排同帧。
@@ -585,7 +595,7 @@ function anchoredLayoutPayload(next, allowSnap = true) {
   // 上方、隔一个胶囊高），yOffset 就是那段胶囊高。
   const rect = measureEdgeRect(next);
   const viewportW = Math.max(1, window.innerWidth || 320);
-  const viewportH = Math.max(1, window.innerHeight || 340);
+  const viewportH = Math.max(1, window.innerHeight || BASE_PET_FRAME_H);
   // 横向恒居中：CSS 里已经没有 edge-left/edge-right，猫的窗内偏移恒为 (帧宽-猫宽)/2。
   // 仍然发 'center' 而不是省掉这个字段，是因为主进程 anchoredPetOrigin 靠它反解
   // localX（三条分支还留着，兼容旧锚点）。
@@ -695,36 +705,62 @@ function applyPopupShift(petScreenX, petWidth) {
   stage.style.setProperty('--pop-shift', shift + 'px');
 }
 
+// 「猫本体上方至少要留多少屏幕空间给气泡」。低于这个数就把气泡翻到猫下方
+// （#stage.edge-below）。拖动途中的同一个判据在 PetGeometry.chooseDragVerticalLayout。
+//
+// 2026-09-17（E2）：旧实现拿的是**猫在帧内的 y 偏移**，再减一个
+// `wr.height - BASE_PET_FRAME_H` 的「弹窗多出来的高度」修正项。那个代理量成立的前提
+// 是「静息帧高恰好裹住内容」—— 帧高 340、整列贴帧底排，于是「帧顶到猫顶」正好等于
+// 内容给气泡留的那一截。帧高恒定（744）之后前提没了：猫上方恒有 ~600px 透明留白，
+// 那个偏移恒等于 597，而修正项恒等于 404，减完只是把一个常数换成另一个常数，语义全丢。
+// 现在直接按**静息帧高**反算同一个数：340 - 猫高 - 猫下方那一截（胶囊）。量出来仍是
+// 旧的 ~193，但每一项都是实测的，胶囊变高会跟着变。
+//
+// 必须在 'above' 布局下量：'below' 时整列贴帧顶，猫下方是几百像素透明留白，
+// 量出来会是个负数。这次临时切 class 的手法与 measureEdgeRect 同源 —— 整段同步跑完，
+// 中间不会 paint。
+function restingTopRoom() {
+  const measure = () => {
+    const rect = curSkinEl().getBoundingClientRect();
+    const viewportH = Math.max(1, window.innerHeight || BASE_PET_FRAME_H);
+    const belowCat = Math.max(0, viewportH - (rect.top + rect.height));
+    return BASE_PET_FRAME_H - rect.height - belowCat + 2;
+  };
+  if (edgeLayout.vertical !== 'below') return Math.max(24, measure());
+  const previous = { ...edgeLayout };
+  setStageEdgeLayout({ ...previous, vertical: 'above' });
+  const room = measure();
+  setStageEdgeLayout(previous);
+  return Math.max(24, room);
+}
+
 function restingEdgeLayout() {
   const snapshot = petGeometrySnapshot();
   if (!snapshot || !window.PetGeometry) return edgeLayout;
-  // In an expanded popup the bottom-anchored pet's local y grows by exactly
-  // the extra window height. Remove that artificial offset before deciding
-  // whether the visible pet itself is actually in the top-edge zone.
-  const frameHeightExcess = Math.max(0, snapshot.windowRect.height - BASE_PET_FRAME_H);
-  let topThreshold = snapshot.petRect.y - frameHeightExcess + 2;
-  if (edgeLayout.vertical === 'below') {
-    // Measure the real normal-layout inset for the current pet/status stack.
-    // A fixed number is wrong as soon as a chip/bubble changes height and can
-    // make pointerup flip the pet back too early.
-    const previous = { ...edgeLayout };
-    setStageEdgeLayout({ ...previous, vertical: 'above' });
-    topThreshold = curSkinEl().getBoundingClientRect().top - frameHeightExcess + 2;
-    setStageEdgeLayout(previous);
-  }
   return window.PetGeometry.chooseRestingLayout({
     ...snapshot,
-    threshold: Math.max(24, topThreshold),
-    inferVerticalFrameClamp: snapshot.windowRect.height <= RESTING_FRAME_MAX_H,
+    threshold: restingTopRoom(),
   });
 }
 
-function popupEdgeLayout(height, popupHeight) {
+// 弹窗态的上/下让位。判据是**弹窗内容**高度对猫上方余量，与帧高无关。
+//
+// 2026-09-17（E2）：签名从 (height, popupHeight) 收成只收 popupHeight，帧高那个
+// 参数与它的兜底（`(height || 340) - POPUP_BOTTOM`）一起退役 —— 恒高之后帧高是常量，
+// 反推出来的「内容高度」恒等于 544，比大多数卡片都高，会把小卡片也判成装不下、
+// 一律翻到猫下方。
+//
+// popupHeight 缺失（fitPopup 的第一拍：那一拍只负责把帧扩到 POPUP_W，真实内容高度
+// 还没量到）时**沿用当前布局**，不猜。猜错的代价是第一拍翻到 below、第二拍再翻回来，
+// 屏幕上就是一次多余的跳动 —— 正是这次要消掉的那类东西。
+function popupEdgeLayout(popupHeight) {
   const snapshot = petGeometrySnapshot();
   if (!snapshot || !window.PetGeometry) return edgeLayout;
+  const need = Number(popupHeight);
+  if (!Number.isFinite(need) || need <= 0) return edgeLayout;
   return window.PetGeometry.choosePopupLayout({
     ...snapshot,
-    popupHeight: Math.max(80, Number(popupHeight) || (Number(height) || 340) - POPUP_BOTTOM),
+    popupHeight: Math.max(80, need),
   });
 }
 
@@ -732,11 +768,9 @@ function setRequestedPetSize(w, h, options = {}) {
   const width = Number(w) || 0;
   const height = Number(h) || 0;
   const nextLayout = options.popup
-    ? popupEdgeLayout(height, options.popupHeight)
+    ? popupEdgeLayout(options.popupHeight)
     : restingEdgeLayout();
-  // 弹窗路径禁用贴边吸附（allowSnap=false）：吸附的语义是「兑现拖拽意图」，
-  // 弹窗打开时没有拖拽意图，误触发会把没贴边的猫吸到屏幕边缘（2026-09-16 实测）。
-  const anchor = anchoredLayoutPayload(nextLayout, !options.popup);
+  const anchor = anchoredLayoutPayload(nextLayout);
   // 尺寸真的要变 → resize 事件会来，flex 变更延后到那里跟窗口重排同帧落地，
   // 消除「先挪一帧再弹回」的抖动。尺寸没变（拖动贴边/复位锚点，主进程只动位置
   // 不动尺寸，不会发 resize）→ 就地应用，否则贴边状态会一直卡住。
@@ -846,9 +880,14 @@ function fitRestingFrame(force = false, allowOverlays = false) {
     // 时从气泡态收回来会在这里提前返回，窗口高度就卡在气泡的 600 下不来 ——
     // 这正是 resetPetSize 当初要 force=true 绕过它的原因。把判断补全，force 就
     // 真的冗余了：它剩下的唯一作用是在尺寸没变时强行多发一次 IPC。
+    //
+    // 高度侧的比较对象必须**跟着主进程削一次**：applyPetSize 是 min(PET_FRAME_H,
+    // wa.height)，小屏上真实帧高恒小于 744。直接拿 744 比就永远不相等，这条去重
+    // 在小屏上整个失效、每次都白发一次 IPC → 一次 setBounds → 一次窗口重排。
     const currentH = Number(window.innerHeight) || BASE_PET_FRAME_H;
-    if (!force && Math.abs(current - width) <= 2 && Math.abs(currentH - BASE_PET_FRAME_H) <= 2) return;
-    setRequestedPetSize(width, BASE_PET_FRAME_H);
+    const targetH = Math.min(PET_FRAME_H, browserWorkArea().height || PET_FRAME_H);
+    if (!force && Math.abs(current - width) <= 2 && Math.abs(currentH - targetH) <= 2) return;
+    setRequestedPetSize(width, PET_FRAME_H);
   });
 }
 
@@ -866,14 +905,18 @@ function fitPopup(el) {
       const contentH = el.scrollHeight;
       el.style.maxHeight = prev;
       const viewportH = el === askEl ? Math.min(contentH, ASK_VIEWPORT_MAX_H) : contentH;
-      const winH = Math.max(340, POPUP_BOTTOM + viewportH + 24);
-      setRequestedPetSize(popupW, winH, { popup: true, popupHeight: viewportH });
+      // 帧高恒定（PET_FRAME_H），**不跟内容走** —— 这就是 E2 的修法本体：开/关气泡
+      // 不改帧高，屏幕上那个「往上消失再出现」的相位错帧（幅度恒等于帧高差）就没了。
+      // 但 popupHeight 必须继续是**内容**真实高度：上/下让位判的是「猫上方装不装得下
+      // 这张卡片」，跟着恒高变成常量的话小卡片也会被判成装不下。
+      setRequestedPetSize(popupW, PET_FRAME_H, { popup: true, popupHeight: viewportH });
     };
 
     const targetW = POPUP_W;
     if (Math.abs((window.innerWidth || 0) - targetW) > 2) {
-      // 第一拍只扩宽，第二拍在正确的横向排版下测真实高度。
-      setRequestedPetSize(targetW, Math.max(340, window.innerHeight || 340), { popup: true });
+      // 第一拍只扩宽，第二拍在正确的横向排版下测真实高度。高度参数照发 PET_FRAME_H
+      // （恒高之后它对高度是 no-op，这一拍纯粹为了改宽）。
+      setRequestedPetSize(targetW, PET_FRAME_H, { popup: true });
       requestAnimationFrame(() => requestAnimationFrame(measure));
     } else {
       measure();
@@ -900,12 +943,19 @@ function settleEdgeLayout() {
   fitRestingFrame(true, true);
 }
 
-// Switch the internal top/bottom anchor *during* a drag, just before the
-// transparent BrowserWindow reaches the work-area boundary. The visible pet
-// is kept on the same screen pixel and the gesture is rebased, so the next
-// pointer frame continues from there instead of producing edge -> pause ->
-// jump. Returning from the top probes the normal layout first and restores it
-// as soon as the whole frame can fit on-screen again.
+// Switch the internal top/bottom anchor *during* a drag, so气泡在猫快要贴到屏幕
+// 上缘时提前翻到猫下方。可见的猫始终停在同一个屏幕像素上、手势就地 rebase，
+// 下一个 pointer 帧从那里接着走，不会出现「到边 → 顿一下 → 跳」。
+//
+// 2026-09-17（E2）：判据换成**猫本体**离工作区上缘的距离，与静息态
+// （restingEdgeLayout / restingTopRoom）完全同一条规则。旧实现判的是**帧**原点撞不撞
+// 工作区上缘，那在帧高裹住内容时是个够用的代理；帧高恒定（744）之后猫上方恒有
+// ~600px 透明留白且**合法**悬出屏幕上方 → 那个条件一拖动就恒真，永远判成 below。
+//
+// 顺带塌掉了旧的 above/below 两条不对称分支：那时 below 布局下猫的帧内偏移不同，
+// 得先临时切到 above 探一次才能拿到可比的数。现在判据是猫的**屏幕**坐标，而猫的屏幕
+// 坐标在布局翻转前后由锚点保持不变，两个方向天然同一个式子，也天然没有滞回缺口
+// （往上拖越过阈值翻 below，往下拖越回来翻 above，翻转本身不改判据的值）。
 function movePetDuringDrag(gesture, e, targetX, targetY) {
   const dragMeta = () => ({
     x: gesture.grabX,
@@ -922,32 +972,10 @@ function movePetDuringDrag(gesture, e, targetX, targetY) {
   const petScreenX = targetX + before.left;
   const petScreenY = targetY + before.top;
   const wa = browserWorkArea();
-  let nextVertical = edgeLayout.vertical;
-
-  if (edgeLayout.vertical === 'above') {
-    nextVertical = window.PetGeometry
-      ? window.PetGeometry.chooseDragVerticalLayout({
-        current: 'above', workArea: wa, targetWindowY: targetY,
-        petScreenY, abovePetOffset: before.top,
-      })
-      : (targetY <= wa.y + 2 ? 'below' : 'above');
-  } else if (edgeLayout.vertical === 'below') {
-    const candidate = { ...edgeLayout, vertical: 'above' };
-    setStageEdgeLayout(candidate);
-    const normalRect = el.getBoundingClientRect();
-    const probed = window.PetGeometry
-      ? window.PetGeometry.chooseDragVerticalLayout({
-        current: 'below', workArea: wa, targetWindowY: targetY,
-        petScreenY, abovePetOffset: normalRect.top,
-      })
-      : (petScreenY - normalRect.top >= wa.y + 2 ? 'above' : 'below');
-    if (probed === 'above') {
-      nextVertical = 'above';
-    } else {
-      setStageEdgeLayout({ ...edgeLayout, vertical: 'below' });
-      nextVertical = 'below';
-    }
-  }
+  const topRoom = restingTopRoom();
+  const nextVertical = window.PetGeometry
+    ? window.PetGeometry.chooseDragVerticalLayout({ workArea: wa, petScreenY, topRoom })
+    : (petScreenY - wa.y <= topRoom + 2 ? 'below' : 'above');
 
   if (nextVertical !== edgeLayout.vertical) {
     setStageEdgeLayout({ ...edgeLayout, vertical: nextVertical });

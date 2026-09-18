@@ -92,12 +92,35 @@ const WINDOW_ICON_FILE = nativeImage.createFromPath(WINDOW_ICON_PATH);
 const WINDOW_ICON = WINDOW_ICON_FILE.isEmpty()
   ? nativeImage.createFromPath(WINDOW_ICON_PNG_PATH)
   : WINDOW_ICON_FILE;
+// BASE_W 是静息帧宽的下限（真实帧宽由渲染端按内容算，见 restingFrameWidth）。
+// BASE_H 只剩两个用途：老配置（petPosition 没存 h）的解读口径，以及测试桩兜底。
+// 活着的帧高恒为 PET_FRAME_H，见下。
 const BASE_W = 320, BASE_H = 340;
-// 猫本体的可见宽度（renderer/pet.css 的 #cat 是 120×120，1:1 显示 GIF）。
-// 主进程需要它是因为**钳制的对象是猫，不是透明窗口**：窗口恒比猫宽几百像素，
+// 猫本体的可见宽度 / 高度（renderer/pet.css 的 #cat 是 120×120，1:1 显示 GIF，无 transform）。
+// 主进程需要它们是因为**钳制的对象是猫，不是透明窗口**：窗口恒比猫大几百像素，
 // 拿窗口去撞工作区缘会把猫推离用户放它的位置（见 applyPetSize）。
-// 没有锚点的退化路径只能靠这个常量推窗内偏移；有锚点时用 anchor.width（权威值）。
+// 没有锚点的退化路径只能靠这两个常量推窗内偏移；有锚点时用 anchor.width/height（权威值）。
 const PET_BODY_W = 120;
+const PET_BODY_H = 120;
+// 桌宠帧高**恒定**（2026-09-17，E2）。
+//
+// 用户原话：「任务气泡点击出现，点其他位置消失的时候……现在是往上消失，然后再出现，
+// 给人的感觉还是卡卡的」。探针实测：开/关气泡时窗口**高度**与 **y 原点**分帧落地，
+// 屏幕上看到的相位错帧**幅度恰好等于两次帧高之差**；把这个差人为压到 0（开关气泡
+// 不改高度）→ 16/16 例零闪现，差保持原样 → 16 例中 7 例可见。
+// 微观机制这里明确留空 —— 早先注释里「合成器还持有旧表面并裁掉顶部」那个说法是
+// 推测且已证伪，不要再传播。能确定的只有上面这条相关性。
+//
+// 于是帧高不再跟内容走：恒取「弹窗最高时需要的那个值」。
+//   POPUP_BOTTOM(200) + ASK_VIEWPORT_MAX_H(520) + 24 = 744
+// 三个数与 renderer/pet.js 的同名常量同源（那边的 PET_FRAME_H 是同一个推导），
+// 改一处必须改两处，test/popup-style.js 钉住了它们相等。
+// 小屏（工作区不足 744 高）由 applyPetSize 的 Math.min 削一次，该屏内仍恒定。
+const PET_FRAME_H = 744;
+// 静息态猫**下方**那一截（胶囊 margin-top 2 + min-height 21，外加一点富余）。
+// 只在没有渲染端锚点的退化路径里当保守估值用：竖直钳猫时要连它一起留在屏幕内，
+// 否则贴屏幕底的猫会把状态胶囊顶出可见区。有锚点时用精确反解值（见 applyPetSize）。
+const RESTING_BELOW_RESERVE = 28;
 
 // 让一个「用户主动打开的」窗口真正拿到键盘焦点。
 // app.dock.hide() 会把 mac 上的 app 变成 accessory app，副作用是 show()/focus()
@@ -172,15 +195,13 @@ const pendingQuotaAlerts = new Map();
 let quotaAlertTimer = null;
 
 // ── window geometry ───────────────────────────────────────────────────────────
-  // customSize is set by the renderer for either an intrinsic-width resting
-  // capsule or an open popup, so neither state leaves an unnecessarily large
-  // transparent window.
+  // 帧**宽**由渲染端按内容给（静息胶囊的内蕴宽度，或打开的弹窗宽度），这样两种
+  // 状态都不会留下没必要的大块透明窗口。
+  // 帧**高**恒为 PET_FRAME_H，不跟 customSize.h 走 —— 见 PET_FRAME_H 的注释（E2）。
 function targetSize(st) {
   const cs = st && st.customSize;
-  if (cs) {
-    return { w: Math.min(900, Math.max(BASE_W, cs.w)), h: Math.max(BASE_H, cs.h) };
-  }
-  return { w: BASE_W, h: BASE_H };
+  const w = cs ? Math.min(900, Math.max(BASE_W, cs.w)) : BASE_W;
+  return { w, h: PET_FRAME_H };
 }
 
 function validPetAnchor(anchor) {
@@ -230,7 +251,7 @@ function anchoredPetOrigin(anchor, width, height) {
 //      而 inset 恒 = (帧宽-猫宽)/2 < 帧宽/2；
 //   3. 存盘存的是猫的屏幕位置、恢复时重新钳猫（见 persistPos / restoreWindowOrigin）。
 //
-// 竖直方向**不用**这个函数，继续钳窗口：高弹窗绝不能把猫和底部按钮顶出屏幕。
+// 竖直方向同理，见下面的 clampCatOriginY —— 2026-09-17（E2）之前那边钳的是窗口。
 //
 // inset 由调用方给（有锚点时从 anchoredPetOrigin 精确反解，三条 xAlign 分支都对，
 // 不预设居中），所以这个函数对旧锚点也成立。
@@ -239,6 +260,29 @@ function clampCatOrigin(wa, catScreenX, catWidth, inset) {
   const maxCatX = Math.max(wa.x, wa.x + wa.width - catW);
   const catX = Math.min(Math.max(catScreenX, wa.x), maxCatX);
   return Math.round(catX - inset);
+}
+
+// 竖直方向的同款：把**猫本体连同它下方的内容**钳进工作区，返回窗口原点 y。
+//
+// 2026-09-17（E2）之前这里钳的是窗口（`y = min(max(y, wa.y), wa.bottom - h)`）。
+// 帧高变成恒定的 744 之后那一行必须走：猫上方有 ~528px 透明留白，拿窗口去撞工作区
+// 上沿会把猫整体往下推 —— D1 探针实测静息位置漂 60px（steadies 从 [781] 变成
+// [841, 781]）。所以恒高与钳猫这两件事必须同时落地，缺一个都是新 bug。
+//
+// 两条边界不对称，因为猫在帧里的位置不对称：
+//   上界：只要求**猫顶** >= wa.y。猫上方那截透明留白**允许**悬出屏幕上方 ——
+//         这正是恒高方案的地基，靠 enableLargerThanScreen 撑着（见 makePetWindow）。
+//   下界：猫顶 + 猫高 + belowReserve <= wa.bottom。belowReserve 是猫底到帧底的距离，
+//         也就是胶囊 / 会话点那一截 —— 只钳猫本体会把它们顶出屏幕（用户看不见状态）。
+//
+// belowReserve 与 insetY 由调用方给：有锚点时从 anchoredPetOrigin 精确反解
+// （两条 yAlign 分支都对），无锚点的退化路径按「猫贴帧底」推。
+function clampCatOriginY(wa, catScreenY, catHeight, belowReserve, insetY) {
+  const catH = catHeight > 0 ? catHeight : PET_BODY_H;
+  const reserve = belowReserve > 0 ? belowReserve : 0;
+  const maxCatY = Math.max(wa.y, wa.y + wa.height - catH - reserve);
+  const catY = Math.min(Math.max(catScreenY, wa.y), maxCatY);
+  return Math.round(catY - insetY);
 }
 
 function applyPetSize(st, requestedAnchor) {
@@ -252,8 +296,8 @@ function applyPetSize(st, requestedAnchor) {
   // 第 3 次与第 1 次的尺寸一模一样，白重排一遍，正是切状态时那下卡顿。
   // 放在两条分支的 setBounds 之前各判一次（下面 catch 里那条走的是另一套坐标）。
   const same = (x, y, width, height) => x === b.x && y === b.y && width === b.width && height === b.height;
-  // 竖直：把窗口钳进工作区，这样高弹窗永远不会把猫 / 底部按钮顶出屏幕
-  // （超高时由弹窗内部滚动）。横向：钳猫，见 clampCatOrigin 的注释。
+  // 横向与竖直现在是同一套口径：钳**猫本体**，窗口原点允许悬出工作区。
+  // 见 clampCatOrigin / clampCatOriginY 的注释。
   try {
     const wa = screen.getDisplayMatching(b).workArea;
     const width = Math.min(w, wa.width);
@@ -262,15 +306,30 @@ function applyPetSize(st, requestedAnchor) {
     const anchored = anchor ? anchoredPetOrigin(anchor, width, h) : null;
     const bottom = b.y + b.height;
     // 猫此刻在屏幕上的位置与它在目标帧里的窗内偏移。
-    // 有锚点：screenX 是渲染端量出来的权威值，inset 从 anchoredPetOrigin 反解
-    // （screenX - 原点 = localX，三条 xAlign 分支都精确）。
-    // 无锚点（早期调用 / 异常路径）：按「当前窗口居中」推，这也是 CSS 的默认对齐。
+    // 有锚点：screenX/screenY 是渲染端量出来的权威值，inset 从 anchoredPetOrigin 反解
+    // （screenX - 原点 = localX，三条 xAlign / 两条 yAlign 分支都精确）。
+    // 无锚点（早期调用 / 异常路径）：按「当前窗口居中 + 猫贴帧底」推，这也是 CSS 的
+    // 默认对齐（#stage 是 align-items:center + justify-content:flex-end）。
     const catW = anchor ? anchor.width : PET_BODY_W;
     const catScreenX = anchor ? anchor.screenX : b.x + (b.width - PET_BODY_W) / 2;
     const inset = anchored ? anchor.screenX - anchored.x : (width - PET_BODY_W) / 2;
     const x = clampCatOrigin(wa, catScreenX, catW, inset);
-    let y = anchored ? anchored.y : Math.round(bottom - h);
-    y = Math.min(Math.max(y, wa.y), wa.y + wa.height - h);
+    const catH = anchor ? anchor.height : PET_BODY_H;
+    const rawY = anchored ? anchored.y : Math.round(bottom - h);
+    const insetY = anchored ? anchor.screenY - anchored.y : h - PET_BODY_H;
+    const catScreenY = anchored ? anchor.screenY : rawY + insetY;
+    // 猫底到帧底那一截（胶囊 / 会话点）。退化路径里猫就贴着帧底，没有留量。
+    //
+    // 只有 yAlign === 'bottom' 能按「帧尾」算：那时 #stage 是 justify-content:flex-end，
+    // 整列贴帧**底**，帧底 == 内容底，h - insetY - catH 恰好是猫下方的内容高度
+    // （也恰好等于 anchor.yOffset）。
+    // 'top'（#stage.edge-below，猫贴屏幕顶）时整列贴的是帧**顶**，猫下方那 600 多像素
+    // 是空的透明帧尾、不是内容 —— 拿同一个式子算会把「必须可见的高度」当成 744，
+    // maxCatY 退化成 wa.y，猫一进 edge-below 就被甩到工作区上缘（1024×744 那块屏上
+    // 实测跳 126px）。这一维只能保护真正在猫下方的东西，也就是胶囊那一截。
+    const belowReserve = !anchored ? 0
+      : (anchor.yAlign === 'bottom' ? Math.max(0, h - insetY - catH) : RESTING_BELOW_RESERVE);
+    const y = clampCatOriginY(wa, catScreenY, catH, belowReserve, insetY);
     if (same(x, y, width, h)) return;
     win.setBounds({ x, y, width, height: h });
   } catch {
@@ -289,32 +348,49 @@ function createPetWindows() {
   reconcilePets();
 }
 
-// 存窗口原点**以及存盘那一刻的帧宽**。
+// 存窗口原点**以及存盘那一刻的帧尺寸**。
 //
 // 为什么要连帧宽一起存：猫在窗口里居中，窗内偏移 = (帧宽 - 猫宽)/2。存盘时帧宽是
 // 内容内蕴的静息帧（现在恒 520），而重建窗口时用的是 BASE_W(320) —— 只还原原点的话
 // 猫每次重启都会左移 (520-320)/2 = 100px，越开越偏。带上帧宽就能反解出「猫当时在
 // 屏幕哪儿」，再按新帧宽重新反解原点。
-// 老配置没有 w：按 BASE_W 兜底，等于保持升级前的行为，不会凭空跳一次。
+// 帧**高**同理，而且更要紧（2026-09-17，E2）：y 是帧原点，而猫贴帧底，窗内偏移
+// = 帧高 - 猫高。恒高之前静息帧高是 340（猫 y ≈ saved.y + 220），恒高之后是 744。
+// 不存 h 的话，旧配置的 y 会被按 744 解读 → 猫下移 404px 再被钳回屏幕底，
+// **升级后第一次启动就跳位**。
+// 老配置没有 w / h：分别按 BASE_W / BASE_H 兜底，等于保持升级前的解读口径，
+// 不会凭空跳一次。
 function persistPos(b) {
-  config.save({ petPosition: { x: b.x, y: b.y, w: b.width } });
+  config.save({ petPosition: { x: b.x, y: b.y, w: b.width, h: b.height } });
 }
 
 // 从存盘位置反解「新窗口该开在哪」：先还原猫当时的屏幕位置，把**猫**钳进工作区
 // （换过分辨率、拔过外接屏、或上次存的位置已经不可见时，这一步把它拉回来），
-// 再按新帧宽反解原点。竖直方向仍然钳窗口，理由同 applyPetSize。
+// 再按新帧尺寸反解原点。横竖两个方向现在都钳猫，理由同 applyPetSize。
 function restoreWindowOrigin(saved, frameWidth, frameHeight) {
   const savedW = Number.isFinite(saved.w) && saved.w > 0 ? saved.w : BASE_W;
+  const savedH = Number.isFinite(saved.h) && saved.h > 0 ? saved.h : BASE_H;
   const catX = saved.x + (savedW - PET_BODY_W) / 2;
+  // 竖直方向的不变量是**帧底**，不是猫顶：静息那一列（会话点 / 猫 / 胶囊）由 #stage 的
+  // justify-content:flex-end 贴着帧底排，所以「帧底不动」就等于「整列一个像素都不动」。
+  // 拿猫顶当不变量得先知道胶囊那一截多高，而主进程手上没有（那是渲染端量的）。
+  // 旧配置（没存 h）按 BASE_H 解读：帧底 = saved.y + 340，新原点 = 帧底 - 744 ——
+  // 猫在屏幕上的位置精确不变，升级不跳位。
+  const originY = saved.y + savedH - frameHeight;
   const inset = (frameWidth - PET_BODY_W) / 2;
+  // 钳制（而不是位置反解）用的猫坐标只需要保守：胶囊那一截按 RESTING_BELOW_RESERVE
+  // 估，估多了顶多让贴屏幕底的猫多留几像素，下一次渲染端发锚点时 applyPetSize 会用
+  // 精确值重算。
+  const insetY = frameHeight - PET_BODY_H - RESTING_BELOW_RESERVE;
+  const catY = originY + insetY;
   try {
-    const wa = screen.getDisplayNearestPoint({ x: Math.round(catX), y: saved.y }).workArea;
+    const wa = screen.getDisplayNearestPoint({ x: Math.round(catX), y: Math.round(catY) }).workArea;
     return {
       x: clampCatOrigin(wa, catX, PET_BODY_W, inset),
-      y: Math.min(Math.max(saved.y, wa.y), wa.y + wa.height - frameHeight),
+      y: clampCatOriginY(wa, catY, PET_BODY_H, RESTING_BELOW_RESERVE, insetY),
     };
   } catch {
-    return { x: Math.round(catX - inset), y: saved.y };
+    return { x: Math.round(catX - inset), y: Math.round(originY) };
   }
 }
 
@@ -323,21 +399,28 @@ function makePetWindow(agent) {
   const c = config.get();
   const saved = c.petPosition;
   let x, y;
+  // 开窗即用最终帧高（PET_FRAME_H），别让启动第一帧白 resize 一次 —— 那一次 resize
+  // 就是 E2 那个「往上闪一下」的形状，只是发生在启动瞬间。
+  // 帧**宽**这里仍用 BASE_W：真实静息帧宽是内容内蕴的，只有渲染端量得出来，它会在
+  // 首帧 fitRestingFrame 时下发（改宽不改高，不触发 E2）。
   if (saved) {
-    const origin = restoreWindowOrigin(saved, BASE_W, BASE_H);
+    const origin = restoreWindowOrigin(saved, BASE_W, PET_FRAME_H);
     x = origin.x; y = origin.y;
   } else {
     try {
       const wa = screen.getPrimaryDisplay().workArea;
       x = wa.x + wa.width - BASE_W - 24;
-      y = wa.y + wa.height - BASE_H - 24;
+      // 帧底离工作区底 24px。静息那一列贴帧底排（#stage 的 justify-content:flex-end），
+      // 所以这等于「胶囊离屏幕底 24px」——猫上方那几百像素透明留白落在屏幕内，
+      // 首屏就有地方展开气泡。
+      y = wa.y + wa.height - PET_FRAME_H - 24;
     } catch {}
   }
 
   const win = new BrowserWindow({
     icon: WINDOW_ICON,
     width: BASE_W,
-    height: BASE_H,
+    height: PET_FRAME_H,
     x, y,
     frame: false,
     transparent: true,
@@ -1414,9 +1497,20 @@ function keepCatOnScreen() {
       const b = win.getBounds();
       const inset = (b.width - PET_BODY_W) / 2;
       const catX = b.x + inset;
-      const wa = screen.getDisplayNearestPoint({ x: Math.round(catX), y: b.y }).workArea;
+      // 2026-09-18（E2）：竖直这一维也必须钳猫。帧高恒 744 而猫只有 120，猫上方那
+      // ~600px 透明留白**合法**悬出屏幕上方（enableLargerThanScreen）——探针实测猫贴
+      // 屏幕顶时帧原点 y = -569。原先这里是 `min(max(b.y, wa.y), wa.bottom - b.height)`，
+      // 钳的是**窗口**：它会把这个合法状态的窗口硬拉回 242，猫跟着从 30 跳到 841。
+      // 也就是说贴屏幕顶的猫，只要用户换一次分辨率 / 插拔一次外接屏 / 动一下 Dock，
+      // 就会被甩到屏幕中下部 —— 和 applyPetSize 的钳制口径自相矛盾。
+      // 现在两处同源：钳猫本体、连它下方的胶囊一起留在工作区内。
+      const insetY = Math.max(0, b.height - PET_BODY_H - RESTING_BELOW_RESERVE);
+      const catY = b.y + insetY;
+      // 找屏幕也要用**猫**的坐标：帧原点 y 可能是 -569（在所有屏幕之外），
+      // getDisplayNearestPoint 会挑到错的那块屏，然后按它的工作区钳。
+      const wa = screen.getDisplayNearestPoint({ x: Math.round(catX), y: Math.round(catY) }).workArea;
       const x = clampCatOrigin(wa, catX, PET_BODY_W, inset);
-      const y = Math.min(Math.max(b.y, wa.y), wa.y + wa.height - b.height);
+      const y = clampCatOriginY(wa, catY, PET_BODY_H, RESTING_BELOW_RESERVE, insetY);
       if (x === b.x && y === b.y) continue;
       win.setBounds({ x, y, width: b.width, height: b.height });
     } catch {}

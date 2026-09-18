@@ -19,6 +19,11 @@ const preload = read('preload.js');
 const config = read('backend/config.js');
 const i18n = read('shared/i18n.js');
 const panel = read('renderer/panel.js');
+// 「某个东西必须保持退役」这类反向断言只能看**代码**：退役的理由本身就写在注释里
+// （「inferHorizontalFrameClamp 曾是永真的死门，正是 E3/E4 环带的直接原因」），
+// 拿整份文件去 test 会被自己的说明文字绊倒。只剥「整行都是注释」的行 —— 不按 // 的
+// 位置切，避免把 'http://…' 之类字符串里的内容当注释、误删真代码而变成假通过。
+const codeOnly = (src) => src.split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
 function walk(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
@@ -63,6 +68,50 @@ assert(/\.ask\s*\{[\s\S]*background\s*:\s*rgba\(255, 255, 255, 0\.98\)/.test(css
   assert(/\.ask-scroll\s*\{[^}]*overflow-y:\s*auto/.test(css), 'only the ask body may scroll');
 }
 assert(/\.action-pop\s*\{/.test(css) && /id="action-pop"/.test(html), 'action center must remain');
+// 2026-09-18（E2）：行动中心必须是 #stage 这条 flex 列的普通成员，**不能**按帧定位。
+// 帧高恒为 PET_FRAME_H(744) 之后帧顶恒在猫上方约 600px，而且合法地悬在屏幕外（钳的是
+// 猫本体，不是窗口），所以旧的 `position:absolute; top:14px` 会把它扔到屏幕外。
+// 按帧底（bottom）定位同样不行：#stage.edge-below（猫贴屏幕顶）时整列翻成 flex-start、
+// 帧底落到猫下方约 620px 的屏幕外，换个方向掉出去。只有交给 flex 列两个方向都对。
+{
+  const rule = css.match(/\.action-pop\s*\{[^}]*\}/)?.[0] || '';
+  // `[;{\s]` 前缀是必要的：直接写 \btop: / \bbottom: 会连 margin-top / margin-bottom
+  // 一起匹配（`-` 是非单词字符，\b 在它后面成立），而那两个是这条规则**应该**有的。
+  assert(!/position:\s*absolute/.test(rule) && !/[;{\s]top:/.test(rule) && !/[;{\s]bottom:/.test(rule),
+    'the action center must ride the #stage flex column, not the frame: with a constant 744px frame both the frame top (above the cat, off-screen) and the frame bottom (below the cat when edge-below) land outside the work area');
+  assert(/width:\s*min\(496px/.test(rule),
+    'the action center needs an explicit width now that left+right no longer stretch it: 496 = 520-24 keeps the horizontal geometry pixel-identical to the absolute-positioned version');
+  // 猫贴屏幕顶时整列翻转，行动中心必须跟着 .bubble/.ask/.peek/.quota-popover 一起
+  // 挪到猫**下方**，否则它会留在猫上方的屏幕外。
+  assert(/#stage\.edge-below\s+\.action-pop\s*\{[^}]*order:\s*4/.test(css),
+    'the action center must flip below the cat in edge-below, like every other popup in the column');
+}
+// 2026-09-18（E2）：帧高恒定是这次修复的本体。用户报的是「任务气泡点击出现，点其他
+// 位置消失的时候……往上消失，然后再出现，给人的感觉还是卡卡的」。实测（probeF/probeI）：
+// 开/关气泡时窗口高度与 y 原点分帧落地，屏幕上看到的相位错帧**幅度恰好等于帧高差**；
+// 把 delta 人为压到 0 → 16/16 例零闪现，delta 原样 → 16 例中 7 例可见。
+// 所以帧高不许再跟内容走。两处常量必须同源（改一处就得改两处），且 targetSize 不许
+// 再读 customSize.h —— 否则弹窗态存下的高度会绕过恒定性、把 delta 放回来。
+assert(/const PET_FRAME_H = POPUP_BOTTOM \+ ASK_VIEWPORT_MAX_H \+ 24;/.test(js),
+  'the renderer frame height must stay derived from the popup budget, not hand-written');
+assert(/const PET_FRAME_H = 744;/.test(main),
+  'the main process frame height must stay pinned to the same 744 the renderer derives (POPUP_BOTTOM 200 + ASK_VIEWPORT_MAX_H 520 + 24)');
+{
+  const fn = main.match(/function targetSize\([\s\S]*?\n\}/)?.[0] || '';
+  assert(/return \{ w, h: PET_FRAME_H \};/.test(fn) && !/customSize\.h/.test(fn),
+    'targetSize must return the constant frame height and must not read customSize.h: a popup-time height stored in config would smuggle the frame-height delta (and E2s upward flash) back in');
+}
+{
+  const fn = js.match(/function fitPopup\([\s\S]*?\n\}/)?.[0] || '';
+  assert(!/winH/.test(fn) && (fn.match(/PET_FRAME_H/g) || []).length >= 2,
+    'fitPopup must stop computing a frame height from content: both setRequestedPetSize passes send the constant PET_FRAME_H');
+}
+// 帧高恒定只有在窗口被允许悬出屏幕时才成立（猫上方那 ~600px 留白常在屏幕外），
+// 这条由 makePetWindow 的 enableLargerThanScreen 撑着 —— 那一条另有 pin，见下。
+// 存盘必须连帧高一起存：y 是帧原点、猫贴帧底，不存 h 的话旧配置（按 340 帧存的 y）
+// 会被按 744 解读 → 猫下移 404px 再被钳回屏幕底，**升级后第一次启动就跳位**。
+assert(/petPosition: \{ x: b\.x, y: b\.y, w: b\.width, h: b\.height \}/.test(main),
+  'the persisted pet position must include the frame height: y is the frame origin and the cat sits at the frame bottom, so an old 340-frame y read as a 744 frame drops the cat 404px on first launch after the upgrade');
 assert(/id="ask"/.test(html) && /id="sessions"/.test(html), 'ask card and status dots must remain');
 assert(/\.peek\s*\{/.test(css) && /id="peek"/.test(html), 'left-click work peek must remain');
 assert(/\.peek-row-project\s*\{[^}]*display:\s*block[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis/s.test(css), 'long peek task titles must stay inside their grid column');
@@ -189,7 +238,7 @@ assert(!/RESTING_FRAME_MAX_W/.test(js),
 // 是「窗口被钳住了但猫还没到边」这个状态，而钳猫之后这个状态不再存在。顺带一提：它
 // 上一版是**永真**的死门（`windowRect.width <= restingFrameWidth() + 2`，而静息帧
 // 恒等于 restingFrameWidth()），正是 E3/E4 那条 200px 环带没被拦住的直接原因。
-assert(!/inferHorizontalFrameClamp/.test(js),
+assert(!/inferHorizontalFrameClamp/.test(codeOnly(js)),
   'the horizontal frame-clamp inference must stay retired: nothing clamps the frame horizontally any more');
 assert(/function restingFrameWidth\(\)/.test(js),
   'the resting frame width must have a single shared definition');
@@ -214,12 +263,21 @@ assert(/function restingFrameWidth\(\)/.test(js),
   assert(/restingFrameWidth\(\)/.test(fn),
     'fitRestingFrame must use the same resting-width definition as the edge gate');
 }
-assert(/inferVerticalFrameClamp:\s*snapshot\.windowRect\.height <= RESTING_FRAME_MAX_H/.test(js),
-  'the vertical frame-height gate must remain: a tall popup clamped to the screen top would masquerade as a top-edge drag');
+// 2026-09-18（E2）：inferVerticalFrameClamp 整体退役，和横向的 inferHorizontalFrameClamp
+// 同一个论证。它的语义是「透明窗口已经被钳在工作区上缘、而猫还困在窗口的留白里」，
+// 而竖直方向的钳制现在也换成了钳猫（main.js clampCatOriginY）：猫顶到工作区上缘就是
+// 窗口能上到的极限，「窗口被拦住而猫没到边」这个状态不再存在，无从推断也无需推断。
+// 钉的是**整体消失**而不是「值恒为 false」—— 上一次留下的死门（永真的
+// inferHorizontalFrameClamp）正是 E3/E4 那条环带没被拦住的直接原因。
+assert(!/inferVerticalFrameClamp/.test(codeOnly(js)),
+  'the vertical frame-clamp inference must stay retired, not linger as an always-false expression: after clampCatOriginY the "window blocked but cat not at the edge" state cannot happen, and a dead gate is exactly what let the E3/E4 dead zones through');
 // 弹窗布局只判竖直方向了：横向恒居中，帧宽涨到多少猫都停在原地，所以不再需要把
 // 目标帧宽喂进几何层（旧的 popupWidth / popupHorizontal 已删）。
-assert(/popupEdgeLayout\(height, options\.popupHeight\)/.test(js),
-  'the popup layout call must only carry the vertical inputs it still needs');
+// 2026-09-18（E2）：帧高恒定后 height 也不必喂了 —— 它恒等于 PET_FRAME_H，喂进去
+// 只是个常量。但 popupHeight **必须继续是弹窗内容的真实高度**：上/下让位的判据是
+// 「猫上方放不放得下这个弹窗」，跟着帧高变成常量的话判据就永久失效。
+assert(/popupEdgeLayout\(options\.popupHeight\)/.test(js),
+  'the popup layout call must carry the popup CONTENT height, not the now-constant frame height: the above/below decision is about whether the content fits over the cat');
 assert(!/popupWidth/.test(js),
   'popupWidth must stay retired: horizontal popup alignment no longer exists');
 // positionProp 的可用区间必须按**屏幕**算。窗口原点现在合法地可以悬出屏幕（单侧最多

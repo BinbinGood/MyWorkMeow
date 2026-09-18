@@ -97,6 +97,26 @@
         <div id="quota-popover-hint" class="quota-popover-hint">鼠标移开后自动收起，也可按 Esc 关闭</div>
       </div>
 
+      <!-- 记事本行动中心：和 #quota-popover / #ask / #peek 同族，必须排在
+           #compact-row **之前** —— 它是 #stage 这条 flex 列的成员，靠 DOM 顺序
+           落在猫上方。2026-09-18（E2）：帧高恒定后原先的 position:absolute;top:14px
+           会把它按帧顶定位，而帧顶在猫上方约 600px、常在屏幕外。 -->
+      <div id="action-pop" class="action-pop hidden" role="dialog" aria-labelledby="ac-title">
+        <div class="ac-top">
+          <span class="ac-title" id="ac-title" data-i18n="action.title">🗒️ 行动中心</span>
+          <button class="ac-close" id="ac-close" type="button" data-i18n-title="action.close" title="关闭" aria-label="关闭">✕</button>
+        </div>
+        <div class="ac-scroll">
+          <div class="ac-sec" id="ac-act-sec">
+            <div class="ac-sec-h" data-i18n="action.needYou">🔔 需要你处理</div>
+            <div id="ac-acts"></div>
+          </div>
+        </div>
+        <div class="ac-ops">
+          <button data-op="panel" data-i18n="action.panel">📊 详情</button>
+        </div>
+      </div>
+
       <div id="compact-row" class="compact-row">
         <!-- 多会话状态点：每个点 = 一个并行任务，颜色 = 状态 -->
         <div id="sessions" class="sessions"></div>
@@ -121,22 +141,6 @@
       <div id="notepad" class="notepad hidden" role="button" tabindex="0" aria-label="行动中心" data-i18n-title="action.notepadTitle" title="行动中心">
         <span class="np-icon">📋</span>
         <span id="np-badge" class="np-badge"></span>
-      </div>
-
-      <div id="action-pop" class="action-pop hidden" role="dialog" aria-labelledby="ac-title">
-        <div class="ac-top">
-          <span class="ac-title" id="ac-title" data-i18n="action.title">🗒️ 行动中心</span>
-          <button class="ac-close" id="ac-close" type="button" data-i18n-title="action.close" title="关闭" aria-label="关闭">✕</button>
-        </div>
-        <div class="ac-scroll">
-          <div class="ac-sec" id="ac-act-sec">
-            <div class="ac-sec-h" data-i18n="action.needYou">🔔 需要你处理</div>
-            <div id="ac-acts"></div>
-          </div>
-        </div>
-        <div class="ac-ops">
-          <button data-op="panel" data-i18n="action.panel">📊 详情</button>
-        </div>
       </div>
     </div>
 

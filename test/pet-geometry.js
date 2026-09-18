@@ -49,16 +49,32 @@ assert.strictEqual(
   'pointerup must not restore the above layout before its real inset fits',
 );
 
+// 2026-09-18（E2）：帧高恒定（744）之后这个形状是**常态**而不是特例 —— 帧顶恒在猫上方
+// 约 600px、常常压在工作区上缘甚至悬出屏幕外，而猫本体离上缘还很远。判据只看猫本体，
+// 所以必须是 'above'。旧代码在这里靠 inferVerticalFrameClamp 才不误判成贴顶拖动，那个门
+// 已随竖直钳猫（main.js clampCatOriginY）整体退役：猫顶到上缘就是窗口能上到的极限，
+// 「窗口被拦住而猫没到边」这个状态不存在了。下面顺带钉住：老调用方就算把它传进来，
+// 也不能重新激活任何竖直分支。
 assert.deepStrictEqual(
   geometry.chooseRestingLayout({
     workArea,
     windowRect: { x: 460, y: 24, width: 520, height: 760 },
     petRect: { x: 200, y: 480, width: 120, height: 120 },
     threshold: 218,
-    inferVerticalFrameClamp: false,
   }),
   { vertical: 'above', horizontal: 'center' },
-  'a tall popup clamped to the screen top must not masquerade as a pet edge drag',
+  'a tall constant-height frame whose top sits at the work-area edge must not masquerade as a top-edge drag: only the cat body decides',
+);
+assert.deepStrictEqual(
+  geometry.chooseRestingLayout({
+    workArea,
+    windowRect: { x: 460, y: -100, width: 520, height: 744 },
+    petRect: { x: 200, y: 600, width: 120, height: 120 },
+    threshold: 218,
+    inferVerticalFrameClamp: true,
+  }),
+  { vertical: 'above', horizontal: 'center' },
+  '退役入参 inferVerticalFrameClamp 不能重新激活竖直贴顶：帧原点悬出屏幕上方是钳猫之后的合法常态',
 );
 
 // ── 横向：没有贴边态了 ────────────────────────────────────────────────────────
@@ -237,29 +253,58 @@ assert.strictEqual(typeof geometry.capsuleShiftFromEdge, 'undefined',
 assert.strictEqual(typeof geometry.popupHorizontal, 'undefined',
   'popupHorizontal 必须保持退役：钳猫之后帧宽不影响猫的位置，没有对齐可挑');
 
+// ── 拖动途中的上/下让位 ──────────────────────────────────────────────────────
+// 2026-09-18（E2）：签名从「帧 y + 猫在帧内的偏移」（targetWindowY / abovePetOffset）
+// 换成**猫的屏幕 y**。旧的拿「帧顶撞到工作区上缘」当「猫上方没空间了」的代理，而帧高
+// 恒定（744）之后猫上方恒有约 600px 透明留白、且合法悬出屏幕上方 → 那个代理恒真，
+// 一拖动就永远判 below。现在和 chooseRestingLayout 是**同一条规则**：只看猫本体离上缘。
 assert.strictEqual(
   geometry.chooseDragVerticalLayout({
-    current: 'above', workArea, targetWindowY: 24, petScreenY: 204, abovePetOffset: 180,
+    workArea, petScreenY: workArea.y + 100, topRoom: 180,
   }),
   'below',
-  'dragging the transparent frame into the top boundary must switch before pointerup',
+  'dragging the cat body into the top boundary must switch before pointerup',
 );
 
 assert.strictEqual(
   geometry.chooseDragVerticalLayout({
-    current: 'below', workArea, targetWindowY: 80, petScreenY: 80, abovePetOffset: 180,
-  }),
-  'below',
-  'the top layout stays below while a normal above frame would still be off-screen',
-);
-
-assert.strictEqual(
-  geometry.chooseDragVerticalLayout({
-    current: 'below', workArea, targetWindowY: 220, petScreenY: 220, abovePetOffset: 180,
+    workArea, petScreenY: workArea.y + 400, topRoom: 180,
   }),
   'above',
   'dragging back into the desktop restores the normal above layout during the gesture',
 );
+
+// 帧原点悬出屏幕上方（钳猫之后的合法常态）不许影响判定：猫离上缘 400px 就是 above，
+// 帧顶在 wa.y - 520 也一样。这一条钉的正是旧代理量恒真的那个坑。
+assert.strictEqual(
+  geometry.chooseDragVerticalLayout({
+    workArea, petScreenY: workArea.y + 400, topRoom: 180,
+    targetWindowY: workArea.y - 520, abovePetOffset: 597,
+  }),
+  'above',
+  '退役入参（targetWindowY / abovePetOffset）不能把「帧顶悬出屏幕」重新当成贴顶',
+);
+
+// 无粘性：拖动途中的方向每次都由当前几何重算，'below' 不是可继承的历史状态。
+assert.strictEqual(
+  geometry.chooseDragVerticalLayout({
+    current: 'below', workArea, petScreenY: workArea.y + 400, topRoom: 180,
+  }),
+  'above',
+  'the below layout must not be sticky: it is a top-edge accommodation, not a mode',
+);
+
+// 边界恰好落在 topRoom + boundarySlack 上：含等号算 below（拖到线上就让位，
+// 别让猫卡在「气泡刚好差 1px 放不下」的位置反复翻转）。
+for (const [delta, want] of [[180 + 2, 'below'], [180 + 3, 'above']]) {
+  assert.strictEqual(
+    geometry.chooseDragVerticalLayout({
+      workArea, petScreenY: workArea.y + delta, topRoom: 180, boundarySlack: 2,
+    }),
+    want,
+    `离上缘 ${delta}px（topRoom 180 + slack 2）必须判 ${want}`,
+  );
+}
 
 assert.strictEqual(
   geometry.choosePopupLayout({

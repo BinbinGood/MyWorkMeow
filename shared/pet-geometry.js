@@ -36,8 +36,15 @@
   //   · 环带消失（E3/E4）；
   //   · 拖动中与落位后的窗内偏移恒定，没有 class 翻转、没有中间帧（E1）。
   // 所以这里横向恒返回 'center'，edgeGap / inferHorizontalFrameClamp 两个入参已退役
-  // （留着只为不炸老调用方，值被忽略）。竖直的 threshold / inferVerticalFrameClamp
-  // **仍然在用** —— 贴顶时气泡要往下让位，那是真实需求。
+  // （留着只为不炸老调用方，值被忽略）。竖直的 threshold **仍然在用** —— 贴顶时气泡
+  // 要往下让位，那是真实需求。
+  //
+  // 2026-09-17（E2）：inferVerticalFrameClamp 也退役了，同一个论证。它的语义是
+  // 「透明窗口已经被钳在工作区上缘、而猫还困在窗口里」，而竖直方向的钳制此刻也换成
+  // 了钳猫（main.js clampCatOriginY）：猫顶到工作区上缘就是窗口能上到的极限，
+  // 「窗口被拦住而猫没到边」这个状态不再存在，无从推断也无需推断。入参留着只为不炸
+  // 老调用方，值被忽略。**不要**把它改成某个恒 false 的表达式留在调用方 —— 上一次
+  // 留下的死门（永真的 inferHorizontalFrameClamp）正是 E3/E4 没被拦住的直接原因。
   //
   // 胶囊比猫宽，居中在猫正下方时可能探出工作区。那件事交给下面的 capsuleShift
   // （按需最小位移：默认严格居中，只在会出屏时往内挪刚好够用的距离），与贴边无关。
@@ -49,7 +56,6 @@
     windowRect,
     petRect,
     threshold = 168,
-    inferVerticalFrameClamp = true,
   }) {
     const wa = normalizeRect(workArea);
     const wr = normalizeRect(windowRect);
@@ -68,11 +74,8 @@
     // bubbles/status chips belong above the pet everywhere else.
     let vertical = 'above';
 
-    // The second half of the test catches the old failure mode: the transparent
-    // window has already been clamped to the work-area edge, while the visible
-    // pet is still stranded well inside that window.
-    if (pet.y - wa.y <= threshold
-      || (inferVerticalFrameClamp && wr.y <= wa.y + 3 && pr.y > 18)) vertical = 'below';
+    // 判据只有一条，而且只看**猫本体**：猫上方剩下的屏幕空间够不够放气泡。
+    if (pet.y - wa.y <= threshold) vertical = 'below';
 
     return { vertical, horizontal: 'center' };
   }
@@ -149,22 +152,26 @@
     return { vertical, horizontal: 'center' };
   }
 
+  // 拖动途中的上/下让位判定。和 chooseRestingLayout 现在是**同一条规则**：只看猫本体
+  // 顶端离工作区上缘还有多远，够不够放气泡（topRoom）。
+  //
+  // 2026-09-17（E2）之前这里收的是**帧** y（targetWindowY）和「猫在帧内的偏移」
+  // （abovePetOffset），拿「帧顶撞到工作区上缘」当「猫上方没空间了」的代理。那个代理
+  // 在帧高恒定（744）之后彻底失效：猫上方恒有 ~600px 透明留白且**合法**悬出屏幕上方，
+  // `targetWindowY <= wa.y` 会恒真 —— 一拖动就永远判 below。
+  // 顺带也解掉了旧实现里 above/below 两条分支不对称的麻烦：那时 below 布局下猫的帧内
+  // 偏移不同，必须先探一次 above 布局才能拿到可比的数；现在判据是猫的**屏幕**坐标，
+  // 而猫的屏幕坐标在布局翻转前后由锚点保持不变，两个方向天然同一个式子。
   function chooseDragVerticalLayout({
-    current,
     workArea,
-    targetWindowY,
     petScreenY,
-    abovePetOffset,
+    topRoom = 168,
     boundarySlack = 2,
   }) {
     const wa = normalizeRect(workArea);
-    const vertical = current === 'below' ? 'below' : 'above';
-    const edgeY = wa.y + Math.max(0, Number(boundarySlack) || 0);
-    if (vertical === 'above') {
-      return Number(targetWindowY) <= edgeY ? 'below' : 'above';
-    }
-    const normalWindowY = Number(petScreenY) - Math.max(0, Number(abovePetOffset) || 0);
-    return normalWindowY >= edgeY ? 'above' : 'below';
+    const slack = Math.max(0, Number(boundarySlack) || 0);
+    const room = Math.max(0, Number(topRoom) || 0);
+    return (Number(petScreenY) - wa.y) <= room + slack ? 'below' : 'above';
   }
 
   const ARCS = {

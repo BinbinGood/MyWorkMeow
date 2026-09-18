@@ -13,7 +13,7 @@ html, body {
 #stage {
   position: relative;
   width: 100%;
-  height: 100vh;      /* 填满窗口；选项面板需要时窗口会变高，形象始终贴底 */
+  height: 100vh;      /* 填满窗口。帧高 2026-09-18 起恒为 PET_FRAME_H(744)，形象始终贴底 */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -102,7 +102,10 @@ html, body {
 .ask {
   width: min(340px, calc(100vw - 24px));
   /* 520 = pet.js 的 ASK_VIEWPORT_MAX_H：超过就靠 .ask-scroll 内部滚动，
-     保证顶栏和底部按钮永远留在窗口里（fitPopup 量高时会临时置 none）。 */
+     保证顶栏和底部按钮永远留在窗口里（fitPopup 量高时会临时置 none）。
+     2026-09-18（E2）：帧高恒定后 100vh 恒为 PET_FRAME_H(744)，这个 min 恒取 520，
+     和 ASK_VIEWPORT_MAX_H 严格对齐 —— 顺带消掉了旧的鸡生蛋（小窗口算出的
+     max-height 反过来钳住 scrollHeight）。这一行现在依赖帧高恒定。 */
   max-height: min(520px, calc(100vh - 24px));
   margin-bottom: 10px;
   padding: 11px 13px;
@@ -361,14 +364,39 @@ html, body {
 .np-badge.urgent { background: #e5484d; } /* 有「需处理」事项时红色 */
 @keyframes npRaise { 0%, 100% { transform: rotate(-8deg) translateY(0); } 50% { transform: rotate(-8deg) translateY(-4px); } }
 
-/* ---------- 记事本行动中心：占一大块，不挤在月薪喵小范围 ---------- */
+/* ---------- 记事本行动中心：占一大块，不挤在月薪喵小范围 ----------
+   2026-09-18（E2）：从 `position: absolute; top: 14px; left/right: 12px` 改成
+   #stage 这条 flex 列的普通成员，和 .ask / .peek / .quota-popover 同源。
+   起因是帧高改成恒定的 PET_FRAME_H(744)：帧顶从此恒在猫上方约 600px，而且
+   合法地悬在屏幕外（钳的是猫本体，不是窗口），按帧顶定位的东西会跟着跑出屏幕。
+   按帧底（bottom）定位同样不行 —— #stage.edge-below（猫贴屏幕顶）时整列翻成
+   flex-start、帧底落到猫下方约 620px 的屏幕外，换个方向掉出去。
+   交给 flex 列之后位置由猫锚定，两个方向都对。
+
+   宽度必须显式写：原来靠 left+right 撑满整个帧宽（520-24），成为 flex 子项后
+   没有了那对约束。496 = 520-24 是刻意的 —— 居中的 496 宽子项在 520 帧里左缘正好
+   落在 12px，横向几何与改动前逐像素一致，不引入回归。
+
+   它**不进** --pop-shift（上面那条 .peek/.ask/.bubble/.think 规则）：帧宽在弹窗态
+   恒为 520，496 宽只剩 24px 余量，而 capsuleShift 为把卡片挪回屏内会要求最多
+   (496-120)/2 = 188px 位移 —— 那会把卡片推到帧内 [200,696]、被窗口自己裁掉更多。
+   位移只对 ≤320 宽的弹窗成立。贴边时行动中心可能被屏幕缘裁一点，这是改动前就有
+   的既存行为，与 E2 无关，单独记账。 */
 .action-pop {
-  position: absolute; top: 14px; left: 12px; right: 12px;
+  width: min(496px, calc(100vw - 24px));
+  /* 100vh 恒为 PET_FRAME_H(744) → 上限 624。留 120 是给猫本体和胶囊那一截。 */
   max-height: calc(100vh - 120px); z-index: 30; -webkit-app-region: no-drag;
+  margin-bottom: 10px;
   background: rgba(255, 255, 255, 0.985); border: 1px solid rgba(217, 119, 87, 0.45);
   border-radius: 15px; box-shadow: 0 10px 30px rgba(120, 60, 35, 0.38);
   padding: 11px 13px; display: flex; flex-direction: column; gap: 8px;
+  overflow: hidden;          /* 配合 .ac-scroll 的内部滚动，超高时不外溢 */
   animation: askIn 0.22s ease;
+}
+#stage.edge-below .action-pop {
+  order: 4;
+  margin-top: 8px;
+  margin-bottom: 0;
 }
 .action-pop.hidden { display: none; }
 .ac-top { display: flex; align-items: center; gap: 8px; }
