@@ -44,12 +44,25 @@ html, body {
    用 position:relative + left，不用 transform：.peek/.ask/.think 的入场动画
    keyframes 结尾是 `transform: none`，位移会被擦掉。也不用 margin —— margin 会挤压
    兄弟节点、把整列的布局宽度推出去（2026-09-16 的教训）。relative 的 left 和
-   transform 一样只在绘制期偏移、不参与布局，所以不会喂回 measuredRestingWidth。 */
+   transform 一样只在绘制期偏移、不参与布局，所以不会喂回 measuredRestingWidth。
+
+   ⚠️ 2026-09-18（H3）：--pop-shift 现在只是**总位移的一半**。总需求量（capsuleShift
+   算出的 ideal）被 pet.js popupShiftPlan 拆成两半：
+     · popShift → 就是这个变量，帧内挪弹窗，上限是 (520-弹窗宽)/2 **再扣掉阴影外扩**；
+     · catShift → 挪的是下面的 #compact-row（猫那一列），由主进程的反向帧移抵掉。
+   为什么非拆不可：H2 时只有这一个变量，位移一顶到 (520-弹窗宽)/2 盒子就贴死帧墙，
+   而 box-shadow 画在盒子**外面**，被最上面 html,body{overflow:hidden} 整块吃掉 ——
+   用户看到的就是「贴边那一侧的阴影没了 / 圆弧没了」。所以这里的上限必须留出阴影位。 */
 .peek, .ask, .bubble, .think {
   position: relative;
   left: var(--pop-shift, 0px);
 }
 
+/* 猫 + 胶囊那一列。
+   ⚠️ 这里故意**不写 position** —— 2026-09-18（H3）起 pet.js 的 applyCatShift 会在
+   弹窗贴边时给它临时设 position:relative + left:<catShift>px（归零时两个属性都清掉、
+   退回 static，不白留那层绘制层提升）。这里若写死 position，JS 那一路就被顶掉了。
+   同理不能改成 margin：margin 会挤压兄弟、把布局宽度推出去，喂回 measuredRestingWidth。 */
 #compact-row {
   display: flex;
   flex: 0 0 auto;
