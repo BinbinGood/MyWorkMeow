@@ -121,7 +121,16 @@ html, body {
   animation: askIn 0.25s ease;
 }
 .ask.hidden { display: none; }
-@keyframes askIn { from { opacity: 0; transform: translateY(8px) scale(0.96); } to { opacity: 1; transform: none; } }
+/* 入场动画只做透明度，**不做任何几何变换**。这是 E2（「气泡往上消失再出现、卡卡的」）
+   的渲染层修法本体。窗口层早就干净了（真机探针 20/20 轮帧四维 delta 全 0、猫零漂移），
+   剩下的抖动全部来自这里：旧的 translateY(8px) scale(0.96) 让卡片在 13~14 帧里
+   一路从「下方 7~8px、缩到 96~97%」滑到位。transform 不触发 layout，但
+   getBoundingClientRect 逐帧实测 .peek 的视觉顶边移了 11.4px（= translateY 7px
+   + scale 造成的 (290.2-281.5)/2 = 4.35px），而且 520px 宽的正文要按非整数比例
+   逐帧重采样 —— 这就是用户说的「残影」。纯 opacity 淡入没有这两样。
+   ⚠️ 别把位移加回来：--pop-shift 走的是 position:relative + left，一旦这里出现
+   transform，收尾的 `transform: none` 会把它擦掉（见 test/popup-style.js 的论证）。*/
+@keyframes askIn { from { opacity: 0; } to { opacity: 1; } }
 
 /* 顶栏：左「需要输入 / 需要授权」标签，右会话名 */
 .ask-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -262,9 +271,10 @@ html, body {
   animation: peekIn 0.2s ease;
 }
 .peek.hidden { display: none; }
+/* 同 askIn：只淡入，不位移不缩放。逐帧探针在这张卡上量到的 11.4px 视觉位移就是这里来的。 */
 @keyframes peekIn {
-  from { opacity: 0; transform: translateY(7px) scale(0.97); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .peek-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .peek-state {
@@ -486,9 +496,10 @@ html, body {
   animation: quotaPopoverIn 0.18s ease;
 }
 .quota-popover.hidden { display: none; }
+/* 同 askIn / peekIn：只淡入。 */
 @keyframes quotaPopoverIn {
-  from { opacity: 0; transform: translateY(6px) scale(0.97); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .quota-popover::after {
   content: "";
@@ -871,7 +882,9 @@ html, body {
   pointer-events: none;
 }
 .think.on { display: flex; animation: thinkIn 0.25s ease; }
-@keyframes thinkIn { from { opacity: 0; transform: translateY(6px) scale(0.96); } to { opacity: 1; transform: none; } }
+/* 同 askIn / peekIn：只淡入。.think 和 .peek/.ask/.bubble 同在 --pop-shift 组里，
+   收尾的 `transform: none` 一样会擦掉 left 位移，所以这里也不留 transform。 */
+@keyframes thinkIn { from { opacity: 0; } to { opacity: 1; } }
 
 .think .td { font-size: 14px; animation: thinkBob 2.2s ease-in-out infinite; }
 @keyframes thinkBob { 0%,100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-2px) rotate(4deg); } }

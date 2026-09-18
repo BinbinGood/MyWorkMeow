@@ -301,10 +301,12 @@ assert(/#compact-row\s*\{[\s\S]*?align-items:\s*center;/.test(css),
 assert(/function applyPopupShift\(/.test(js) && /--pop-shift/.test(js),
   'popups must be nudged inward: after the cat-clamp, a centred popup hangs 100~110px off the screen edge');
 // 位移必须落在 position:relative 的 left 上。
-// **不能用 transform**：.peek / .ask / .think 的入场动画 keyframes 结尾就是
-// `transform: none`（@keyframes peekIn / askIn / thinkIn），动画一跑完就把位移擦掉 ——
-// 静态审查看不出来，只在屏幕上坏。.bubble 还额外有 transition: transform 和
-// .bubble.hidden { transform: translateY(8px) scale(0.96) }。
+// **不能用 transform**：.bubble 有 `transition: opacity .25s, transform .25s` 且
+// .bubble.hidden { transform: translateY(8px) scale(0.96) } —— 用 transform 承载
+// --pop-shift 会被这条直接覆盖掉。历史上 .peek / .ask / .think 的入场 keyframes 也
+// 都以 `transform: none` 收尾，同样会擦掉位移；那些 keyframes 现在已改成纯 opacity
+// 淡入（见下面 E2 那条 pin），但只要有人把位移写成 transform，任何一次动画/过渡回归
+// 都会重新踩中 —— 静态审查看不出来，只在屏幕上坏。
 // **也不能用 margin**：margin 会挤压兄弟节点、把整列的布局宽度推出去（2026-09-16 的
 // 教训，见上面 measuredRestingWidth 那段）。relative 的 left 和 transform 一样只在
 // 绘制期偏移、不参与布局，所以不会喂回帧宽。
@@ -313,9 +315,50 @@ assert(/function applyPopupShift\(/.test(js) && /--pop-shift/.test(js),
   assert(/position:\s*relative;/.test(rule) && /left:\s*var\(--pop-shift/.test(rule),
     'the popup shift must ride on position:relative + left');
   assert(!/transform/.test(rule),
-    'the popup shift must not use transform: the peek/ask/think entry keyframes end at `transform: none` and would erase it');
+    'the popup shift must not use transform: .bubble transitions transform and .bubble.hidden sets one, which would erase the shift');
   assert(!/margin/.test(rule),
     'the popup shift must not use margin: margin squeezes siblings and inflates the column layout width');
+}
+// ── E2 收尾：弹层入场动画不许带几何变换 ─────────────────────────────────────────
+// E2 是「气泡开关时画面卡卡的、往上消失再出现」。**窗口层已经彻底干净**：真机探针
+// （/tmp/probeG1.py 阶段 1）连跑 20 轮开关，帧的 x/y/w/h 四个维度 delta 全为 0、
+// bounds trace 长度恒为 1（整轮一次都没变）、猫的屏幕坐标漂移 [0,0]。恒高那半套
+// （PET_FRAME_H 恒定、fitPopup 不跟内容改帧高）也同时拿到了第一份有效性证据：
+// #peek 内容高度在 290↔133 之间跳了 157px，帧高一动不动。
+//
+// 剩下的抖动全部在**渲染层**，而且被逐帧 rAF 探针钉到了唯一一个元素上：
+//   #cat   逐帧恒定 [200,599,120,120]
+//   #stage 逐帧恒定 [0,0,520,744]
+//   #peek  视觉顶边 295.2 → 283.8（移了 11.4px），跨 13~14 帧
+// 11.4px 能被旧 keyframes 精确解释：translateY(7px) + scale(0.97) 对 290.2 高的卡片
+// 造成 (290.2-281.5)/2 = 4.35px 的中心缩放偏移，7 + 4.35 = 11.35。transform 不进
+// layout，所以这是纯视觉位移 —— 但 520px 宽的正文要按 0.97~1.0 的非整数比例逐帧
+// 重采样，那就是用户反复说的「残影」。改成纯 opacity 淡入后两样都没了。
+//
+// 这条 pin 钉住「不许把位移加回来」。四个弹层同病同治，一起钉：
+{
+  // 用括号计数取块，不用正则：这些 keyframes 有单行写法（`@keyframes askIn { from {…} to {…} }`）
+  // 也有多行写法，而 `[\s\S]*?\n\}` 在单行写法下会一路吃到后面**别的**规则的收尾花括号，
+  // 把无关的 transform 算进来（第一版就这么误报了）。
+  const keyframeBlock = (name) => {
+    const at = css.search(new RegExp('@keyframes\\s+' + name + '\\s*\\{'));
+    if (at < 0) return null;
+    const open = css.indexOf('{', at);
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === '{') depth++;
+      else if (css[i] === '}' && --depth === 0) return css.slice(at, i + 1);
+    }
+    return null;
+  };
+  for (const name of ['askIn', 'peekIn', 'quotaPopoverIn', 'thinkIn']) {
+    const block = keyframeBlock(name);
+    assert(block, `@keyframes ${name} must exist`);
+    assert(!/transform/.test(block),
+      `@keyframes ${name} must not animate transform: the translateY+scale entry slide is E2's remaining judder (11.4px of visual drift over ~13 frames, measured per-frame on a real window) and it also fights --pop-shift`);
+    assert(/opacity/.test(block),
+      `@keyframes ${name} must keep the opacity fade: it is the whole animation now`);
+  }
 }
 // 单宠时代（2026-08-07 起）：不再有 per-tool 名牌，agent-tag 样式必须整体移除
 assert(!/agent-tag/.test(css), 'per-tool agent tag styles must be gone (single unified pet)');
