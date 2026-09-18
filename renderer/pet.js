@@ -1441,10 +1441,17 @@ function openActionPop() {
   fitPopup(actionPop);
 }
 function closeActionPop() {
+  // 早退守卫：有几个调用点（maybeCloseEmptyPop、面板按钮）不检查 actionPopOpen 就调过来。
+  // 没有它，关着的弹层也会白走一遍 blurPet() + resetPetSize()：多余的失焦会掐断
+  // mousemove（见 main.js releaseClickThrough 的 G1 注释），而 window 上的 blur 监听
+  // 又会回调这些 closer —— 「blur 递归靠调用顺序偶然终止」由此变成显式不变量。
+  if (!actionPopOpen) return;
   actionPop.classList.add('hidden');
   actionPopOpen = false;
   window.pet.blurPet();
-  resetPetSize();
+  // 和 closePeek 同款守卫：ask 卡片还开着时不许缩回静息尺寸，否则卡片被帧裁到视口外，
+  // 而 HIT_SEL 对视口外的 #ask 做 elementFromPoint 拿到 null → 对用户还看得见的区域设穿透。
+  if (!askActive && !peekOpen) resetPetSize();
 }
 
 // 状态标签仅用于猫猫头顶的状态点。
@@ -2619,10 +2626,13 @@ function closeQuotaPopover() {
   quotaPopoverRefreshTimer = null;
   quotaPopoverPointerInside = false;
   if (quotaPopover) quotaPopover.classList.add('hidden');
-  quotaPopoverOpen = false;
   if (quotaEl) quotaEl.setAttribute('aria-expanded', 'false');
+  // 定时器/DOM 收尾对没开的弹窗也是幂等的，所以早退守卫放在这里：只挡下面那两笔
+  // 有副作用的调用（理由同 closeActionPop）。
+  if (!quotaPopoverOpen) return;
+  quotaPopoverOpen = false;
   window.pet.blurPet();
-  resetPetSize();
+  if (!askActive && !actionPopOpen && !peekOpen) resetPetSize();
 }
 
 function openQuotaPopover() {
@@ -3401,6 +3411,14 @@ window.addEventListener('blur', () => {
   if (radialOpen) closeRadial();
   if (peekOpen) closePeek();
   if (quotaPopoverOpen) closeQuotaPopover();
+  if (actionPopOpen) closeActionPop();
+  // askHover 只靠 mousemove 命中测试（:3463）和 pointerleave 维护，而失焦之后 macOS 不再
+  // 投递 mousemove（见 main.js releaseClickThrough 的 G1 注释）—— 光标恰好停在 #ask 上时
+  // 失焦，askHover 会永久卡在 true，isInteracting() 随之永真，状态更新被冻住。
+  askHover = false;
+  // 刻意**不**关 ask 卡片：askActive 有真实草稿（hideAsk 会清掉 #ask-text 的内容），
+  // 而「切到别的应用查点东西再切回来接着敲」是常规操作，失焦丢字是破坏性的。
+  // 卡片留着不会锁死交互 —— 上面清了 askHover，穿透态由主进程的失焦复位兜住。
 });
 
 // ---------- 初始化 ----------

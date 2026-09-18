@@ -186,6 +186,24 @@ const petStates = () => [...petState.values()].filter((s) => s.win && !s.win.isD
 const stateOfSender = (sender) => petState.get(sender.id) || null;
 const primaryPetState = () => (petWin && !petWin.isDestroyed() ? petState.get(petWin.webContents.id) : null);
 
+// 失焦即放开鼠标穿透（G1：多次开关气泡后猫点不动，切到别的 app 再切回来才恢复）。
+// 成因：setIgnoreMouseEvents(true, { forward: true }) 只转发 **mousemove**，而 macOS 不给
+// 失焦窗口投递 mousemove —— 渲染端唯一的解穿透通道（window 上的 mousemove 命中测试，
+// renderer/pet.js 的 HIT_SEL 那段）就此断掉，穿透态永久锁死：胶囊照常更新、动画照常播放，
+// 但点猫的点击全被穿透到后面的应用。关气泡走 closePeek() → blurPet() → w.blur() 正是
+// 制造这一刻的元凶，所以三处都要复位（PET_BLUR、window 'blur' 事件、心跳对账）。
+// 方向刻意选安全的那一侧：宁可透明区短暂多挡一下（光标一进窗口矩形 Chromium 自己就会投
+// mousemove，命中测试立刻把状态收敛回正确值），也不能永久点不动。
+// ⚠️ 只碰穿透态，绝不碰 bounds —— w.blur() 与 macOS constrainFrameRect:toScreen: 的耦合是
+// enableLargerThanScreen 那套论证的承重部分，在这里做位置修正会把它推翻。
+function releaseClickThrough(st) {
+  if (!st || !st.win || st.win.isDestroyed()) return false;
+  if (!st.mouseIgnoring) return false;
+  st.mouseIgnoring = false;
+  try { st.win.setIgnoreMouseEvents(false); } catch {}
+  return true;
+}
+
 let lastStats = null;   // 全量快照（面板与桌宠共用）
 let statsTimer = null;
 let trayTimer = null;
@@ -478,6 +496,9 @@ function makePetWindow(agent) {
   // 未捕获直接崩）——id 在创建时取好。
   const wcId = win.webContents.id;
   petState.set(wcId, st);
+  // 失焦的来源不止 blurPet()：用户点别的应用、切 Space、Mission Control 都会掐断
+  // mousemove。这一条把所有来源都收了（只放开穿透，绝不碰 bounds），见 releaseClickThrough。
+  win.on('blur', () => { releaseClickThrough(st); });
   win.on('closed', () => {
     petState.delete(wcId);
     if (petWin === win) petWin = null;
@@ -974,7 +995,14 @@ function emitStats() {
   // 一次性获取 metering 数据，避免多次调用 getStats()
   const cachedMeter = meterStats();
   lastStats = buildStats('all', snapshot, cachedMeter);
-  for (const st of petStates()) sendWin(st.win, IPC.PET_STATS, lastStats);
+  for (const st of petStates()) {
+    sendWin(st.win, IPC.PET_STATS, lastStats);
+    // 穿透态对账（G1 的兜底防线）：窗口没聚焦 → 渲染端收不到 mousemove → 它没机会
+    // 自己解穿透，此刻 mouseIgnoring 仍为 true 就是锁死态，直接复位。
+    // 必须带 !isFocused()：聚焦时命中测试在跑，那个 true 是渲染端主动维护的正确值。
+    // 事件驱动的两处（PET_BLUR / win 'blur'）漏掉任何失焦来源时，这里最长 4s 自愈。
+    if (!st.win.isFocused()) releaseClickThrough(st);
+  }
   sendPanel(IPC.PANEL_STATS, lastStats);
 }
 
@@ -1452,7 +1480,16 @@ function registerIpc() {
       : null;
     applyPetSize(st, anchor);
   });
-  ipcMain.on(IPC.PET_BLUR, (e) => { const w = senderPetWin(e); if (w) { w.blur(); } });
+  // 渲染端弹层收尾时借这条通道归还窗口焦点（原意见 preload.js 的注释）。
+  // blur 之后必须放开穿透：这正是「渲染端即将失去 mousemove」的那一刻，
+  // 详见 releaseClickThrough 的长注释（G1）。
+  ipcMain.on(IPC.PET_BLUR, (e) => {
+    const st = stateOfSender(e.sender);
+    const w = st && st.win && !st.win.isDestroyed() ? st.win : senderPetWin(e);
+    if (!w) return;
+    w.blur();
+    releaseClickThrough(st);
+  });
   ipcMain.on(IPC.QUOTA_ALERT_SHOWN, (e, alertIds) => {
     const st = stateOfSender(e.sender);
     if (!st || !codexRateLimits || typeof codexRateLimits.acknowledgeAlert !== 'function') return;
@@ -1465,8 +1502,9 @@ function registerIpc() {
 
   // Click-through: the renderer hit-tests the cursor and toggles this so the
   // transparent parts of the pet window let clicks reach apps behind it.
-  // forward:true keeps mousemove flowing to the renderer while ignoring, so it
-  // can re-enable clicks the moment the cursor returns to the pet/content.
+  // ⚠️ forward:true 只转发 **mousemove**，而且只在 ignore=true 时生效。它**不**保证渲染端
+  // 一直有机会解开穿透：窗口一失焦，macOS 就停止投递 mousemove，命中测试再也不跑，穿透态
+  // 永久锁死（G1）。所以恢复不能只靠这里，另有三处失焦复位，见 releaseClickThrough。
   ipcMain.on(IPC.SET_IGNORE_MOUSE, (e, ignore) => {
     const st = stateOfSender(e.sender);
     const w = st && st.win && !st.win.isDestroyed() ? st.win : null;

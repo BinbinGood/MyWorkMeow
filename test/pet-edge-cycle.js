@@ -787,6 +787,66 @@ assert(!/inferHorizontalFrameClamp/.test(petJsCode),
 assert(!/inferVerticalFrameClamp/.test(petJsCode),
   '竖直 infer 门必须保持退役：与横向同一个论证（竖直钳猫后猫到边就是窗口到边）');
 assert(/const POPUP_W = 520;/.test(petJs), '本 suite 的 POPUP_W 必须跟渲染端一致');
+
+// ── 失焦必须放开鼠标穿透（G1）────────────────────────────────────────────────
+// 用户实测：「多次切换气泡开关以后，这个喵可能会卡住，点击喵没任何反应。点了其他应用，
+// 再点回来，才重新弹出气泡」，且「卡住的那一刻，胶囊还在，喵的动画也正常播放」——
+// 渲染进程活着，是鼠标事件在到达它之前就被吞了。
+//
+// 成因（2026-09-18 独立最小实验实测，不是推理）：透明窗 + setIgnoreMouseEvents(true,
+// {forward:true})，光标在窗口内真实抖动 6 次 ——
+//   聚焦时 renderer 收到 12 个 mousemove；**失焦时收到 0 个**；复位成 ignore(false) 后
+//   失焦也能收到 6 个。
+// 而渲染端唯一的解穿透通道就是 window 上的 mousemove 命中测试（HIT_SEL 那段，全仓库
+// 只有 3 个 setMouseIgnore 调用点，其中两个都在那个 mousemove 监听里，第三个是模块顶层
+// 一次性且方向是**进入**穿透）。所以窗口一失焦，穿透态就永久锁死。
+// 关气泡走 closePeek() → blurPet() → 主进程 w.blur() 正是制造这一刻的元凶。
+//
+// 三道防线缺一条都会让这个坑重新露出来，所以逐条钉住。
+assert(/function releaseClickThrough\(/.test(mainJsCode),
+  '必须有失焦复位穿透的共用入口：forward:true 只转发 mousemove，而失焦窗口收不到 mousemove');
+assert(/releaseClickThrough[\s\S]{0,200}setIgnoreMouseEvents\(false\)/.test(mainJsCode),
+  'releaseClickThrough 必须真的把穿透关掉（setIgnoreMouseEvents(false)）');
+// (a) 我们自己发起的失焦（blurPet → PET_BLUR）
+assert(/IPC\.PET_BLUR[\s\S]{0,400}?w\.blur\(\)[\s\S]{0,200}?releaseClickThrough/.test(mainJsCode),
+  'PET_BLUR handler 里 w.blur() 之后必须复位穿透：删掉它就是直接复现 G1'
+  + '（w.blur() 同时是 macOS 帧钳制的触发源，不能改成不 blur，只能补复位）');
+// (b) 用户点别的应用/切 Space 造成的失焦
+assert(/win\.on\('blur',[\s\S]{0,120}?releaseClickThrough/.test(mainJsCode),
+  "窗口 'blur' 事件必须复位穿透：失焦来源不止 blurPet()");
+// (c) 与来源无关的兜底：心跳对账
+assert(/!st\.win\.isFocused\(\)\)\s*releaseClickThrough\(st\)/.test(mainJsCode),
+  'emitStats 的心跳里必须有「未聚焦 + 仍在穿透 → 复位」的对账，覆盖任何漏掉的失焦来源'
+  + '（锁屏、Mission Control、外接屏热插拔），最长 4s 自愈');
+assert(/!st\.win\.isFocused\(\)/.test(mainJsCode),
+  '对账守卫必须带 !isFocused()：聚焦时命中测试在跑，那个穿透态是渲染端主动维护的正确值');
+// st.mouseIgnoring 长期是**只写**状态位（初始化 + SET_IGNORE_MOUSE 写入，全文件从不读），
+// 这正是 G1 潜伏这么久的结构性原因：主进程手里明明有「渲染端想要的穿透态」却不看。
+assert(/if \(!st\.mouseIgnoring\) return false;/.test(mainJsCode),
+  'st.mouseIgnoring 必须被读：只写状态位是 G1 潜伏至今的结构性原因');
+// forward:true 那段注释曾写着「keeps mousemove flowing to the renderer while ignoring,
+// so it can re-enable clicks the moment the cursor returns」—— 这句在失焦时不成立，
+// 它本身就是 G1 的认知根源。钉住别让它回来。
+assert(!/forward:true keeps mousemove flowing/.test(mainJs),
+  'SET_IGNORE_MOUSE 上方那句「forward:true 保证 renderer 一直收到 mousemove」是错的：'
+  + '失焦窗口收不到 mousemove（实测 0 个），这个错误假设不许回来');
+
+// 渲染端：blur 之后 askHover 卡在 true 会让 isInteracting() 永真（同一条 mousemove 断流链）。
+assert(/window\.addEventListener\('blur',[\s\S]{0,600}?askHover = false/.test(petJsCode),
+  'blur 监听必须清 askHover：它只靠 mousemove 命中测试和 pointerleave 维护，失焦后两者都停摆');
+assert(/window\.addEventListener\('blur',[\s\S]{0,600}?actionPopOpen\) closeActionPop\(\)/.test(petJsCode),
+  'blur 监听必须收尾 actionPopOpen：留 true 会让后续 closer 的 resetPetSize 把开着的弹层裁到视口外');
+// 两个 closer 的早退守卫：没有它，关着的弹层也会白走一遍 blurPet()，制造多余的失焦。
+assert(/function closeActionPop\(\) \{\s*(?:\/\/[^\n]*\n\s*)*if \(!actionPopOpen\) return;/.test(petJs),
+  'closeActionPop 必须有早退守卫：maybeCloseEmptyPop / 面板按钮都不检查标志就调过来');
+assert(/if \(!quotaPopoverOpen\) return;/.test(petJsCode),
+  'closeQuotaPopover 必须有早退守卫（理由同 closeActionPop）');
+// resetPetSize 的互斥守卫（仿 closePeek）：别把还开着的另一个弹层缩到视口外。
+assert(/if \(!askActive && !peekOpen\) resetPetSize\(\);/.test(petJsCode),
+  'closeActionPop 的 resetPetSize 必须让位于还开着的 ask/peek');
+assert(/if \(!askActive && !actionPopOpen && !peekOpen\) resetPetSize\(\);/.test(petJsCode),
+  'closeQuotaPopover 的 resetPetSize 必须让位于还开着的 ask/actionPop/peek');
+
 // 弹窗溢出补偿：--pop-shift 必须是 relative left（不能是 transform —— .peek/.ask/.think
 // 的入场动画 keyframes 结尾是 transform:none，会把位移擦掉；也不能是 margin —— 会挤压
 // 兄弟节点、把整列布局宽度推出去）。
