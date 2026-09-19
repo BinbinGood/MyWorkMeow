@@ -58,6 +58,30 @@ html, body {
   left: var(--pop-shift, 0px);
 }
 
+/* 挂在猫身上的装饰要吃的那一半（--cat-shift，由 pet.js 的 applyCatShift 写）-----
+   #sleep 💤 / #sidekick 小分身 / #notepad 📋 / #prop 道具在视觉上都「长在猫上」，
+   但在 pet.html 里它们是 #compact-row 的**兄弟**（都直接挂 #stage 下），
+   position:absolute 的包含块是 #stage（#stage 有 position:relative）。
+   而 applyCatShift 挪的只是 #compact-row —— 于是弹窗贴边时猫挪了 catShift，
+   这几个原地不动，相对猫整块错开 catShift。
+
+   实测（probes/probeDecor.py，rAF 逐帧量「装饰中心 − 猫中心」，与猫的绝对位置无关）：
+     靶            catShift   #sleep   #notepad   #prop
+     .peek 贴右      +30       −30       −30        0    ← prop 这条路会重算，跟上了
+     .ask  贴右      +50       −50       −50      −50    ← .ask 那条路不重算
+     .ask  贴左      −50       +50       +50        0
+     居中对照          0         0         0         0    ← 干净，与「只在贴边时出现」吻合
+   偏移量恰好 = −catShift，一个像素不差。关窗那一下是 2/110 帧的瞬跳（~16ms），
+   就是用户报的「气泡关闭时喵小范围左右抖动」。
+
+   为什么走 CSS 变量、不在 JS 里逐个写 style：每个装饰吃的定位属性不一样
+   （#sleep/#sidekick 吃 left、#notepad 吃 right，**符号相反**），而且 #sleep 还有
+   `#stage.edge-below .sleep { top: 18px; bottom: auto; }` 这种覆盖规则。让每个装饰
+   在自己那条规则里 calc 进去，才不会和覆盖规则打架。
+   #prop 是例外：它按猫的实时 rect 算（positionProp），不吃这个变量，改成在
+   applyCatShift 里重新调一次 positionProp。 */
+#stage { --cat-shift: 0px; }
+
 /* 猫 + 胶囊那一列。
    ⚠️ 这里故意**不写 position** —— 2026-09-18（H3）起 pet.js 的 applyCatShift 会在
    弹窗贴边时给它临时设 position:relative + left:<catShift>px（归零时两个属性都清掉、
@@ -368,7 +392,9 @@ html, body {
 
 /* ---------- 记事本（行动中心入口） ---------- */
 .notepad {
-  position: absolute; right: 44px; bottom: 96px; z-index: 6;
+  /* right 是从**帧右缘**量的，而猫贴边时在帧内挪了 catShift（往帧中心方向）。
+     符号与 .sleep/.sidekick 的 left 相反：猫往右挪 +50，记事本离右缘就该近 50。 */
+  position: absolute; right: calc(44px - var(--cat-shift, 0px)); bottom: 96px; z-index: 6;
   width: 38px; height: 38px; cursor: pointer; -webkit-app-region: no-drag;
   display: flex; align-items: center; justify-content: center;
   background: #fff7f2; border: 1.5px solid #d97757; border-radius: 9px;
@@ -929,7 +955,9 @@ html, body {
 .sleep {
   position: absolute;
   bottom: 122px;
-  left: 52%;
+  /* 52% 是相对 #stage（帧宽）的，不是相对猫的 —— 见下面 --cat-shift 那段注释。
+     弹窗贴边时猫在帧内挪了 catShift，这里必须跟着挪同样的量。 */
+  left: calc(52% + var(--cat-shift, 0px));
   width: 84px;
   height: 70px;
   display: none;
@@ -1060,7 +1088,11 @@ html, body {
 .sidekick {
   position: absolute;
   bottom: 70px;
-  left: 50%;
+  /* 同 .sleep：50% 锚的是帧宽，不是猫。⚠️ 这一条是**按结构**补的，不是实测出来的 ——
+     探针量不了它：sidekickPop 的 keyframes 自己就带 translate(0→96px)，逐帧
+     「相对猫的偏移」全程在动，连居中对照组都报 −55px，判据分不出真假。但它和
+     .sleep 是同一个包含块、同一种写法，catShift 一样甩得掉它。 */
+  left: calc(50% + var(--cat-shift, 0px));
   width: 34px;
   height: 34px;
   opacity: 0;

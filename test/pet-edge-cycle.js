@@ -987,5 +987,26 @@ assert(/function applyPopupShift\(/.test(petJs) && /--pop-shift/.test(petJs),
 assert(/\.peek, \.ask, \.bubble, \.think \{[^}]*left:\s*var\(--pop-shift/.test(petCss),
   '--pop-shift 必须走 relative left：transform 会被入场动画擦掉，margin 会挤压布局');
 
+// ★ 2026-09-19：挂在猫身上但 DOM 上是 #compact-row **兄弟**的装饰必须吃 --cat-shift。
+// 它们 position:absolute 锚的是 #stage，applyCatShift 只挪 #compact-row，不补这一下
+// 就相对猫整块错开 catShift。实测（probes/probeDecor.py 逐帧量「装饰中心 − 猫中心」）：
+// 贴右缘 .ask 时 #sleep/#notepad 偏 −50px、贴左缘偏 +50px，恰好 = −catShift，
+// 居中对照恒 0；关窗时是 2/110 帧的瞬跳 = 用户报的「喵小范围左右抖动」。
+assert(/applyCatShift[\s\S]{0,1400}?setProperty\('--cat-shift'/.test(petJs),
+  'applyCatShift 必须同时写 --cat-shift：只挪 #compact-row 会把 #sleep/#notepad/#sidekick 甩下');
+// #sleep / #sidekick 锚 left（猫往右挪就 +），#notepad 锚 right（**符号相反**）。
+// 符号写反的话贴边时错位会**翻倍**而不是归零，比不修更糟，所以三条分开钉。
+assert(/\.sleep \{[^}]*left:\s*calc\(52% \+ var\(--cat-shift, 0px\)\)/.test(petCss),
+  '#sleep 必须吃 +--cat-shift：它 left:52% 锚 #stage，不跟猫走');
+assert(/\.sidekick \{[^}]*left:\s*calc\(50% \+ var\(--cat-shift, 0px\)\)/.test(petCss),
+  '#sidekick 必须吃 +--cat-shift：同 .sleep，left 锚 #stage');
+assert(/\.notepad \{[^}]*right:\s*calc\(44px - var\(--cat-shift, 0px\)\)/.test(petCss),
+  '#notepad 必须吃 **减** --cat-shift：它锚的是 right，符号与 left 那两条相反');
+// #prop 不吃变量（它按猫的实时 rect 算），改成 applyCatShift 里重调 positionProp。
+// 实测 .peek 那条路本来就会重算（setStageEdgeLayout 里有一次）、.ask 那条路不会，
+// 于是贴右缘开 .ask 时道具偏了整整 −50px。
+assert(/applyCatShift[\s\S]{0,1800}?propEl\.classList\.contains\('on'\)[\s\S]{0,40}?positionProp\(\)/.test(petJs),
+  'applyCatShift 必须重调 positionProp：#prop 按猫 rect 算，不重算就停在旧位置');
+
 console.log(`pet edge cycle checks passed (${checked} cycles, ${reachable} reachability, ${popupChecked} popup`
   + `, ${vertReach} vertical reachability, ${vertCycles} vertical cycles)`);

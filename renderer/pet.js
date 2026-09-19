@@ -801,7 +801,11 @@ function applyPopupShift(petScreenX, petWidth) {
 // 绘制层：#compact-row 在 pet.html 里排在所有弹窗**之后**（:120 vs peek:45/ask:18），
 // position:relative 会把它的绘制层提到 .bubble/.peek/.ask/.think 之上（z-index 都是
 // auto）。几何上它们从不重叠，所以无害；#radial(20)/#action-pop(30)/#notepad(6) 都有
-// 显式 z-index 压在它上面，也不受影响。
+// 显式 z-index 压在它上面，绘制层这一路不受影响。
+//
+// ⚠️ 但**几何**上 #notepad 受影响，2026-09-19 才发现：z-index 只管谁盖谁，管不了
+// 谁跟着谁走。#notepad / #sleep / #sidekick / #prop 都是 #compact-row 的兄弟、
+// 锚 #stage，这里挪猫它们原地不动 → 相对猫错开 catShift。见函数体里 --cat-shift。
 function applyCatShift(px) {
   if (!compactRow || !compactRow.style) return;
   const v = Number(px) || 0;
@@ -810,6 +814,22 @@ function applyCatShift(px) {
   // 那层绘制层提升。归零本身是靠 fitRestingFrame 的去重第三项才跑得到的，见那里。
   compactRow.style.position = v ? 'relative' : '';
   compactRow.style.left = v ? (v + 'px') : '';
+  // ★ 2026-09-19：挂在猫身上、但 DOM 上是 #compact-row **兄弟**的那几个装饰
+  // （#sleep 💤、#notepad 📋、#prop 道具）必须吃同一个偏移，否则猫挪了它们原地不动。
+  // 它们 position:absolute 的包含块是 #stage（#stage 有 position:relative），压根
+  // 不看猫，所以 applyCatShift 挪 #compact-row 的那一下把它们全甩了 ——
+  // 实测（probes/probeDecor.py，逐帧量「装饰中心 − 猫中心」）：贴右缘 .ask 时
+  // #sleep/#notepad 相对猫偏 −50px、贴左缘偏 +50px，**恰好等于 −catShift**，
+  // 居中对照组恒 0。关窗那一下是 2/110 帧的瞬跳（~16ms）＝ 用户报的
+  // 「气泡关闭时喵小范围左右抖动，只在左右贴边时出现」。
+  // 用 CSS 变量而不是在这里逐个写 style：每个装饰的定位属性不同（#sleep 吃 left、
+  // #notepad 吃 right，符号相反），让它们各自在 CSS 里 calc 进自己那条，才不会
+  // 和 edge-below 之类的覆盖规则打架。
+  stage.style.setProperty('--cat-shift', v + 'px');
+  // #prop 是唯一按猫的实时 rect 算位置的（positionProp），它不吃 --cat-shift，
+  // 而是直接重算 —— 但只有被调到才会重算。实测 .peek 那条路会（setStageEdgeLayout
+  // 里有一次），.ask 那条路不会，于是贴右缘开 .ask 时它偏了整整 −50px。这里补齐。
+  if (propEl && propEl.classList.contains('on')) positionProp();
 }
 
 // .bubble/.peek/.ask/.think 的 box-shadow 向外扩散量，单位 px。
