@@ -392,9 +392,34 @@ html, body {
 
 /* ---------- 记事本（行动中心入口） ---------- */
 .notepad {
-  /* right 是从**帧右缘**量的，而猫贴边时在帧内挪了 catShift（往帧中心方向）。
-     符号与 .sleep/.sidekick 的 left 相反：猫往右挪 +50，记事本离右缘就该近 50。 */
-  position: absolute; right: calc(44px - var(--cat-shift, 0px)); bottom: 96px; z-index: 6;
+  /* 2026-09-19：横向从 `right:44px` 换成锚**猫中心**。
+     right 量的是**帧右缘**，而帧右缘不是猫的参照物：
+       - 帧宽一路从 320（初始提交）涨到 620（H5），猫恒居中 → 帧右缘离猫越来越远；
+       - 胶囊宽时 restingFrameWidth() 还会继续涨到 900，右缘再往外跑。
+     于是图标被右墙拖走：原始设计里帧宽 320、猫占 100..220，right:44 让图标落在
+     238..276 —— 挂在猫右肩外 18px；现在帧宽 620、猫占 250..370，同一条规则把它
+     扔到 538..576，离猫右肩 168px，贴右缘时整块出屏（实测 9/9 全出屏）。
+     ⚠️ --cat-shift 那层补偿（9c958e9）修的是**另一个**病（猫在帧内挪了它不跟），
+     锚错参照物这件事它治不了 —— 两者叠加时反而一起偏。
+
+     50% 就是猫中心，与帧宽无关：#stage align-items:center 居中 #compact-row，
+     #compact-row align-items:center 居中 #cat，所以猫中心恒在 #stage 的 50%
+     （#compact-row 是 max-content、比猫宽，但居中套居中不改变这个等式）。
+     +78px = 猫半宽 60 + 肩外 18，复现初始设计的相对位置。
+     --cat-shift 的符号跟着变成 **+**（与 .sleep/.sidekick 一致）：锚 left 时猫往右
+     挪 +50，图标就该跟着 +50。旧的 `-` 是 right 那个写法要的，换锚点后照抄会让
+     偏移**翻倍**。三条装饰现在同一个符号，少一个反向的坑。 */
+  position: absolute;
+  left: calc(50% + 78px + var(--cat-shift, 0px));
+  /* 竖直：bottom 量的是**帧底**，只在正常（justify-content:flex-end）那一路等于
+     猫所在列的底。#stage.edge-below 把整列翻成 flex-start、猫跑到帧顶，帧底就落到
+     猫下方约 620px —— 图标掉下去。这与 E2 那个 .action-pop（`top:14px` 按帧顶定位、
+     帧顶在猫上方约 600px 的屏幕外）是**同一个结构错误**的另一半，所以照 .sleep 的
+     成例补一条 edge-below 覆盖。⚠️ 这一条是**按结构**补的，不是实测出来的：
+     探针至今没能造出 edge-below（placeCat + applyPetSize 不驱动 setStageEdgeLayout，
+     stageClass 一直是空串），横向那半才有真机数据。 */
+  bottom: 96px;
+  z-index: 6;
   width: 38px; height: 38px; cursor: pointer; -webkit-app-region: no-drag;
   display: flex; align-items: center; justify-content: center;
   background: #fff7f2; border: 1.5px solid #d97757; border-radius: 9px;
@@ -402,6 +427,9 @@ html, body {
   transform: rotate(-8deg); transition: transform 0.15s ease;
   animation: npRaise 2.4s ease-in-out infinite;
 }
+/* 猫贴屏幕顶：整列翻到帧顶，猫占 0..120。正常那一路图标是 96..134（距帧底），猫是
+   23..143，即图标顶比猫顶低 9px；这里复现同一个相对位置 → top: 9px。 */
+#stage.edge-below .notepad { top: 9px; bottom: auto; }
 .notepad:hover { transform: rotate(-8deg) scale(1.12); }
 .notepad.hidden { display: none; }
 .np-icon { font-size: 20px; line-height: 1; }

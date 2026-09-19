@@ -998,16 +998,52 @@ assert(/\.peek, \.ask, \.bubble, \.think \{[^}]*left:\s*var\(--pop-shift/.test(p
 // 就相对猫整块错开 catShift。实测（probes/probeDecor.py 逐帧量「装饰中心 − 猫中心」）：
 // 贴右缘 .ask 时 #sleep/#notepad 偏 −50px、贴左缘偏 +50px，恰好 = −catShift，
 // 居中对照恒 0；关窗时是 2/110 帧的瞬跳 = 用户报的「喵小范围左右抖动」。
+// （那次测量时 #notepad 还锚 right；2026-09-19 换成锚 50% 后它与 #sleep 同符号，
+//   但「必须吃 --cat-shift」这个结论不变 —— 它仍是 #compact-row 的兄弟。）
 assert(/applyCatShift[\s\S]{0,1400}?setProperty\('--cat-shift'/.test(petJs),
   'applyCatShift 必须同时写 --cat-shift：只挪 #compact-row 会把 #sleep/#notepad/#sidekick 甩下');
-// #sleep / #sidekick 锚 left（猫往右挪就 +），#notepad 锚 right（**符号相反**）。
-// 符号写反的话贴边时错位会**翻倍**而不是归零，比不修更糟，所以三条分开钉。
+// 三条都锚 left（猫往右挪就 +）。符号写反的话贴边时错位会**翻倍**而不是归零，
+// 比不修更糟，所以分开钉。
+// 2026-09-19：#notepad 原来锚 right、吃 **减** --cat-shift，现在统一成 left / **加**
+// —— 换锚点的理由见下面那条 50% 的 assert，不是为了统一符号而改的。
 assert(/\.sleep \{[^}]*left:\s*calc\(52% \+ var\(--cat-shift, 0px\)\)/.test(petCss),
   '#sleep 必须吃 +--cat-shift：它 left:52% 锚 #stage，不跟猫走');
 assert(/\.sidekick \{[^}]*left:\s*calc\(50% \+ var\(--cat-shift, 0px\)\)/.test(petCss),
   '#sidekick 必须吃 +--cat-shift：同 .sleep，left 锚 #stage');
-assert(/\.notepad \{[^}]*right:\s*calc\(44px - var\(--cat-shift, 0px\)\)/.test(petCss),
-  '#notepad 必须吃 **减** --cat-shift：它锚的是 right，符号与 left 那两条相反');
+
+// ★ 2026-09-19：#notepad 必须锚**猫中心（50%）**，绝不能锚帧右缘（right）。
+// right 量的是帧右缘，而帧宽是会变的：320（初始提交）→ 620（H5 恒定帧宽）→ 最多 900
+// （restingFrameWidth 吃宽胶囊时）。猫恒居中，所以帧右缘离猫越来越远，图标被右墙拖走：
+//   帧宽 320：猫占[100,220]，right:44 → 图标 238..276，离猫右肩  18px ← 原始设计
+//   帧宽 620：猫占[250,370]，right:44 → 图标 538..576，离猫右肩 168px
+//   帧宽 900：猫占[390,510]，right:44 → 图标 748..786，离猫右肩 308px
+// 真机实测（probes/probeDecor.py，帧宽 620 贴右缘）：图标落在 1795..1838，屏幕只到
+// 1440 —— 整个 38px **全在屏幕外**，9/9 次测量都如此。这就是用户报的「日记本图标位置」。
+// 换成 left: calc(50% + 78px) 后三个帧宽下都恒为「离猫右肩 18px」，与帧宽解耦。
+// 50% 就是猫中心：#stage align-items:center 居中 #compact-row，#compact-row
+// align-items:center 居中 #cat（#compact-row 比猫宽也不影响，居中套居中）。
+// 78 = 猫半宽 60 + 肩外 18。
+// ⚠️ 这一条与 --cat-shift 那层补偿是**两件事**：--cat-shift 修「猫在帧内挪了装饰不跟」，
+// 这里修「锚错了参照物」。只补前者不换锚点，图标照样在屏幕外。
+assert(/\.notepad \{[^}]*left:\s*calc\(50% \+ 78px \+ var\(--cat-shift, 0px\)\)/.test(petCss),
+  '#notepad 必须锚猫中心 left:calc(50% + 78px + var(--cat-shift))：锚 right 会被帧右缘拖走（帧宽 320→620→900），贴右缘时整块出屏');
+// 负向钉：右缘那条写法不能悄悄回来。必须先剥注释再查 —— 上面那段注释里就写着
+// `right:44` 当反面教材，直接对原文 test 会把注释当成声明、永远红（实测踩过）。
+{
+  const decls = petCss.replace(/\/\*[\s\S]*?\*\//g, '');
+  const block = decls.match(/\.notepad \{[^}]*\}/);
+  assert(block, '找不到 .notepad 规则块');
+  assert(!/right:/.test(block[0]),
+    '#notepad 不能再出现 right：帧右缘不是猫的参照物（.np-badge 的 right 是相对 .notepad 自己的，不受此限）');
+}
+// 竖直同款：bottom 量的是帧底，只在 justify-content:flex-end 那一路等于猫所在列的底。
+// #stage.edge-below 翻成 flex-start，猫跑到帧顶、帧底落到猫下方约 620px 的屏幕外 ——
+// 与 E2 修 .action-pop 的 `top:14px` 是同一个结构错误的另一半，所以补 edge-below 覆盖。
+// top:9px 由行盒反推：正常那一路帧高 744，胶囊 21 + margin-top 2 贴帧底，猫占 [23,143]
+// 距帧底，图标 bottom:96 → 占 [96,134]，即图标顶比猫顶低 9px；edge-below 猫占 [0,120]，
+// top:9 复现同一相对位置。⚠️ 按结构补的，探针至今造不出 edge-below（见下面 stageClass 那段）。
+assert(/#stage\.edge-below \.notepad \{[^}]*top:\s*9px;[^}]*bottom:\s*auto/.test(petCss),
+  '#notepad 必须有 edge-below 覆盖：只写 bottom 会在猫贴屏幕顶时掉到猫下方约 620px');
 // #prop 不吃变量（它按猫的实时 rect 算），改成 applyCatShift 里重调 positionProp。
 // 实测 .peek 那条路本来就会重算（setStageEdgeLayout 里有一次）、.ask 那条路不会，
 // 于是贴右缘开 .ask 时道具偏了整整 −50px。
