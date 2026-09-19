@@ -31,7 +31,30 @@ function walk(dir) {
   });
 }
 
-assert(/const POPUP_W = 520;/.test(js), 'popup measurement width must remain stable');
+// 2026-09-19（H5）：520 → 620，而且这条断言的**语义变了**，不再只是「别乱动这个数」。
+// 帧宽恒定是抖动修法的本体：开/关弹窗时 restingFrameWidth() 与 popupFrameWidth() 必须
+// 给出同一个值，applyPetSize 的 same() 才会早退、一笔 setBounds 都不发。真机像素取证
+// （history/probes/probeWhich.py）证明 win.setBounds 在 API 层原子、在**屏幕**上不原子：
+// 一笔同时改原点和帧宽的调用，44–69ms 后仍能抓到「新 inset + 旧原点」或「新原点 + 旧
+// inset」的错位帧，两个方向都出现 → 不是算术错，是 WindowServer 与渲染合成两条管线。
+// 所以帧宽只要在开窗时**变**，抖动就必然存在，量级 ≡ 位移量。对照组 C（居中、帧宽不变、
+// sbLog n:0）是四靶里唯一 0/589 干净的。
+// 620 是**下限**，不是口味：POPUP_W ≥ 最宽弹窗 340 + 2*(位移上限 114 + 阴影 26) = 620，
+// 零余量。推导、像素数据、成本分析全写在 renderer/pet.js 的 POPUP_W 定义处。
+// 写成「读出来再比」而不是写死正则：调小它 = 弹窗贴边被裁（pet-edge-cycle 的 A/B/C 会红），
+// 调大它 = 猫的帧内留白跟着涨、hit-test 面积和启动首帧过渡都变 —— 两个方向都要有人看着。
+{
+  const m = js.match(/const POPUP_W = (\d+);/);
+  assert(m, 'POPUP_W must stay a single literal constant: both restingFrameWidth() and '
+    + 'popupFrameWidth() are pinned to it, and a computed value can diverge between the two');
+  const w = Number(m[1]);
+  assert(w >= 620,
+    `POPUP_W must stay >= 620 (got ${w}): it is the constant frame width that makes open/close emit `
+    + 'zero setBounds. 620 = widest popup 340 + 2*(max shift 114 + shadow spread 26), with zero slack. '
+    + 'Lower it and a popup gets clipped at the screen edge; the frame then has to move on open, and '
+    + 'the ~50ms WindowServer/compositor misalignment window puts the jitter straight back.');
+  assert(w % 2 === 0, `POPUP_W must be even (got ${w}): an odd frame width puts the cat at a .5 in-frame offset (F2)`);
+}
 assert(/const ASK_VIEWPORT_MAX_H = 520;/.test(js), 'ask measurement must retain its height cap');
 assert(/function fitPopup[\s\S]*el === askEl[\s\S]*ASK_VIEWPORT_MAX_H/.test(js), 'ask popup must keep dynamic sizing');
 assert(/\.ask\s*\{[\s\S]*background\s*:\s*rgba\(255, 255, 255, 0\.98\)/.test(css), 'ask card styling must remain');
@@ -269,13 +292,13 @@ assert(/PetGeometry\.capsuleShift\(/.test(js) && /--chip-shift/.test(js),
       + 'holds by construction: recomputing it independently lets the two halves drift and the cat jumps');
 
     // 反面：--chip-shift 那一路**不许**传。胶囊的帧宽不是常量 POPUP_W，而是
-    // restingFrameWidth() 的 max(POPUP_W, 内容宽+24)（520..900），而且压这层会改掉
+    // restingFrameWidth() 的 max(POPUP_W, 内容宽+24)（620..900），而且压这层会改掉
     // 「猫贴边时胶囊仍留 4px 屏幕留白」的现行观感。⚠️ 宽胶囊理论上有同款帧裁隐患，
     // 但那得先量过真机再动 —— 顺手加上去等于静默改观感。
     const chip = js.match(/function applyCapsuleShift\([\s\S]*?\n\}/)?.[0] || '';
     assert(chip && !/frameWidth/.test(chip),
       'applyCapsuleShift must NOT pass frameWidth: the resting frame width is variable '
-      + '(restingFrameWidth(), 520..900) and capping there silently drops the capsule 4px edge gap');
+      + '(restingFrameWidth(), 620..900) and capping there silently drops the capsule 4px edge gap');
   }
 
   // ── catShift 的落地：三条都是「换个写法就静默坏掉」的地方 ────────────────────
@@ -308,7 +331,7 @@ assert(/PetGeometry\.capsuleShift\(/.test(js) && /--chip-shift/.test(js),
       + 'cancels out. Move it and the cat really moves.');
 
     // 关窗的归零链：fitRestingFrame 的去重必须比 appliedCatShift。关窗时宽高两项
-    // 必然同时命中（静息帧宽 max(520,…) 恰好也是 520），去重一早退 →
+    // 必然同时命中（静息帧宽 max(POPUP_W,…) 与弹窗帧宽恒等），去重一早退 →
     // setRequestedPetSize 不发 → anchoredLayoutPayload 不跑 → 归零的机会不存在
     // （探针 #14 实测残留 30/50/-50px）。残留不是化妆问题：main.js:398/1570 两处
     // inset 都写死 (帧宽-120)/2、不看锚点，下一次拓扑事件猫就横跳；且 persistPos
@@ -357,7 +380,7 @@ assert(/function restingFrameWidth\(\)/.test(js),
 // setPetSize 净 +1px。「有概率」= 帧宽碰巧是奇数才有；「只在右边缘」= 到处都在漂，
 // 只有右缘会撞上 clampCatOrigin 的上界、饱和成一次可见的跳动。
 // 奇数帧宽真的可达：measuredRestingWidth 读的是带小数的 getBoundingClientRect().width，
-// 外面套 Math.ceil，520..900 之间任何奇数都产得出来（帧宽卡在 520 下限时才碰不到）。
+// 外面套 Math.ceil，POPUP_W..900 之间任何奇数都产得出来（帧宽卡在下限时才碰不到）。
 // 漂移量的算术由 test/pet-edge-cycle.js 全扫（含奇数帧宽的反向对照）。
 {
   const fn = js.match(/function restingFrameWidth\(\)[\s\S]*?\n\}/)?.[0] || '';
@@ -400,8 +423,8 @@ assert(/#compact-row\s*\{[\s\S]*?align-items:\s*center;/.test(css),
 // 这一条补的是钳猫方案**差点漏掉**的后果，而且必须钉死，因为它替代的是一层**顺手的、
 // 没人写下来的**保护：旧代码里 #stage.edge-left { align-items: flex-start } 把整列拉到
 // 窗口左缘，而那个缘本身被钳在 wa.x —— 也就是说横向贴边那半套顺手保护了弹窗不出屏。
-// 删掉横向贴边时这层保护一起没了：弹窗改由 #stage 的 align-items:center 居中在 520 宽
-// 的窗口里，而钳猫之后窗口原点合法地悬出屏幕（猫贴死左缘时原点 = wa.x-200），于是
+// 删掉横向贴边时这层保护一起没了：弹窗改由 #stage 的 align-items:center 居中在 POPUP_W 宽
+// 的窗口里，而钳猫之后窗口原点合法地悬出屏幕（猫贴死左缘时原点 = wa.x-inset），于是
 // .peek（320 宽）落在 wa.x-100、.ask / .bubble（340 宽）落在 wa.x-110 —— 探出屏幕被裁。
 // 补偿走 --pop-shift（applyPopupShift 复用 capsuleShift 的「按需最小位移」口径）。
 assert(/function applyPopupShift\(/.test(js) && /--pop-shift/.test(js),

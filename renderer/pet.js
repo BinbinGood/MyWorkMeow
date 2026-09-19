@@ -504,7 +504,55 @@ const choiceKey = (c) => {
 
 // 先扩到目标宽度再量高度：如果在基础 320px 窄窗里先测，长文本会被过度换行，
 // 错误地把弹层撑到整屏高。（帧**高**不再跟内容走，见 PET_FRAME_H。）
-const POPUP_W = 520;
+//
+// ★★★ 2026-09-19（H5）：520 → 620。这是**帧宽恒定**方案的本体。
+//
+// 为什么必须抬：H4 让开窗时把帧从 520 对称加宽到 620，算术上完美（帧中心不变 →
+// flex 居中的猫原地不动 → catShift 恒 0、一笔 setBounds）。用户实测仍然抖，
+// 而且只在**开窗**、只在贴边。像素级取证（probes/probeWhich.py，setBounds 记账
+// 与抓屏共用一条时间轴，ROUNDS=8，四靶）：
+//   · sbLog 每靶 15 笔、**全部**来自 applyPetSize (main.js:352)，
+//     `req:"1070/620" x:"1120>1070" w:"520>620" durMs:0.84`，一次开窗只有一笔，
+//     调用返回后 getBounds() 立刻同时报出新 x 和新 width。
+//     → 「两笔 setBounds」「keepCatOnScreen 抢原点」两个假设当场死亡。
+//   · 偏离帧出现在那一笔之后 **44–69ms**（60Hz 下 3–4 帧），下一笔还在 700ms 后。
+//   · 偏离量恒等于 inset 差 (W−120)/2 − 200 = 50/50/30，而且**两个方向都有**：
+//       A 靶 minX 1370 = 旧原点 1120 + **新** inset 250   （内容按新帧宽居中了，帧还没移）
+//       P 靶 minX 1290 = **新**原点 1090 + 旧 inset 200   （帧移了，内容还是旧的）
+//     一个方向能用「代码算错」解释，两个方向不能 —— 这是平台层的非原子。
+//   · 开窗四靶 A 4/444、M 5/450、P 6/681 抖；**居中对照靶 C 0/589 干净，
+//     且 sbLog n:0** —— 宽度没变 → applyPetSize 的 same() 早退 → 一笔都没发。
+//     没有 setBounds 就没有抖动，这是全套实测里最干净的一条因果。
+//   · 关窗四靶两轮独立测量全 0：缩窄时旧位图比新帧大，可见部分位置不变。
+//   · 竖直方向从不抖（Δh 曾达 404px）：AppKit 帧原点在**左下**，加高时 origin 不动。
+//     加宽要减 x，origin 真的变了 —— 这就是「只有横向、只有加宽」的原因。
+// 结论：`win.setBounds` 在 API 层原子，在**屏幕**上不原子 —— 窗口原点走
+// WindowServer、窗口内容走渲染端光栅化，两条管线之间有约 50ms 的窗口期。
+// 所以「原点和帧宽同时变」必抖，与顺序、与是否对称、与是否需要帧内补偿都无关；
+// probeAtomic 的 GROW 组（0/151 干净）之所以测不出来，是它的内容是一个静态 CSS
+// 方块、重绘在同帧完成，而真实开窗要同时插入并绘制 .ask/.peek 面板。
+//
+// 唯一的出路是**开窗那一刻帧宽根本不变**。帧宽要恒定，就得恒等于「最坏情况下装得下
+// 完整贴边位移」的那个值，也就是 H4 动态算出来的上界：
+//   需求 W >= widest + 2*(|ideal| + SPREAD)，而 capsuleShift 的封顶给出
+//   |ideal| <= (widest-120)/2 + 4  →  W >= 2*widest - 60
+//   widestVisiblePopup 只扫 .peek/.ask/.bubble/.think，最宽 340（.ask，pet.css:140）
+//   → W >= 620。取 620，**恰好齐平、零余量**（tight(620) = (620-340)/2-26 = 114
+//   = |ideal| 上限 114）。零余量是故意的：test/popup-style.js 有一条断言守着这个
+//   下界，将来任何弹窗变宽或 SPREAD 变大都会立刻红，而不是悄悄退回「帧宽会变」。
+// 620 是偶数 —— 必须的，见 restingFrameWidth 里 F2 那段（奇数帧宽 → 猫的窗内偏移
+// 带 .5 → Math.round 放大成每轮 +1px 漂移）。
+//
+// 代价只有一项：静息帧从 520 变 620 宽，猫的窗内 inset 从 200 变 250，透明窗口单侧
+// 最多悬出屏幕 250px。这**不引入新问题**：clampCatOrigin 钳的是**猫本体**不是窗口
+// （所以不会重新长出「200px 环带」那类 bug），命中测试逐元素、透明留白从不参与，
+// getDisplayMatching 按重叠面积选屏只在 inset > 帧宽/2 时才可能选错而 250 < 310。
+//
+// ⚠️ 这一条推翻了 history/H3-notepad-handoff.md「明确不做：POPUP_W 恒 520 无条件」。
+// 那条禁令的论证（shared/pet-geometry.js:129-147）是「H2 声称要把 POPUP_W 抬到 568
+// 才能不裁弹窗 —— 错了，不动它也能治裁切」。那句话至今成立，H4 确实没动它就治好了
+// 裁切。但这次抬宽的理由是**抖动**，旧论证覆盖不到这个理由。
+const POPUP_W = 620;
 const POPUP_BOTTOM = 200;
 const ASK_VIEWPORT_MAX_H = 520;
 // 桌宠帧高**恒定**（2026-09-17，E2）。
@@ -810,18 +858,30 @@ function widestVisiblePopup() {
 // 代回上式得 W <= 2*widest - 60，与 900 的上限在 widest <= 480 时永不冲突。
 // widestVisiblePopup 只扫 .peek/.ask/.bubble/.think，四者上限是 340（.ask，pet.css:140；
 // .peek 320:296、.bubble max-width 340:491、.think 无显式宽度、内容驱动远小于），
-// 所以实际最大帧宽 620 < 900，那个 min() 进不去，留着纯防御。
+// 所以 need 恒 <= 620 == POPUP_W，Math.max 那一边永远赢 —— 换句话说 H5 之后这个函数
+// **恒返回 restingFrameWidth()**，need 只是留着当断言：将来谁把弹窗改宽、或把
+// SPREAD 调大，need 就会顶破 620，帧宽重新开始变化、抖动重现。所以下面那句
+// 「need > 下限时按 need 走」不是死代码，是**降级路径**：宽了以后至少不裁弹窗，
+// 代价是抖动回来 —— 而 test/popup-style.js 的下界断言会在那之前先红。
 // ⚠️ 若以后把 .action-pop（496 宽，:444）之类的加进 widestVisiblePopup，这条就破了：
-// 496 要 900 的帧却只得到 tight=176 < |ideal|=192，位移会被 clamp 掉一截。加之前先算。
+// 496 需要 W >= 932 > CAPSULE_FRAME_MAX_W(900)，位移会被 clamp 掉一截。加之前先算。
+//
+// ★★ H5 的第二个要点：下限必须是 **restingFrameWidth()**，不是常量 POPUP_W。
+// 胶囊本身能被撑宽（多会话 + 额度全开，measuredRestingWidth + GUTTER 可以超过 620），
+// 那时静息帧 > 620。若这里只保证 >= 620，开窗就成了**缩窄**、关窗成了**加宽** ——
+// 帧宽照旧在变，抖动只是换个方向回来。两个函数共用同一个下限，开关窗才真的零变化。
+// （measuredRestingWidth 只量 chip / sessionsEl，这两个在弹窗开着时也照旧在场，
+//  所以两边算出来的值同源、不会因为弹窗状态而漂。）
 function popupFrameWidth() {
-  if (!stage || !stage.style || !window.PetGeometry) return POPUP_W;
+  const floor = restingFrameWidth();
+  if (!stage || !stage.style || !window.PetGeometry) return floor;
   const widest = widestVisiblePopup();
-  if (!(widest > 0)) return POPUP_W;
+  if (!(widest > 0)) return floor;
   const snap = petGeometrySnapshot();
-  if (!snap) return POPUP_W;
+  if (!snap) return floor;
   const pet = snap.petRect;
   const petCenterX = snap.windowRect.x + pet.x + pet.width / 2;
-  if (!Number.isFinite(petCenterX)) return POPUP_W;
+  if (!Number.isFinite(petCenterX)) return floor;
   const ideal = window.PetGeometry.capsuleShift({
     petCenterX,
     capsuleWidth: widest,
@@ -829,7 +889,7 @@ function popupFrameWidth() {
     petWidth: pet.width,
   });
   const need = widest + 2 * (Math.abs(Number(ideal) || 0) + POPUP_SHADOW_SPREAD);
-  const w = Math.min(CAPSULE_FRAME_MAX_W, Math.max(POPUP_W, Math.ceil(need)));
+  const w = Math.min(CAPSULE_FRAME_MAX_W, Math.max(floor, Math.ceil(need)));
   return w + (w % 2);
 }
 
@@ -1052,8 +1112,13 @@ function measuredRestingWidth() {
 //     ★ 这条现在有更强的保障：shared/pet-geometry.js 的 chooseRestingLayout 和
 //     choosePopupLayout **一个帧宽参数都不收**，横向恒 return 'center'，所以帧宽
 //     变化在结构上不可能改变对齐（H4 加宽帧的前提就靠这条）。
-// 弹窗帧本来就是 520 宽的透明窗，静息态也用 520 并不会多挡任何东西（命中测试
-// 按元素而不是按窗口矩形），代价为零。
+// 弹窗帧本来就是透明窗，静息态也用同一个宽度并不会多挡任何东西（命中测试按元素
+// 而不是按窗口矩形），代价为零。
+// ★★ H5（2026-09-19）：这条从「顺带的好性质」升级成**抖动修法的本体**。POPUP_W 抬到
+// 620 之后，静息帧和弹窗帧在任何猫位置上都是同一个宽度 → applyPetSize 的 same() 早退
+// → 开/关窗**一笔 setBounds 都不发**。理由与像素取证见 POPUP_W 定义处。
+// 这也是为什么上面那句「下限取弹窗帧宽而不是基础 320」现在是硬要求而非优化：
+// 两个函数一旦给出不同的值，帧宽就又开始变，抖动立刻回来。
 //
 // ⚠️ 2026-09-19（H4）修订上面第一条。上一版写的是「窗口横向『宽度+原点』的变更在
 // macOS WindowServer 里是两笔事务，中间帧猫必然可见地跳一下。横向不动，抖动在物理上
@@ -1088,7 +1153,7 @@ function measuredRestingWidth() {
 // 取偶之后 inset 恒为整数，两次 Math.round 都成了恒等变换。
 // （试过「少取一次整」——用未取整的 localX 直接当 inset：仿真显示毫无改善，
 // 129786 个样本里 64893 个照旧漂移、最大 8.5px。小数 inset 本身才是病根。）
-// CAPSULE_FRAME_MAX_W(900) 与 POPUP_W(520) 都已是偶数，所以夹取的两端天然安全。
+// CAPSULE_FRAME_MAX_W(900) 与 POPUP_W(620) 都已是偶数，所以夹取的两端天然安全。
 function restingFrameWidth() {
   const w = Math.min(
     CAPSULE_FRAME_MAX_W,
@@ -1115,10 +1180,13 @@ function fitRestingFrame(force = false, allowOverlays = false) {
     const currentH = Number(window.innerHeight) || BASE_PET_FRAME_H;
     const targetH = Math.min(PET_FRAME_H, browserWorkArea().height || PET_FRAME_H);
     // 第三项 appliedCatShift（2026-09-18 H3）：猫身上还挂着帧内偏移时，宽高即使都
-    // 没变也**不许**早退。关窗这条路上前两项必然同时命中 —— 静息帧宽 max(520, …)
-    // 恰好也是 520、帧高也没变 —— 于是 setRequestedPetSize 不发、anchoredLayoutPayload
+    // 没变也**不许**早退。关窗这条路上前两项必然同时命中 —— 静息帧宽 max(POPUP_W, …)
+    // 恰好也是 POPUP_W、帧高也没变 —— 于是 setRequestedPetSize 不发、anchoredLayoutPayload
     // 不跑、归零的机会根本不存在。讽刺的是：正是「横向几何在两个状态下完全相同」
     // 这条让修法零成本的性质，把清理也一并吞掉了（探针 #14 实测残留 30/50/-50px）。
+    //   ★ H5 之后这个「完全相同」是**所有**猫位置的常态（不再只是居中那一路），所以
+    //   这一项从「偶尔救命」变成了关窗路径上**唯一**还能触发 IPC 的条件。H4 之后
+    //   appliedCatShift 恒 0，于是这条路上一笔 setBounds 都不发 —— 这正是修法要的。
     //   残留不是化妆问题：main.js:398（restoreWindowOrigin）和 :1570（keepCatOnScreen）
     //   两处都写死 inset = (帧宽-120)/2 = 200、不看锚点，一旦有屏幕拓扑事件或窗口
     //   恢复，猫就按错的 inset 横跳 catShift 那么多；而 persistPos 只在

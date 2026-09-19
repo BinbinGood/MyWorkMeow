@@ -42,7 +42,10 @@ const mainJsCode = codeOnly(mainJs);
 
 const CAT = 120;        // #cat 是 120×120
 const CAT_H = 120;      // #cat 同样写死 120 高，且无 transform
-const POPUP_W = 520;    // renderer/pet.js 的 POPUP_W
+// renderer/pet.js 的 POPUP_W。2026-09-19（H5）520 → 620：帧宽做成恒定，开/关弹窗
+// 一笔 setBounds 都不发。620 = 最宽弹窗 340 + 2*(位移上限 114 + 阴影 26)，**零余量**，
+// 推导与像素取证见 renderer/pet.js 的 POPUP_W 定义处。下面 854 行那条断言钉着它同步。
+const POPUP_W = 620;
 
 // ── 竖直常量（2026-09-18，E2）────────────────────────────────────────────────
 // 帧高从「跟着内容变」改成**恒定** 744 = POPUP_BOTTOM(200) + ASK_VIEWPORT_MAX_H(520) + 24。
@@ -851,7 +854,10 @@ assert(!/inferHorizontalFrameClamp/.test(petJsCode),
   '横向 infer 门必须保持退役：钳猫之后「窗口被钳住而猫还没到边」这个状态不存在了');
 assert(!/inferVerticalFrameClamp/.test(petJsCode),
   '竖直 infer 门必须保持退役：与横向同一个论证（竖直钳猫后猫到边就是窗口到边）');
-assert(/const POPUP_W = 520;/.test(petJs), '本 suite 的 POPUP_W 必须跟渲染端一致');
+// 写成从 POPUP_W 生成而不是写死 `= 520`：这条断言的用途是「suite 的镜像常量和渲染端
+// 同步」，写死数字就得改两处、而且改漏一处时它反而会绿（两边都是 520 也「一致」）。
+assert(new RegExp('const POPUP_W = ' + POPUP_W + ';').test(petJs),
+  `本 suite 的 POPUP_W(${POPUP_W}) 必须跟渲染端一致`);
 
 // ── 失焦必须放开鼠标穿透（G1）────────────────────────────────────────────────
 // 用户实测：「多次切换气泡开关以后，这个喵可能会卡住，点击喵没任何反应。点了其他应用，
