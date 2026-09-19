@@ -6,9 +6,10 @@ const AGENT = new URLSearchParams(location.search).get('agent') || 'all';
 
 const stage = document.getElementById('stage');
 const cat = document.getElementById('cat');
-// 猫 + 胶囊那一列。弹窗贴边时会给它加帧内偏移（popupShiftPlan 算出的 catShift），
-// 把猫往帧中心挪、腾出弹窗阴影的地方；主进程随后按锚点把整个帧反向挪回来，
-// 净效果是猫在屏幕上一动不动。详见 applyCatShift 的注释。
+// 猫 + 胶囊那一列。**从不**带帧内偏移（H4，2026-09-19）：它靠 flex 居中在帧里，
+// 帧中心就是猫中心。贴边弹窗需要的横向余量全部由「对称加宽帧」提供（popupFrameWidth），
+// 不再拿猫的帧内偏移去换 —— H3 那种「渲染端挪猫 + 主进程反向挪帧」是抖动的根源，
+// 两个进程之间没有原子提交通道。详见 popupShiftPlan / applyCatShift 的注释。
 const compactRow = document.getElementById('compact-row');
 
 // 状态 GIF 缺失或加载失败时使用仓库自带的静态猫图。
@@ -597,20 +598,29 @@ function anchoredLayoutPayload(next) {
   // 的真正落地仍由调用方延后到 resize 事件（pendingEdgeLayout），与窗口重排同帧。
   // offset 必须实测、不能归零 —— 尤其垂直方向：贴窗口底的是胶囊而不是猫（猫在它
   // 上方、隔一个胶囊高），yOffset 就是那段胶囊高。
-  // 弹窗贴边时给猫那一列加帧内偏移。**位置很讲究**：必须在这里、在 measureEdgeRect
-  // 之前 —— 上面的 screenX 是由**旧** rect 定住的（猫此刻真实的屏幕位置），而下面的
-  // measureEdgeRect 取的是**新** rect（含本次偏移）。两者之差正是要让主进程反向吸收
-  // 的那一段；如果挪到函数外面，Δ 会被算进 screenX，主进程就把猫真的推走了。
-  const plan = popupShiftPlan(screenX, oldPet.width);
-  applyCatShift(plan ? plan.catShift : 0);
+  // H3（2026-09-18）曾在这里给猫那一列加帧内偏移（applyCatShift(plan.catShift)），
+  // 靠主进程反向移帧抵消。**那是抖动的根源，H4 已作废** —— 两个进程之间没有原子提交
+  // 通道，帧原点先落屏、帧内偏移后合成，屏幕上必然画出几帧错位（probeAtomic.py：
+  // H3 抖 10%、反序 REV 抖 11%、只朝一侧加宽 ASYM 抖 12%，唯独对称加宽 0%）。
+  // 现在位移全额由帧宽承担（popupFrameWidth），猫**从不**带帧内偏移。
+  // 仍然调一次 applyCatShift(0)：它是幂等的，负责把 H3 时代残留的 --cat-shift /
+  // style.left 归零（老版本装过的用户升级后第一次开窗就清掉），并保持 appliedCatShift
+  // 这个不变量为 0，供 fitRestingFrame 的去重和测试断言使用。
+  // 必须在 measureEdgeRect **之前**：下面量的 rect 必须是「猫没有帧内偏移」的干净值。
+  applyCatShift(0);
 
   const rect = measureEdgeRect(next);
   const viewportW = Math.max(1, window.innerWidth || 320);
   const viewportH = Math.max(1, window.innerHeight || BASE_PET_FRAME_H);
-  // 横向恒居中，但猫的窗内偏移**不再恒等于** (帧宽-猫宽)/2 —— 弹窗贴边时上面的
-  // applyCatShift 会给它加 catShift（2026-09-18 H3）。所以 xOffset 必须像现在这样
-  // 实测，不能按公式归零；主进程 main.js:333 的 `inset = anchor.screenX - anchored.x`
-  // 正是把这个偏移读回去、反向挪帧的那一步。
+  // 横向恒居中。H4 之后猫**没有**帧内偏移了（catShift 恒 0）：#compact-row 在 #stage
+  // 里 align-items:center、猫在 #compact-row 里也 align-items:center → 猫中心恒等于
+  // 帧中心 → 这里的 xOffset 恒等于 0。
+  //   ★ 恒 0 恰好绕开一个隐患：本函数拿的是**当前** innerWidth，而主进程
+  //   anchoredPetOrigin 用的是**本次请求的新** width。catShift ≠ 0 时两者不匹配会算错
+  //   原点；而 0 是个**相对量**，在新旧帧宽下都对 —— 主进程算 localX = newW/2 + 0 - 60，
+  //   新帧中心正好压住猫中心，这就是「对称加宽」在协议层的实现。
+  // 仍然实测而不写死 0：一是竖直方向必须实测（贴窗口底的是胶囊不是猫，yOffset 就是
+  // 那段胶囊高），二是留着自证 —— 万一哪天又有人给猫加帧内偏移，这里会如实反映。
   // 仍然发 'center' 而不是省掉这个字段，是因为主进程 anchoredPetOrigin 靠它反解
   // localX（三条分支还留着，兼容旧锚点）。
   const xAlign = 'center';
@@ -686,11 +696,11 @@ function applyCapsuleShift(petScreenX, petWidth) {
 // 气泡尾巴不会跟丢：--tip-x 是从 getBoundingClientRect 反算的，relative 偏移已经
 // 含在那个矩形里，尾巴自动跟着指回猫。
 //
-// 2026-09-18（H3）：这里只**算**，不施加。总位移拆成两半：popShift 由 --pop-shift
-// 在帧内挪弹窗，catShift 由 applyCatShift 在帧内挪猫、再由主进程的帧移抵掉。两半的
-// 落地时机不同（catShift 必须在 anchoredLayoutPayload 量 rect 之前），所以计算和
-// 施加分开。返回 null 表示「没有可见弹窗 / 几何不可用」，两半都归零。
-function popupShiftPlan(petScreenX, petWidth) {
+// 2026-09-19（H4）：这里只**算**，不施加 —— popShift 由 applyPopupShift 写进
+// --pop-shift。返回的 catShift 在正常路径下**恒为 0**（帧宽由 popupFrameWidth
+// 保证 tight >= |ideal|），保留它只为让「帧宽没跟上」的异常态可诊断。
+// 返回 null 表示「没有可见弹窗 / 几何不可用」。
+function popupShiftPlan(petScreenX, petWidth, frameWidth) {
   if (!stage || !stage.style) return null;
   const wa = browserWorkArea();
   const petCenterX = Number(petScreenX) + Number(petWidth) / 2;
@@ -725,34 +735,48 @@ function popupShiftPlan(petScreenX, petWidth) {
     //        而 box-shadow 画在盒子**外面** → 被 overflow:hidden 整块吃掉，这就是
     //        用户报的「喵靠在右边，左边缘的阴影也没了」。H2 钳错了矩形 —— 钳的是
     //        盒子，该钳的是「盒子 + 阴影」。
-    // 三条同一个根，所以一起修：位移拆成 popShift + catShift（见上方大注释），
-    // 帧内那一半按 tight（含阴影）封顶，溢出的一半交给帧移。实测（probeRealPath2.py，
-    // 全部走真实 fitPopup → setRequestedPetSize → IPC → applyPetSize 链路）：
-    //   .peek 贴右缘 ideal=-104 tight=74 → popShift=-74 catShift=+30 帧 1360→1330
-    //         盒子屏幕 [1360,1680]→[1356,1676]  近侧阴影 0→21.5px  远侧 21.5 不变
-    //   .ask  贴右缘 ideal=-114 tight=64 → popShift=-64 catShift=+50 帧 1360→1310
-    //         盒子屏幕 [1360,1700]→[1336,1676]  近侧阴影 0→21px    远侧 21 不变
-    //         **出屏 20→0**（圆弧回来了），且 H2 丢掉的那 4px 屏幕留白也一并回来
-    //   .ask  贴左缘 ideal=+114 → popShift=+64 catShift=-50 帧 -200→-150 出屏 20→0
-    //   四组里猫的屏幕 x 恒定（1560/1560/0）、帧宽恒 520、#compact-row.scrollWidth 不变
-    // POPUP_W 仍然**不动** —— 它压根不是瓶颈。
+    // 三条同一个根，所以一起修。H3（2026-09-18）的修法是把位移拆成 popShift + catShift：
+    // 帧内那一半按 tight 封顶、溢出的一半让主进程反向移帧去吸收。
+    //
+    // 2026-09-19（H4）：**H3 的拆分本身就是抖动源，已作废。** 用户连续两次真机反馈
+    // 「贴边时开窗和关窗都左右抖一下」。像素级实测（probes/probeAtomic.py，独立 Electron
+    // 窗口、五路对照、抓屏逐帧扫品红块、D=50）：
+    //   BASE 只移帧不补偿      净位移 -50  ✓ 量法自证 67/194 帧 = 35%，-50px
+    //   H3   写 left +50 → 移帧 -50   净 0  ★★ 抖 15/152 = 10%，+50px
+    //   REV  移帧 -50 → 写 left +50   净 0  ★★ 抖 17/156 = 11%，+50px ← **改顺序无用**
+    //   GROW 对称加宽 x-50 width+100  净 0  ✓ 0/151 = 0%，完全干净
+    //   ASYM 只朝左加宽 + 补 +25      净 0  ★★ 抖 19/161 = 12%，分布含 1145 = +25
+    // 机制：win.setBounds 经 window server 几乎立刻落屏，compactRow.style.left 只是标脏、
+    // 8–16ms 后才合成 → 屏幕上必然画出几帧「新帧原点 + 旧帧内偏移」。两个进程之间没有
+    // 原子提交通道，所以**凡是需要「帧内补偿」的方案都抖**（H3/REV/ASYM 全中），
+    // 而对称加宽干净的原因正是它**不需要补偿**：
+    //   帧中心 = (x0 - D) + (w0 + 2D)/2 = x0 + w0/2，**中心不变**
+    // → flex 居中的猫原地不动，一次 setBounds 同时带上原点和宽度，catShift 恒 0。
+    // 左墙同时外扩 D，正好就是贴右缘的弹窗需要的那点溢出空间。
+    //
+    // 所以现在不再拆：帧加宽到「tight 够装下完整 ideal」，popShift 直接等于 ideal。
+    //   需求：tight(W) >= |ideal|  ⟺  (W - widest)/2 - SPREAD >= |ideal|
+    //                             ⟺  W >= widest + 2*(|ideal| + SPREAD)
+    // 这个宽度由 popupFrameWidth() 算、由 fitPopup 发下来，再顺着 frameWidth 传回这里。
+    // POPUP_W 仍然**不动**（恒 520）：加宽只发生在贴边弹窗这一瞬，静息帧宽不变。
     const widest = widestVisiblePopup();
     if (widest > 0) {
-      // ideal：**不传 frameWidth**。这是「刚好不出屏 + 4px 留白」的完整需求量，
-      // 不再在这里被帧宽压掉 —— 压掉的那部分现在由 catShift 交给帧移去吸收。
+      // ideal：**不传 frameWidth**。这是「刚好不出屏 + 4px 留白」的完整需求量。
       const ideal = window.PetGeometry.capsuleShift({
         petCenterX,
         capsuleWidth: widest,
         workArea: wa,
         petWidth: Number(petWidth),
       });
-      // tight：帧内能安全容纳的位移上限。居中余量 (520-弹窗宽)/2 再**扣掉阴影扩散**，
-      // 这是 H2 漏掉的那一项 —— 盒子贴到帧墙时阴影就被 overflow:hidden 吃了。
-      const tight = Math.max(0, (POPUP_W - widest) / 2 - POPUP_SHADOW_SPREAD);
+      // tight：帧内能安全容纳的位移上限 = 居中余量 (帧宽-弹窗宽)/2 再扣掉**阴影扩散**
+      // （H2 漏掉的那一项：盒子贴到帧墙时阴影就被 overflow:hidden 吃了）。
+      // 按**本次请求的帧宽**算，不能写死 POPUP_W —— 帧已经为这次位移加宽了。
+      const frame = Number(frameWidth);
+      const effW = Number.isFinite(frame) && frame > 0 ? frame : POPUP_W;
+      const tight = Math.max(0, (effW - widest) / 2 - POPUP_SHADOW_SPREAD);
       const popShift = Math.max(-tight, Math.min(tight, ideal));
-      // 不变式：popShift - catShift ≡ ideal。总位移一分不少，只是换了承担者 ——
-      // 注意是**减**：弹窗在帧内右移 popShift，猫在帧内左移 |catShift|（catShift 是
-      // 负数），两者叠加出的「弹窗相对猫的位移」才是 capsuleShift 要的那个 ideal。
+      // catShift 恒 0：帧宽由 popupFrameWidth() 保证 tight >= |ideal|，位移全额落在帧内。
+      // 保留这个字段是为了让「帧宽没跟上」的异常态可诊断（正常路径下恒 0）。
       return { ideal, tight, widest, popShift, catShift: Math.round(popShift - ideal) };
     }
   }
@@ -773,25 +797,79 @@ function widestVisiblePopup() {
   return widest;
 }
 
-// 把算好的帧内那一半位移写进 CSS 变量。另一半（catShift）**不在这里施加** ——
-// 它必须在 anchoredLayoutPayload 里、量 rect 之前落地，见那里的注释。
+// 贴边弹窗需要的**帧宽**。H4（2026-09-19）：位移不再拆给猫，全额落在帧内，
+// 所以帧必须宽到能装下完整 ideal（含阴影扩散）：
+//   tight(W) >= |ideal|  ⟺  (W - widest)/2 - SPREAD >= |ideal|
+//                        ⟺  W >= widest + 2*(|ideal| + SPREAD)
+// 加宽是**对称**的（主进程 anchoredPetOrigin 按新宽度重算原点、帧中心仍压住猫中心），
+// 这正是 probeAtomic.py 里唯一测得干净的那一路（GROW 0/151）。
+//
+// 结果**必须取偶**：帧宽为奇数时猫的帧内偏移带 .5，Math.round 会把它放大成每轮
+// +1px 的单向漂移（F2 那个 bug，见 restingFrameWidth 的同款处理）。
+// 上限 CAPSULE_FRAME_MAX_W 兜底：capsuleShift 的 cap 让 |ideal| <= (widest-120)/2 + 4，
+// 代回上式得 W <= 2*widest - 60，与 900 的上限在 widest <= 480 时永不冲突。
+// widestVisiblePopup 只扫 .peek/.ask/.bubble/.think，四者上限是 340（.ask，pet.css:140；
+// .peek 320:296、.bubble max-width 340:491、.think 无显式宽度、内容驱动远小于），
+// 所以实际最大帧宽 620 < 900，那个 min() 进不去，留着纯防御。
+// ⚠️ 若以后把 .action-pop（496 宽，:444）之类的加进 widestVisiblePopup，这条就破了：
+// 496 要 900 的帧却只得到 tight=176 < |ideal|=192，位移会被 clamp 掉一截。加之前先算。
+function popupFrameWidth() {
+  if (!stage || !stage.style || !window.PetGeometry) return POPUP_W;
+  const widest = widestVisiblePopup();
+  if (!(widest > 0)) return POPUP_W;
+  const snap = petGeometrySnapshot();
+  if (!snap) return POPUP_W;
+  const pet = snap.petRect;
+  const petCenterX = snap.windowRect.x + pet.x + pet.width / 2;
+  if (!Number.isFinite(petCenterX)) return POPUP_W;
+  const ideal = window.PetGeometry.capsuleShift({
+    petCenterX,
+    capsuleWidth: widest,
+    workArea: snap.workArea,
+    petWidth: pet.width,
+  });
+  const need = widest + 2 * (Math.abs(Number(ideal) || 0) + POPUP_SHADOW_SPREAD);
+  const w = Math.min(CAPSULE_FRAME_MAX_W, Math.max(POPUP_W, Math.ceil(need)));
+  return w + (w % 2);
+}
+
+// 把算好的帧内位移写进 CSS 变量。H4 之后这就是**全部**位移（catShift 恒 0）。
+// 这里传 window.innerWidth 作帧宽：本函数只在尺寸已落地后跑（applyCapsuleShift ←
+// applyPendingEdgeLayout ← resize 事件，或 !willResize 的就地分支），innerWidth 就是
+// 当前真实帧宽。
 function applyPopupShift(petScreenX, petWidth) {
   if (!stage || !stage.style) return;
-  const plan = popupShiftPlan(petScreenX, petWidth);
+  const plan = popupShiftPlan(petScreenX, petWidth, window.innerWidth || POPUP_W);
   stage.style.setProperty('--pop-shift', (plan ? plan.popShift : 0) + 'px');
 }
 
-// 弹窗需要的位移超出帧内安全余量时，超出的那部分给**猫那一列**加帧内偏移：猫在帧内
-// 往中心挪 catShift，主进程随后按锚点把整个帧反向挪 catShift（main.js:333 的
-// `inset = anchor.screenX - anchored.x` 会把这个偏移读回去），净效果是猫在屏幕上
-// 一动不动，而弹窗多拿到 |catShift| 的帧内余量 —— 阴影和圆弧就都装得下了。
+// 给**猫那一列**加帧内偏移。★ H4（2026-09-19）之后只以 0 被调用，是一条**归零/保持
+// 零**的通道，不再承担任何位移。
 //
-// 为什么非得动帧：.ask 340 宽、猫贴死右缘时，「不出屏且留 4px」要求盒子落在帧内
-// [-20, 320]，左端在帧的左墙**外面**。单靠 --pop-shift 在数学上做不到，帧必须动。
+// H3（2026-09-18）曾用它换弹窗余量：猫在帧内往中心挪 catShift，主进程随后按锚点把
+// 整个帧反向挪 catShift（main.js:333 的 `inset = anchor.screenX - anchored.x` 会把
+// 这个偏移读回去），账面净效果是猫一动不动。**那是抖动的根源。**
 //
-// 两个进程、无法原子提交：渲染进程改 left、主进程改 setBounds，中间理论上可能有一帧
-// 猫跳 catShift。**实测没有**（probes/probeRealPath2.py，rAF 逐帧采 window.screenX +
-// rect.left 的和，开窗 200 帧、关窗 278 帧，|Δ|>2 计一次跳变，结果 0）。
+// 为什么必错：两笔改动落屏的管线不同。win.setBounds 经 window server 几乎立刻生效，
+// compactRow.style.left 只是标脏、要等 8–16ms 后的一次合成 —— 屏幕上必然画出几帧
+// 「新帧原点 + 旧帧内偏移」。像素级五路对照（probes/probeAtomic.py，独立 Electron
+// 窗口 + getUserMedia 逐帧扫品红块，D=50，净位移应为 0）：
+//   BASE 只移帧不补偿  −50px 67/194=35%  ← 量法自证：这把尺子测得出 50px
+//   H3   写 left 再移帧 +50px 15/152=10%  ★★ 抖
+//   REV  先移帧再写 left +50px 17/156=11%  ★★ 抖（改顺序无用，已证）
+//   GROW 对称加宽 x−50/w+100     0/151= 0%  ✓ 完全干净
+//   ASYM 单侧加宽 + 补 +25       19/161=12%  ★★ 抖（分布含 +25）
+// 结论：凡是需要**帧内补偿**的方案都抖；对称加宽因为根本不需要补偿，所以原子。
+//
+// ⚠️ 上一版这里写「中间理论上可能有一帧猫跳 catShift，**实测没有**（probeRealPath2.py
+// 采 window.screenX + rect.left，0 跳变）」—— 那个量法无效：两项都是**账面**读数，
+// 写完即变，而屏幕像素要等合成。用户连续两次真机验证（9c958e9 之后仍抖，且开窗、
+// 关窗都抖）证伪了那句话。现在位移全额由帧宽承担，猫从不带帧内偏移。
+//
+// 仍然保留这个函数并以 0 调用，有三个不可省的作用：
+//   1. 清掉 H3 时代残留的 position/left（老版本装过的用户升级后第一次开窗就归零）；
+//   2. 维持 appliedCatShift === 0 这个不变量，供 fitRestingFrame 去重和测试断言用；
+//   3. --cat-shift 恒 0 → 下面那几个装饰的 calc(… ± 0px) 恒等于原值，无害。
 //
 // 用 position:relative + left，理由和 .peek/.ask 那边完全同源（见 pet.css:37-51）：
 // 不能用 margin（挤兄弟、喂回 measuredRestingWidth），也不用 transform（会把祖先的
@@ -801,11 +879,7 @@ function applyPopupShift(petScreenX, petWidth) {
 // 绘制层：#compact-row 在 pet.html 里排在所有弹窗**之后**（:120 vs peek:45/ask:18），
 // position:relative 会把它的绘制层提到 .bubble/.peek/.ask/.think 之上（z-index 都是
 // auto）。几何上它们从不重叠，所以无害；#radial(20)/#action-pop(30)/#notepad(6) 都有
-// 显式 z-index 压在它上面，绘制层这一路不受影响。
-//
-// ⚠️ 但**几何**上 #notepad 受影响，2026-09-19 才发现：z-index 只管谁盖谁，管不了
-// 谁跟着谁走。#notepad / #sleep / #sidekick / #prop 都是 #compact-row 的兄弟、
-// 锚 #stage，这里挪猫它们原地不动 → 相对猫错开 catShift。见函数体里 --cat-shift。
+// 显式 z-index 压在它上面，绘制层这一路不受影响。恒 0 之后连这层提升都不会发生。
 function applyCatShift(px) {
   if (!compactRow || !compactRow.style) return;
   const v = Number(px) || 0;
@@ -969,16 +1043,31 @@ function measuredRestingWidth() {
 // 「当前帧是不是已经比静息帧宽了」（即身处弹窗残留帧）。两处必须是同一个定义，
 // 否则关闭弹窗时的贴边判定会和实际帧宽错位。
 //
-// 下限取「弹窗帧宽」而不是基础 320：开关气泡时**我们自己**就只下发高度变化，横向
-// 几何（宽度+原点+对齐）在 JS 侧完全不变。这是对 2026-09-16 那两个横向 bug 的根治：
-//   · 抖动（「关气泡猫往左挪一下再弹回」）：窗口横向「宽度+原点」的变更在 macOS
-//     WindowServer 里是两笔事务（先变宽、后挪原点，各触发一次 resize），中间帧猫
-//     必然可见地跳一下。横向不动，抖动在物理上不可能发生。
+// 下限取「弹窗帧宽」而不是基础 320：开关气泡时横向几何在**居中**那一路完全不变。
+// 这是对 2026-09-16 那两个横向 bug 的根治：
+//   · 抖动（「关气泡猫往左挪一下再弹回」）：见下面 ⚠️ 的修订。
 //   · 误吸附/形态切换（「点击后猫被搬到边缘、胶囊跟着切贴边形态」）：静息 320 /
 //     弹窗 520 两种帧宽下贴边判定的输入不同，开关一轮气泡可能换对齐换帧宽。横向
 //     几何恒定后这条链路整个消失，气泡和胶囊的形态天然协调。
+//     ★ 这条现在有更强的保障：shared/pet-geometry.js 的 chooseRestingLayout 和
+//     choosePopupLayout **一个帧宽参数都不收**，横向恒 return 'center'，所以帧宽
+//     变化在结构上不可能改变对齐（H4 加宽帧的前提就靠这条）。
 // 弹窗帧本来就是 520 宽的透明窗，静息态也用 520 并不会多挡任何东西（命中测试
 // 按元素而不是按窗口矩形），代价为零。
+//
+// ⚠️ 2026-09-19（H4）修订上面第一条。上一版写的是「窗口横向『宽度+原点』的变更在
+// macOS WindowServer 里是两笔事务，中间帧猫必然可见地跳一下。横向不动，抖动在物理上
+// 不可能发生」。**这句话站不住，两个理由：**
+//   1. 它的取证（017af0e，CDP 逐帧采 getBounds + rect 得 catX 1990→2190→1990）量的是
+//      **账面**，和后来被推翻的 probeRealPath2 同一个无效族。
+//   2. 那个 +200 恰好等于 catInset 200，不是 200px 宽度变化该产生的 ~100px 内容滞后。
+//      同一条提交信息自己还记着另一个并发 bug：「贴边吸附分支在弹窗路径也跑…把
+//      screenX 强改到屏幕边缘」。所以那 +200 极可能是**误吸附**，后来由 84edc1b
+//      「消掉屏幕左右两条 200px 环带」真正治掉的那个。
+// 直接证据反过来：probes/probeAtomic.py 像素级测到**对称**加宽（x−D 且 width+2D，
+// 帧中心不变）0/151 帧偏离、完全干净，而单侧加宽 12% 抖。所以「改帧宽必抖」是错的，
+// 抖的是「需要帧内补偿」。H4 因此允许贴边弹窗把帧对称加宽到 580/620（popupFrameWidth），
+// 居中那一路仍然恒 520、一个字节都不动。
 //
 // 注意「JS 侧不变」不等于「横向真的不变」：2026-09-17 实测发现 macOS 会在窗口
 // **失焦**时（closePeek → blurPet → w.blur()）用 constrainFrameRect:toScreen: 把
@@ -1048,7 +1137,9 @@ function fitPopup(el) {
   requestAnimationFrame(() => {
     const measure = () => {
       if (seq !== fitPopupSeq) return;
-      const popupW = POPUP_W;
+      // 帧宽按「装得下完整贴边位移」算（H4）。第二拍才是权威值：第一拍时弹窗可能还
+      // 没排版完，widestVisiblePopup() 量不准 —— 这就是下面两拍结构存在的原因。
+      const popupW = popupFrameWidth();
       // 关键：先临时去掉 max-height 再量，否则 scrollHeight 会被「当前小窗口算出的
       // max-height」钳住（鸡生蛋问题）→ 窗口永远只长一点点、列表只剩 1 行+滚动条。
       const prev = el.style.maxHeight;
@@ -1063,7 +1154,10 @@ function fitPopup(el) {
       setRequestedPetSize(popupW, PET_FRAME_H, { popup: true, popupHeight: viewportH });
     };
 
-    const targetW = POPUP_W;
+    // 第一拍的帧宽：弹窗刚显示、可能还没排到最终宽度，popupFrameWidth() 此刻可能偏小
+    // （最坏退化成 POPUP_W）。不要紧 —— 第二拍的 measure() 会重算并再发一次，那时
+    // 弹窗已经在正确宽度的帧里排版完成。
+    const targetW = popupFrameWidth();
     if (Math.abs((window.innerWidth || 0) - targetW) > 2) {
       // 第一拍只扩宽，第二拍在正确的横向排版下测真实高度。高度参数照发 PET_FRAME_H
       // （恒高之后它对高度是 no-op，这一拍纯粹为了改宽）。
