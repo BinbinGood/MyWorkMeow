@@ -24,7 +24,8 @@
 > - ✅ macOS 上跑源码即可监控 Claude Code（EPT CLI、VS Code 扩展、cc-connect 等客户端都走同一份 `~/.claude/settings.json`，装一次 hook 全覆盖）
 > - ✅ WorkBuddy 已在本机做完实测：hook 契约与内核逐字段对齐（离线驱动 5/5 事件全通），用量字段也确实可读（本机实测今日 2152 万 token、累计 2.48 亿）
 > - ➖ Codex / TRAE / opencode 未做 mac 适配，代码保持上游原样
-> - ➖ 打包发版、自动更新、SSH 远程监控均未做；mac 上请用源码启动
+> - ✅ macOS 本地打包已做：`npm run package:mac` 出一个 arm64 DMG（**ad-hoc 签名、未公证**，首次启动需在系统设置里放行一次；仅 Apple Silicon）
+> - ➖ 自动更新、SSH 远程监控均未做；mac 没有自动更新通道，新版本靠重新装一个 DMG
 >
 > Windows 侧的行为保持与上游一致（命令生成按平台分派，未改动 Windows 分支）。
 
@@ -95,7 +96,7 @@ WorkMeow 只把处理后的副本保存在当前用户的 `~/.workmeow/pet-asset
 
 ### macOS（本分支）
 
-本分支未做打包，请用源码启动：
+源码启动是推荐的开发路径：
 
 ```bash
 git clone https://github.com/BinbinGood/MyWorkMeow.git
@@ -105,6 +106,14 @@ npm start          # 脱离终端启动，关掉终端后桌宠继续运行
 ```
 
 `npm start` 会立刻返回。想停掉桌宠：点菜单栏的猫图标退出，或 `pkill -f "MyWorkMeow/node_modules/electron"`。
+
+想装成普通 app（或者要发给别人）就本地打一个 DMG：
+
+```bash
+npm run package:mac   # 产物 dist/WorkMeow-<version>-macOS-arm64.dmg
+```
+
+**仅 Apple Silicon，Intel Mac 装不上**；DMG 是 ad-hoc 签名、未公证，接收者首次启动要在「系统设置 → 隐私与安全性」里放行一次。**装的时候必须先拖进「应用程序」再启动**，别在 DMG 里直接双击——否则 macOS 的 App Translocation 会把 app 映射到一个临时路径运行，hook 里就会记下一串重启后失效的路径。完整说明见[本地开发与打包手册](docs/LOCAL_DEPLOYMENT.md)。
 
 启动后在设置里点「接入自检 / 修复」即可把 hook 装进 `~/.claude/settings.json`（**合并写入，不会动你已有的 hook**）。之后在任意 Claude Code 客户端里干活，猫就会跟着变状态。
 
@@ -135,7 +144,7 @@ Windows 侧行为与上游一致，安装包请到[上游 Releases](https://gith
 
 ## 开发者命令
 
-开发者使用的 `npm` 命令、回归测试和 EXE 打包流程统一记录在[本地开发与打包手册](docs/LOCAL_DEPLOYMENT.md)中。
+开发者使用的 `npm` 命令、回归测试，以及 Windows EXE 与 macOS DMG 的打包流程，统一记录在[本地开发与打包手册](docs/LOCAL_DEPLOYMENT.md)中。
 
 ## 数据与隐私
 

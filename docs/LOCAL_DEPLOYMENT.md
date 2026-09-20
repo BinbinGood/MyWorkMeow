@@ -1,10 +1,10 @@
-# 在本地开发和制作打工喵（WorkMeow）EXE 安装包
+# 在本地开发和制作打工喵（WorkMeow）安装包
 
-本文说明如何在 Windows 上进行源码开发、测试打工喵（WorkMeow），并制作本地 EXE 安装包。源码/npm 命令仅供开发者和贡献者使用，不是 Release 面向用户的安装方式。
+本文说明如何进行源码开发、测试打工喵（WorkMeow），并制作本地安装包：Windows 上的 EXE 安装器，以及 macOS（Apple Silicon）上的 DMG。源码/npm 命令仅供开发者和贡献者使用，不是 Release 面向用户的安装方式。
 
 ## 支持范围
 
-当前唯一支持的平台是 **Windows x64**。会话窗口聚焦支持 Windows Terminal、cmd、PowerShell 和 VS Code 等常见窗口。
+可打包的平台是 **Windows x64** 与 **macOS arm64（Apple Silicon）**。会话窗口聚焦是 Windows 专属能力，支持 Windows Terminal、cmd、PowerShell 和 VS Code 等常见窗口。
 
 打工喵至少需要用户安装并使用过以下一个 agent：
 
@@ -28,7 +28,7 @@
 
 ### 准备环境
 
-- Windows x64；
+- Windows x64，或 macOS 11+（Apple Silicon）；
 - [Git](https://git-scm.com/)；
 - Node.js 22.12 或更高版本（与 Electron 43 的开发依赖要求一致）；
 - Claude Code 和/或 OpenAI Codex。
@@ -113,6 +113,58 @@ npm run package:win
 ```
 
 产物位于 `dist/`，包括 NSIS `.exe` 安装包、自动更新元数据和 `SHA256SUMS.txt`。构建中间目录与调试配置会在成功打包后自动清理。Release 仅发布 EXE 安装器；不提供 ZIP 便携包。
+
+### macOS DMG（Apple Silicon）
+
+在 macOS（Apple Silicon）上运行：
+
+```bash
+npm run package:mac
+```
+
+这一条命令包含三段：`electron-builder --mac --arm64` 出包 → `scripts/finalize-dist-mac.js` 收尾 → `scripts/verify-dist-mac.js` 校验。校验会挂载 DMG，检查里面真正要交付的那个 `.app`（签名是 ad-hoc、entitlements 含 `disable-library-validation`、`CFBundleShortVersionString` 与 `package.json` 一致、sharp 的 `.node` 与 libvips dylib 并列存在），任何一项不过就非零退出。**所以出新版本只需改版本号 → `npm test` → `npm run package:mac`，不需要人工逐项核对产物。**
+
+产物是 `dist/WorkMeow-<version>-macOS-arm64.dmg` 和 `SHA256SUMS.txt` 两个文件；中间目录 `dist/mac-arm64/` 会被 finalize 清掉。mac 侧**不生成**自动更新元数据（没有 `latest-mac.yml`、没有 `.blockmap`）——`backend/updater.js` 对任何非 win32 平台直接返回 `unsupported`，写了等于对外宣告一个不能用的更新通道。
+
+`npm run icns:build` 只在**更换图标源图**时需要手动跑一次：`assets/salary-cat.icns` 已随仓库入库，日常打包不碰它。
+
+几个必须知道的限制：
+
+- **仅 arm64。** `build.electronDist` 指向本机 arm64-only 的 `node_modules/electron/dist`，**Intel Mac 装不上**。
+- **ad-hoc 签名、未公证。** 本机没有 Apple 开发者证书（`security find-identity -v -p codesigning` → `0 valid identities found`），所以只能 ad-hoc 签名，无法公证。接收者从网络/微信/邮件拿到 DMG 会带 `com.apple.quarantine`，首次启动被 Gatekeeper 拦下，需要按下面「交付给别人时一并说明」放行一次。这是证书问题，不是配置问题。
+- 构建期会出现一条告警：`ad-hoc signing with hardenedRuntime enabled requires the com.apple.security.cs.disable-library-validation entitlement`。**这是误报**——它只看 `isHardenedRuntimeEnabledForSigning`，从不读实际解析出的 entitlements 文件。权限确实在，`verify-dist-mac.js` 会用 `codesign -d --entitlements -` 做运行时确认。
+- **`dist/` 是两个平台共用的**：任一 finalize 都会删掉对方的产物。实践上不冲突（macOS 上造不出 NSIS 安装器），但要同时留着两个平台的包时，先把一边挪出 `dist/`。
+- 首次构建 DMG 会从 `electron-userland/electron-builder-binaries` 下载 `dmgbuild-bundle-arm64-*.tar.gz`（约 23 MB），之后走 `~/Library/Caches/electron-builder` 缓存。网络不通时用 `ELECTRON_BUILDER_BINARIES_MIRROR`（见上面「网络较慢时」）。因为 `.icns` 已入库，`icons` 工具链**不会**被下载。
+
+#### 交付给别人时一并说明
+
+**要求**：Apple Silicon（M1 或更新），macOS 11+。**此包不支持 Intel Mac。**
+
+1. 双击 `.dmg`，把 `WorkMeow.app` 拖进「应用程序」。
+2. 双击启动 —— macOS 会拦下，大意是「Apple 无法验证「打工喵」是否包含恶意软件」。
+3. 打开「**系统设置 → 隐私与安全性**」，滚到「安全性」一段，找到关于 `WorkMeow` 的那行，点「**仍要打开**」，用触控 ID 或密码认证。
+4. 再次启动，在最后的确认框里点「**打开**」。之后每次启动都正常。
+
+**右键→打开这个老办法已失效**：macOS 15 (Sequoia) 及以后，右键→打开不再为未公证 app 提供绕过路径，系统设置是唯一 GUI 路径。按对方系统版本给说明，别假设老手势还在。
+
+终端替代（便捷手段，非主路径；作用是清掉下载隔离标记，所以 Gatekeeper 不再问）：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/WorkMeow.app
+```
+
+**必须先拖进「应用程序」再启动，不要直接在 DMG 里双击。** 带隔离标记的 app 在原地启动会触发 macOS 的 App Translocation：系统把它映射到一个 `/private/var/folders/.../AppTranslocation/` 下的临时只读路径再运行，而打工喵装 hook 时写的是**自己当前的可执行文件路径** —— 于是 `~/.claude/settings.json` 里会留下一串重启后就失效的临时路径。本机实测过这个现象。已经踩了的话，在设置里重新点一次「接入自检 / 修复」即可改回正确路径。
+
+**明确做不到的**：无公证（每个接收者都要放行一次，**每个新版本也要重新放行一次**）；仅 arm64；Retina 图标偏软（源图只有 512×512）；mac 无自动更新，新版本靠重新给一个 DMG。
+
+#### 从源码启动迁到已安装的 `.app`
+
+源码自启走的是 `~/Library/LaunchAgents/io.github.vista-zhangg.workmeow.plist`，而打包态用的是 Electron 原生登录项（「系统设置 → 通用 → 登录项」）。**换用 `.app` 之后那个 dev plist 不会自动删**，登录时可能两个都起。检查并清掉：
+
+```bash
+ls ~/Library/LaunchAgents/ | grep workmeow
+rm ~/Library/LaunchAgents/io.github.vista-zhangg.workmeow.plist   # 确认不再用源码自启后
+```
 
 ## 卸载
 

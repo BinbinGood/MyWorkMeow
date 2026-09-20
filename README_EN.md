@@ -24,7 +24,8 @@
 > - ✅ Claude Code monitoring works on macOS from source (EPT CLI, the VS Code extension, cc-connect and friends all read the same `~/.claude/settings.json`, so one hook install covers every client)
 > - ✅ WorkBuddy is verified on macOS: the hook contract matches the agent kernel field by field (5/5 events delivered in an offline harness) and the usage fields are readable (248M tokens over 2563 rounds on this machine)
 > - ➖ Codex / TRAE / opencode are untouched — no macOS adaptation
-> - ➖ No packaging, auto-update, or SSH remote monitoring; run from source on macOS
+> - ✅ Local macOS packaging works: `npm run package:mac` produces one arm64 DMG (**ad-hoc signed, not notarized** — the first launch needs a one-time approval in System Settings; Apple Silicon only)
+> - ➖ Auto-update and SSH remote monitoring are still not implemented; macOS has no update channel, so a new version means installing a new DMG
 >
 > Windows behavior is unchanged from upstream (command generation branches per platform; the Windows branch was not modified). The application UI is Simplified Chinese.
 
@@ -93,7 +94,7 @@ On first launch, WorkMeow only integrates with tools already used by the current
 
 ### macOS (this fork)
 
-No packaged build; run from source:
+Running from source is the recommended development path:
 
 ```bash
 git clone https://github.com/BinbinGood/MyWorkMeow.git
@@ -103,6 +104,14 @@ npm start          # detaches from the terminal — the pet survives closing it
 ```
 
 `npm start` returns immediately. To stop the pet: quit from the menu-bar cat icon, or `pkill -f "MyWorkMeow/node_modules/electron"`.
+
+To install it as a regular app (or hand it to someone else), build a DMG locally:
+
+```bash
+npm run package:mac   # produces dist/WorkMeow-<version>-macOS-arm64.dmg
+```
+
+**Apple Silicon only — this will not install on an Intel Mac.** The DMG is ad-hoc signed and not notarized, so the recipient has to approve it once under System Settings → Privacy & Security on first launch. **Drag it into Applications before launching** — double-clicking inside the DMG makes macOS run it through App Translocation from a temporary path, and the installed hooks would then record a path that stops working after a restart. Full details in the [local development and packaging guide](docs/LOCAL_DEPLOYMENT.md).
 
 Once running, open Settings and hit the integration self-check / repair to install the hook into `~/.claude/settings.json` and `~/.workbuddy/settings.json` (**merged in — your existing hooks are left alone**).
 

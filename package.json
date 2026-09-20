@@ -24,6 +24,9 @@
     "meter:rebuild": "node backend/meter-rebuild.js",
     "package:win": "electron-builder --win nsis --x64 --publish never && node scripts/finalize-dist.js && node scripts/verify-dist.js",
     "verify:dist": "node scripts/verify-dist.js",
+    "package:mac": "electron-builder --mac --arm64 --publish never && node scripts/finalize-dist-mac.js && node scripts/verify-dist-mac.js",
+    "verify:dist:mac": "node scripts/verify-dist-mac.js",
+    "icns:build": "node scripts/build-icns.js",
     "tray:build": "node scripts/build-tray-icon.js",
     "test": "node test/run-all.js"
   },
@@ -73,6 +76,32 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/salary-cat.icns",
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "notarize": false,
+      "artifactName": "WorkMeow-${version}-macOS-${arch}.${ext}",
+      "electronLanguages": [
+        "zh-CN"
+      ],
+      "extendInfo": {
+        "LSMinimumSystemVersion": "11.0"
+      }
+    },
+    "dmg": {
+      "artifactName": "WorkMeow-${version}-macOS-${arch}.${ext}",
+      "title": "打工喵 ${version}",
+      "writeUpdateInfo": false
     }
   }
 }

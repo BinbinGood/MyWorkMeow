@@ -32,6 +32,19 @@ assert.strictEqual(pkg.repository.url, 'git+https://github.com/vista-zhangg/Work
 assert(pkg.build.files.includes('LICENSE'), 'packaged app must retain the upstream MIT license');
 assert.strictEqual(pkg.build.win.artifactName, 'WorkMeow-${version}-Windows-${arch}.${ext}');
 assert(/--publish never(?:\s|$)/.test(pkg.scripts['package:win']), 'Windows packaging must use the unified release job');
+assert.strictEqual(pkg.build.mac.identity, '-',
+  '没有 Apple 证书，mac bundle 必须显式 ad-hoc 签名 —— 完全无签名的 arm64 bundle 起不来');
+assert(fs.existsSync(path.join(root, 'assets', 'salary-cat.icns')),
+  '烤好的 macOS bundle 图标必须随仓库入库（npm run icns:build）');
+assert(/--mac(?:\s|$)/.test(pkg.scripts['package:mac'])
+  && /finalize-dist-mac/.test(pkg.scripts['package:mac'])
+  && /verify-dist-mac/.test(pkg.scripts['package:mac']),
+  'mac 打包必须自带收尾与校验，否则每个新版本都要人工核对产物');
+// scripts/finalize-dist.js 的前缀硬编码为 Windows-x64，会把 keep-set 之外的 dist
+// 条目全删掉 —— 包括 .dmg。注意 finalize-dist-mac.js 不含 `finalize-dist.js` 子串，
+// 所以这条只会在真的链错脚本时报。
+assert(!/finalize-dist\.js|verify-dist\.js/.test(pkg.scripts['package:mac']),
+  'Windows 专用的 dist 收尾脚本会删掉 DMG —— package:mac 不能链它们');
 assert.strictEqual(pkg.scripts.test, 'node test/run-all.js');
 // 原本这里还从 .github/workflows/release.yml 里断言产物名 workmeow-windows-x64 和
 // Release 标题跟随版本标签。本分支已删掉全部 workflow，这两项现在没有自动化载体：
