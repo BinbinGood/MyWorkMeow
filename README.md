@@ -11,7 +11,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20x64-555" alt="macOS and Windows x64">
-    <img src="https://img.shields.io/badge/version-1.7.8-F6A04A" alt="Version 1.7.8">
+    <img src="https://img.shields.io/badge/version-1.7.8--mac.1-F6A04A" alt="Version 1.7.8-mac.1">
     <a href="LICENSE"><img src="https://img.shields.io/badge/code%20license-MIT-2EA44F" alt="MIT License"></a>
   </p>
 </div>

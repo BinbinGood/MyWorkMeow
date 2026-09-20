@@ -65,6 +65,17 @@ assert(/Apple Silicon/.test(read('.github/release-notes-mac.md'))
   && /隐私与安全性/.test(read('.github/release-notes-mac.md')),
   'Release 说明必须写清 arm64 限制与 Gatekeeper 放行路径 —— 缺了它接收者拿到的是个打不开的文件');
 assert.strictEqual(pkg.scripts.test, 'node test/run-all.js');
+// 两个 README 顶部的版本徽章必须跟 package.json 一致。npm version 不会改 Markdown，
+// 所以没有这条断言它就会静默停在某个旧版本号上。
+// shields.io 用 `-` 分隔 label/message/color，所以版本号里的字面连字符要写成 `--`
+// （1.7.8-mac.1 → 1.7.8--mac.1）；不转义的话 message 会被截成 1.7.8、颜色变成 mac.1。
+const badgeVersion = pkg.version.replace(/-/g, '--');
+for (const [name, text] of [['README.md', readme], ['README_EN.md', readmeEn]]) {
+  assert(text.includes(`badge/version-${badgeVersion}-F6A04A`),
+    `${name} 的版本徽章没跟上 package.json (${pkg.version}) —— 期望 badge/version-${badgeVersion}-F6A04A`);
+  assert(text.includes(`alt="Version ${pkg.version}"`),
+    `${name} 的徽章 alt 文本没跟上 package.json (${pkg.version})`);
+}
 // 原本这里还从 .github/workflows/release.yml 里断言产物名 workmeow-windows-x64 和
 // Release 标题跟随版本标签。本分支已删掉全部 workflow，这两项现在没有自动化载体：
 // 产物名由 pkg.build.win.artifactName（上面已断言）决定，Release 标题手动填。
