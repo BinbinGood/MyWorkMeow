@@ -5,19 +5,16 @@
 //     （版本 / url / path / EXE 精确字节数）在 mac 侧没有对应物 ——
 //     build.dmg.writeUpdateInfo 为 false，mac 本就没有自动更新通道。
 //   · Windows 那份守着一个真实的活契约，改它只会把那个契约削弱。
-// 所以这里另写一份，只复用它导出的 parseChecksums（校验和格式两边必须一致）。
+//   · mac 侧也不发 SHA256SUMS.txt，所以它那套校验和比对在这里无对象可比。
 //
 // 这个脚本存在的理由：出新版本时不该靠人工逐项核对产物。它会挂载 DMG，检查真正
 // 要交付给别人的那个 .app —— 签名、entitlements、版本号、sharp 原生库都在里面，
-// dist 目录上看不出来。
+// dist 目录上看不出来。这几项才是「包能不能用」的判据；自产自校的校验和不是。
 
-const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-
-const { parseChecksums } = require('./verify-dist');
 
 const root = path.resolve(__dirname, '..');
 
@@ -26,12 +23,7 @@ const root = path.resolve(__dirname, '..');
 const MIN_DMG_BYTES = 50 * 1024 * 1024;
 
 function artifactNames(version) {
-  const prefix = `WorkMeow-${version}-macOS-arm64`;
-  return [`${prefix}.dmg`, 'SHA256SUMS.txt'];
-}
-
-function sha256(file) {
-  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  return [`WorkMeow-${version}-macOS-arm64.dmg`];
 }
 
 // codesign / hdiutil 把有用的信息写在 stderr，而且校验失败时退出码非 0 —— 两种
@@ -123,17 +115,6 @@ function verifyMacDist(options = {}) {
     throw new Error(`Unexpected dist contents\nExpected: ${expected.join(', ')}\nActual: ${actual.join(', ')}`);
   }
 
-  const checksums = parseChecksums(fs.readFileSync(path.join(dist, 'SHA256SUMS.txt'), 'utf8'));
-  const artifacts = expected.filter((name) => name !== 'SHA256SUMS.txt');
-  if (checksums.size !== artifacts.length || artifacts.some((name) => !checksums.has(name))) {
-    throw new Error('SHA256SUMS.txt does not cover the exact artifact set');
-  }
-  for (const name of artifacts) {
-    const file = path.join(dist, name);
-    if (fs.statSync(file).size <= 0) throw new Error(`Empty build artifact: ${name}`);
-    if (sha256(file) !== checksums.get(name)) throw new Error(`SHA256 mismatch: ${name}`);
-  }
-
   const dmg = path.join(dist, `WorkMeow-${version}-macOS-arm64.dmg`);
   const dmgSize = fs.statSync(dmg).size;
   if (dmgSize < MIN_DMG_BYTES) {
@@ -141,6 +122,8 @@ function verifyMacDist(options = {}) {
       + ` — a complete WorkMeow build is far larger than ${MIN_DMG_BYTES / 1024 / 1024} MB`);
   }
 
+  // hdiutil verify 校验镜像内部的 checksum，所以「文件在传输/落盘中被损坏」这件事
+  // 仍然有人管 —— 只是管的人从 SHA256SUMS.txt 换成了 DMG 自带的校验结构。
   const imageCheck = run('/usr/bin/hdiutil', ['verify', dmg]);
   if (!imageCheck.ok) throw new Error(`hdiutil verify failed:\n${imageCheck.out}`);
 

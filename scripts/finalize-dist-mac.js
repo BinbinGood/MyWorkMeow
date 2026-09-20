@@ -8,7 +8,6 @@
 // 顺序和 Windows 侧一致、且是刻意的：先确认新产物齐全，再删旧的。新产物不齐就
 // 一个字节都不动，保证打包失败时上一版仍然在手里。
 
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -18,7 +17,10 @@ const pkg = require(path.join(root, 'package.json'));
 const prefix = `WorkMeow-${pkg.version}-macOS-arm64`;
 // mac 侧没有更新元数据：build.dmg.writeUpdateInfo 为 false，因为
 // backend/updater.js:10-12 对任何非 win32 平台直接返回 'unsupported'。
-// 所以产物集就是「一个 DMG + 一个 SHA256SUMS.txt」，没有 latest-mac.yml / blockmap。
+// 也不写 SHA256SUMS.txt：产物集就是一个 DMG，没有 latest-mac.yml / blockmap。
+// 校验和是刻意去掉的 —— 它和 DMG 在同一次运行里由同一份字节生成，本地只能
+// 抓住这几秒内的磁盘损坏；真正的用处在接收者一侧，而那需要对方愿意跑一条
+// shasum 命令。Windows 侧仍然写（latest.yml 的活契约依赖它），mac 侧不写。
 const requiredArtifacts = [`${prefix}.dmg`];
 
 if (!fs.existsSync(dist)) throw new Error(`Missing build directory: ${dist}`);
@@ -34,10 +36,5 @@ for (const entry of fs.readdirSync(dist, { withFileTypes: true })) {
   if (!keep.has(entry.name)) fs.rmSync(path.join(dist, entry.name), { recursive: true, force: true });
 }
 
-const checksums = requiredArtifacts.map((name) => {
-  const data = fs.readFileSync(path.join(dist, name));
-  return `${crypto.createHash('sha256').update(data).digest('hex')}  ${name}`;
-});
-fs.writeFileSync(path.join(dist, 'SHA256SUMS.txt'), checksums.join('\n') + '\n', 'utf8');
-
+// 上一版留下的 SHA256SUMS.txt 不在 keep-set 里，所以上面那个循环会顺手删掉它。
 console.log(`Finalized ${requiredArtifacts.length} artifact(s) in ${dist}`);

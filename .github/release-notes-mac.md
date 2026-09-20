@@ -29,6 +29,5 @@ xattr -dr com.apple.quarantine /Applications/WorkMeow.app
 - **未公证**（本项目没有 Apple 开发者证书），所以每个接收者都要放行一次，**每个新版本也要重新放行一次**。这是证书问题，不是配置问题。
 - **仅 arm64**，Intel Mac 装不上。
 - **mac 无自动更新通道**，新版本靠重新装一个 DMG。
-- 校验完整性：下载 `SHA256SUMS.txt` 后 `shasum -c SHA256SUMS.txt`。
 
 完整说明见[本地开发与打包手册](https://github.com/BinbinGood/MyWorkMeow/blob/main/docs/LOCAL_DEPLOYMENT.md)。

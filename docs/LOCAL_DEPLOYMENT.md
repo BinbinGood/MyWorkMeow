@@ -126,7 +126,7 @@ npm run package:mac
 
 这一条命令包含三段：`electron-builder --mac --arm64` 出包 → `scripts/finalize-dist-mac.js` 收尾 → `scripts/verify-dist-mac.js` 校验。校验会挂载 DMG，检查里面真正要交付的那个 `.app`（签名是 ad-hoc、entitlements 含 `disable-library-validation`、`CFBundleShortVersionString` 与 `package.json` 一致、sharp 的 `.node` 与 libvips dylib 并列存在），任何一项不过就非零退出。**所以出新版本只需改版本号 → `npm test` → `npm run package:mac`，不需要人工逐项核对产物。**
 
-产物是 `dist/WorkMeow-<version>-macOS-arm64.dmg` 和 `SHA256SUMS.txt` 两个文件；中间目录 `dist/mac-arm64/` 会被 finalize 清掉。mac 侧**不生成**自动更新元数据（没有 `latest-mac.yml`、没有 `.blockmap`）——`backend/updater.js` 对任何非 win32 平台直接返回 `unsupported`，写了等于对外宣告一个不能用的更新通道。
+产物只有 `dist/WorkMeow-<version>-macOS-arm64.dmg` 一个文件；中间目录 `dist/mac-arm64/` 会被 finalize 清掉。mac 侧**不生成**自动更新元数据（没有 `latest-mac.yml`、没有 `.blockmap`）——`backend/updater.js` 对任何非 win32 平台直接返回 `unsupported`，写了等于对外宣告一个不能用的更新通道。**也不生成 `SHA256SUMS.txt`**（Windows 侧仍然生成）：自产自校的校验和只能证明 DMG 在生成后那几秒没坏，而 `verify-dist-mac.js` 的 `hdiutil verify` 已经在校验镜像自带的 checksum 结构。
 
 `npm run icns:build` 只在**更换图标源图**时需要手动跑一次：`assets/salary-cat.icns` 已随仓库入库，日常打包不碰它。
 

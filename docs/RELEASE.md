@@ -9,13 +9,13 @@
 3. 运行 `npm test`。
 4. 按目标平台跑打包命令：
    - Windows：`npm run package:win` —— 只构建 NSIS EXE，随后清理旧 `dist`、生成 SHA-256，并执行独立产物校验。
-   - macOS：`npm run package:mac` —— 只构建 arm64 DMG，随后 `finalize-dist-mac.js` 清理旧 `dist` 并生成 SHA-256，`verify-dist-mac.js` 挂载 DMG 校验里面的 `.app`（ad-hoc 签名、entitlements、版本号、sharp 原生库）。
+   - macOS：`npm run package:mac` —— 只构建 arm64 DMG，随后 `finalize-dist-mac.js` 清理旧 `dist`，`verify-dist-mac.js` 挂载 DMG 校验里面的 `.app`（ad-hoc 签名、entitlements、版本号、sharp 原生库）。
    - **`dist/` 是两个平台共用的**：任一 finalize 都会删掉对方的产物。要同时留着两个平台的包，先把一边挪出 `dist/`。
 5. 确认 `git diff --check` 和 `git status --short`，按明确路径暂存并提交。
 6. 先推送当前分支，再创建并推送同版本标签，例如 `v1.5.4`。
-7. **macOS：推标签就够了。** `.github/workflows/release-mac.yml` 在 `v*` 标签上跑 `npm ci` → `npm test` → `npm run package:mac`，然后把 DMG 和 `SHA256SUMS.txt` 作为附件创建 Release（说明文案取自 `.github/release-notes-mac.md`；想在 Release 里写本版改了什么，发布后在网页上补一段即可）。所以 mac 侧不需要本地打包，第 4 步的 `package:mac` 只在你想先本地验证时才跑。**Windows：没有自动化**，产物是第 4 步的本地文件，需要 Release 的话手动上传 `dist` 里的文件。
+7. **macOS：推标签就够了。** `.github/workflows/release-mac.yml` 在 `v*` 标签上跑 `npm ci` → `npm test` → `npm run package:mac`，然后把 DMG 作为唯一附件创建 Release（说明文案取自 `.github/release-notes-mac.md`；想在 Release 里写本版改了什么，发布后在网页上补一段即可）。所以 mac 侧不需要本地打包，第 4 步的 `package:mac` 只在你想先本地验证时才跑。**Windows：没有自动化**，产物是第 4 步的本地文件，需要 Release 的话手动上传 `dist` 里的文件。
 
-本地包的 `latest.yml` 和 `SHA256SUMS.txt` 是自洽的，不要发布后再回下载 Release 覆盖 `dist` —— 那会重复传输约 100 MB 数据，并可能把完整本地文件先截断为下载占位文件。
+Windows 本地包的 `latest.yml` 和 `SHA256SUMS.txt` 是自洽的，不要发布后再回下载 Release 覆盖 `dist` —— 那会重复传输约 100 MB 数据，并可能把完整本地文件先截断为下载占位文件。
 
 ## macOS 自动发版（唯一的 workflow）
 
@@ -24,7 +24,7 @@ npm version patch          # 同步改 package.json 与 package-lock.json 并打
 git push && git push --tags
 ```
 
-推上去约十分钟后，Release 页面会出现 `WorkMeow-<version>-macOS-arm64.dmg` 和 `SHA256SUMS.txt`。把 Release 链接发给别人即可，不需要自己传 115 MB 的文件。
+推上去约十分钟后，Release 页面会出现 `WorkMeow-<version>-macOS-arm64.dmg`，只此一个附件。把 Release 链接发给别人即可，不需要自己传 115 MB 的文件。
 
 关于这条流水线要知道的几件事：
 
@@ -46,12 +46,11 @@ git push && git push --tags
 
 `scripts/finalize-dist.js` 只有在新产物全部存在后才删除旧文件。`scripts/verify-dist.js` 随后检查文件集合、空文件、SHA-256、更新版本、EXE 文件名和大小。也可以单独运行 `npm run verify:dist`。
 
-完整 macOS 发布后，`dist` 必须只包含以下两个文件：
+完整 macOS 发布后，`dist` 必须只包含一个文件：
 
 - `WorkMeow-<version>-macOS-arm64.dmg`
-- `SHA256SUMS.txt`
 
-**mac 侧没有 `latest.yml`、没有 `.blockmap`**：`build.dmg.writeUpdateInfo` 为 `false`，因为 `backend/updater.js` 对任何非 win32 平台直接返回 `unsupported` —— mac 本就没有自动更新通道，写了等于对外宣告一个不能用的更新通道。中间目录 `dist/mac-arm64/` 会被 finalize 清掉。单独校验用 `npm run verify:dist:mac`。
+**mac 侧没有 `latest.yml`、没有 `.blockmap`、也没有 `SHA256SUMS.txt`**：前两个是因为 `build.dmg.writeUpdateInfo` 为 `false`（`backend/updater.js` 对任何非 win32 平台直接返回 `unsupported`，mac 本就没有自动更新通道）；校验和文件是刻意去掉的 —— 它和 DMG 在同一次构建里由同一份字节生成，本地只能抓住那几秒内的磁盘损坏，而 `hdiutil verify` 已经在校验镜像自带的 checksum。中间目录 `dist/mac-arm64/` 会被 finalize 清掉。单独校验用 `npm run verify:dist:mac`。
 
 **DMG 是 ad-hoc 签名、未公证的**（本机没有 Apple 开发者证书），所以每次交付都要一并给出 Gatekeeper 放行说明，见[本地开发与打包手册](LOCAL_DEPLOYMENT.md)里的「交付给别人时一并说明」。而且**每个新版本接收者都要重新放行一次**。DMG 仅支持 Apple Silicon。
 
