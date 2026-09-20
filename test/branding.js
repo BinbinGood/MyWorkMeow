@@ -45,6 +45,25 @@ assert(/--mac(?:\s|$)/.test(pkg.scripts['package:mac'])
 // 所以这条只会在真的链错脚本时报。
 assert(!/finalize-dist\.js|verify-dist\.js/.test(pkg.scripts['package:mac']),
   'Windows 专用的 dist 收尾脚本会删掉 DMG —— package:mac 不能链它们');
+// mac 发版流水线的几个不变量。都是「改错了不会立刻看出来，但会静默发出坏包」的那类。
+// 剥掉注释行再断言：文件里有一整段注释在解释「为什么刻意不加 --generate-notes」，
+// 直接扫全文会被自己的解释文字命中。
+const macWorkflow = read('.github/workflows/release-mac.yml')
+  .split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+assert(/^\s*tags:\s*\n\s*-\s*'v\*'/m.test(macWorkflow),
+  'mac 发版必须只由 v* 标签触发 —— 挂到 branches 上会让每次提交都打一个 115MB 的包');
+assert(!/^\s*branches:/m.test(macWorkflow),
+  'release-mac.yml 不能有 branches 触发器（当初删掉全部 CI 就是因为每次推送都发失败邮件）');
+assert(/runs-on:\s*macos-latest/.test(macWorkflow),
+  'runs-on 必须是 macos-latest（Apple Silicon）—— Intel runner 会静默产出本项目不支持的 x64 包');
+assert(/npm run package:mac/.test(macWorkflow),
+  '流水线必须走 package:mac 三段链，绕过它就绕过了 verify-dist-mac.js 的坏包拦截');
+assert(/--notes-file \.github\/release-notes-mac\.md/.test(macWorkflow)
+  && !/--generate-notes/.test(macWorkflow),
+  '放行说明必须进 Release body；--generate-notes 会让 GitHub 服务端生成 body 从而覆盖 --notes-file');
+assert(/Apple Silicon/.test(read('.github/release-notes-mac.md'))
+  && /隐私与安全性/.test(read('.github/release-notes-mac.md')),
+  'Release 说明必须写清 arm64 限制与 Gatekeeper 放行路径 —— 缺了它接收者拿到的是个打不开的文件');
 assert.strictEqual(pkg.scripts.test, 'node test/run-all.js');
 // 原本这里还从 .github/workflows/release.yml 里断言产物名 workmeow-windows-x64 和
 // Release 标题跟随版本标签。本分支已删掉全部 workflow，这两项现在没有自动化载体：

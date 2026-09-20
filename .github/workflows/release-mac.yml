@@ -1,0 +1,92 @@
+# 只在推送 v* 标签时构建 macOS arm64 DMG 并发一个 Release。
+#
+# 刻意不用 on.push.branches —— 每次提交都打一个 115 MB 的包是纯浪费，而且
+# 构建失败邮件会多到没人看。发版本是主动动作，标签就是那个动作的信号。
+#
+# workflow_dispatch 是给「改完这个 workflow 想验证一下」用的：跑完整构建与
+# 校验，但不创建 Release，所以不会为了测流水线而烧掉一个版本号。
+name: Release macOS DMG
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# gh release create 要写仓库内容；其余权限一律不给。
+permissions:
+  contents: write
+
+# 同一个标签重复推送时，取消上一次还在跑的构建。
+concurrency:
+  group: release-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and publish arm64 DMG
+    # macos-latest 现在是 Apple Silicon，npm ci 装的就是 arm64 Electron，
+    # 与 build.electronDist 指向的 node_modules/electron/dist 一致。
+    # 换成 Intel runner 会静默产出一个本项目不支持的 x64 包。
+    runs-on: macos-latest
+    # 本地完整打包约 3 分钟；给 30 分钟是为了容忍首次 dmgbuild 下载和 runner 抖动，
+    # 同时保证真卡住时不会一直烧 runner 时间。
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # 与 package.json engines (>=22.12.0) 对齐。
+          node-version: '22.12'
+          cache: npm
+
+      # 标签与 package.json 版本必须一致，否则产物名（${version} 驱动）和
+      # Release 标签会对不上，装的人无从判断手里的包是哪个版本。
+      # 放在 npm ci 之前：这是纯文本校验，不该为了它先装 300 MB 依赖。
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          node -e "const v=require('./package.json').version;if('v'+v!==process.env.GITHUB_REF_NAME)throw new Error('tag/package version mismatch: tag='+process.env.GITHUB_REF_NAME+' package='+v)"
+
+      - run: npm ci
+
+      - run: npm test
+
+      # 这一条命令含三段：electron-builder 出包 → finalize-dist-mac.js 收尾
+      # → verify-dist-mac.js 挂载 DMG 校验签名/entitlements/版本号/sharp 原生库。
+      # 校验不过就非零退出，坏包不会走到下面的 Release 步骤。
+      - run: npm run package:mac
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      # 只有标签构建才发 Release。workflow_dispatch 到这里就停，产物留在
+      # Actions 页面（下面那步），不会污染 Release 列表。
+      #
+      # 刻意不加 --generate-notes：不带 --notes-start-tag 时它会把
+      # generate_release_notes=true 交给 GitHub API，由服务端生成 body，
+      # 从而覆盖掉 --notes-file 的内容（cli/cli create.go 里只有配了
+      # --notes-start-tag 的那条分支才会把两者拼起来）。放行说明比自动提交
+      # 列表重要得多 —— 丢了它，接收者拿到的就是个打不开的文件。
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "打工喵 ${GITHUB_REF_NAME#v}" \
+            --notes-file .github/release-notes-mac.md
+
+      # 手动触发时把产物留 7 天，方便验证流水线本身。标签构建不需要——
+      # 产物已经在 Release 里了，再传一份是重复占用 115 MB。
+      - name: Upload artifact (manual runs only)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workmeow-macos-arm64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7

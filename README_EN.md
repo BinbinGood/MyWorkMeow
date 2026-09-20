@@ -105,7 +105,11 @@ npm start          # detaches from the terminal — the pet survives closing it
 
 `npm start` returns immediately. To stop the pet: quit from the menu-bar cat icon, or `pkill -f "MyWorkMeow/node_modules/electron"`.
 
-To install it as a regular app (or hand it to someone else), build a DMG locally:
+To install it as a regular app (or hand it to someone else), there are two routes.
+
+**Download it** (recommended): grab `WorkMeow-<version>-macOS-arm64.dmg` from this repository's [Releases](https://github.com/BinbinGood/MyWorkMeow/releases). Every `v*` tag is built automatically by GitHub Actions, with the approval instructions attached.
+
+**Build it locally:**
 
 ```bash
 npm run package:mac   # produces dist/WorkMeow-<version>-macOS-arm64.dmg

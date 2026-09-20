@@ -107,7 +107,11 @@ npm start          # 脱离终端启动，关掉终端后桌宠继续运行
 
 `npm start` 会立刻返回。想停掉桌宠：点菜单栏的猫图标退出，或 `pkill -f "MyWorkMeow/node_modules/electron"`。
 
-想装成普通 app（或者要发给别人）就本地打一个 DMG：
+想装成普通 app（或者要发给别人），有两条路：
+
+**直接下载**（推荐）：到本仓库的 [Releases](https://github.com/BinbinGood/MyWorkMeow/releases) 拿 `WorkMeow-<version>-macOS-arm64.dmg`。每个 `v*` 标签由 GitHub Actions 自动构建并附上放行说明。
+
+**本地打包**：
 
 ```bash
 npm run package:mac   # 产物 dist/WorkMeow-<version>-macOS-arm64.dmg

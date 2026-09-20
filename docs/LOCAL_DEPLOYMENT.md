@@ -116,6 +116,8 @@ npm run package:win
 
 ### macOS DMG（Apple Silicon）
 
+**出正式版本不需要在本地打包**：推一个 `v*` 标签，`.github/workflows/release-mac.yml` 会在 GitHub 的 Apple Silicon runner 上跑 `npm ci` → `npm test` → `npm run package:mac`，然后把 DMG 连同放行说明发成一个 Release。详见[发布手册](RELEASE.md)。下面这条命令用于本地验证或自用。
+
 在 macOS（Apple Silicon）上运行：
 
 ```bash

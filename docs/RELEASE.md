@@ -13,9 +13,27 @@
    - **`dist/` 是两个平台共用的**：任一 finalize 都会删掉对方的产物。要同时留着两个平台的包，先把一边挪出 `dist/`。
 5. 确认 `git diff --check` 和 `git status --short`，按明确路径暂存并提交。
 6. 先推送当前分支，再创建并推送同版本标签，例如 `v1.5.4`。
-7. 本分支已移除全部 GitHub Actions workflow，标签不会触发任何自动构建或自动发布。两个平台的产物都是第 4 步产出的本地文件；需要 Release 的话手动上传 `dist` 里的文件。
+7. **macOS：推标签就够了。** `.github/workflows/release-mac.yml` 在 `v*` 标签上跑 `npm ci` → `npm test` → `npm run package:mac`，然后把 DMG 和 `SHA256SUMS.txt` 作为附件创建 Release（说明文案取自 `.github/release-notes-mac.md`；想在 Release 里写本版改了什么，发布后在网页上补一段即可）。所以 mac 侧不需要本地打包，第 4 步的 `package:mac` 只在你想先本地验证时才跑。**Windows：没有自动化**，产物是第 4 步的本地文件，需要 Release 的话手动上传 `dist` 里的文件。
 
 本地包的 `latest.yml` 和 `SHA256SUMS.txt` 是自洽的，不要发布后再回下载 Release 覆盖 `dist` —— 那会重复传输约 100 MB 数据，并可能把完整本地文件先截断为下载占位文件。
+
+## macOS 自动发版（唯一的 workflow）
+
+```bash
+npm version patch          # 同步改 package.json 与 package-lock.json 并打好 v* 标签
+git push && git push --tags
+```
+
+推上去约十分钟后，Release 页面会出现 `WorkMeow-<version>-macOS-arm64.dmg` 和 `SHA256SUMS.txt`。把 Release 链接发给别人即可，不需要自己传 115 MB 的文件。
+
+关于这条流水线要知道的几件事：
+
+- **只有 `v*` 标签会触发。** 刻意不挂 `on.push.branches` —— 每次提交都打一个 115 MB 的包是纯浪费，构建失败邮件也会多到没人看。发版是主动动作，标签就是那个动作的信号。改 README 错别字不会打包。
+- **想验证 workflow 本身**，用 Actions 页面的「Run workflow」（`workflow_dispatch`）：跑完整构建与校验，但**不创建 Release**，产物作为 artifact 留 7 天。不必为了测流水线烧掉一个版本号。
+- **坏包到不了 Release。** `npm run package:mac` 里的 `verify-dist-mac.js` 会挂载 DMG 校验 ad-hoc 签名、entitlements、`CFBundleShortVersionString` 与 sharp 原生库，任何一项不过就非零退出，后面的 `gh release create` 根本不执行。
+- **`runs-on` 必须是 `macos-latest`**（Apple Silicon）。换成 Intel runner 会静默产出一个本项目不支持的 x64 包。
+- **CI 同样没有 Apple 证书**，所以自动打的包依然是 ad-hoc 签名、未公证。**CI 不解决 Gatekeeper 问题**，放行说明每次都要给 —— 这也是它固定写在 `.github/release-notes-mac.md` 里、由 workflow 自动贴进每个 Release 的原因。
+- **Windows 侧没有自动化**，`package:win` 仍然只能在 Windows 机器上手动跑。
 
 ## 正常产物
 
@@ -44,7 +62,7 @@
 - 缺少 `latest.yml` 或 `.exe.blockmap`：检查 `build.publish` 和 GitHub 发布配置，不要绕过 `finalize-dist` 的失败。
 - mac 侧卡在 `Timeout awaiting 'request'`：首次构建 DMG 要下载约 23 MB 的 `dmgbuild-bundle-arm64-*.tar.gz`。用 `ELECTRON_BUILDER_BINARIES_MIRROR` 换源重试；成功后缓存在 `~/Library/Caches/electron-builder`，之后不再联网。
 - mac 侧那条 `ad-hoc signing with hardenedRuntime enabled requires the com.apple.security.cs.disable-library-validation entitlement` 告警是**误报**，权限确实在，`verify-dist-mac.js` 会做运行时确认。不要为它去建 `build/` 目录 —— 那反而会遮蔽 app-builder-lib 自带的 entitlements 模板。
-- 标签与版本号不一致：标签必须严格等于 `v` 加 `package.json` 版本号。已无 CI 做这项校验，推标签前自己核对。
+- 标签与版本号不一致：标签必须严格等于 `v` 加 `package.json` 版本号。mac 的 release workflow 第一步就校验这一项并直接失败（在 `npm ci` 之前，不浪费时间）；Windows 侧没有自动化，推标签前自己核对。
 
 只有在超过十分钟、相关压缩/安装器子进程不存在、CPU 与磁盘均无活动时，才把打包视为卡死。中止前先保留旧 `dist`；发布脚本本身会在新产物齐全后再做换代清理。
 
