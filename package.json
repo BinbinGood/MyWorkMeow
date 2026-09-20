@@ -1,6 +1,6 @@
 {
   "name": "workmeow",
-  "version": "1.7.8-mac.1",
+  "version": "1.7.8-mac.2",
   "description": "打工喵（WorkMeow）桌面宠物：一只喵实时呈现 Claude Code / Codex / TRAE / WorkBuddy / opencode 的状态、消息与统一 token 用量统计",
   "main": "main.js",
   "license": "MIT",
@@ -86,7 +86,7 @@
           ]
         }
       ],
-      "icon": "assets/salary-cat.icns",
+      "icon": "assets/pingu-app.icns",
       "category": "public.app-category.productivity",
       "identity": "-",
       "notarize": false,

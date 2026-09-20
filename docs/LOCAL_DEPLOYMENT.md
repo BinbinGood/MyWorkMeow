@@ -128,7 +128,12 @@ npm run package:mac
 
 产物只有 `dist/WorkMeow-<version>-macOS-arm64.dmg` 一个文件；中间目录 `dist/mac-arm64/` 会被 finalize 清掉。mac 侧**不生成**自动更新元数据（没有 `latest-mac.yml`、没有 `.blockmap`）——`backend/updater.js` 对任何非 win32 平台直接返回 `unsupported`，写了等于对外宣告一个不能用的更新通道。**也不生成 `SHA256SUMS.txt`**（Windows 侧仍然生成）：自产自校的校验和只能证明 DMG 在生成后那几秒没坏，而 `verify-dist-mac.js` 的 `hdiutil verify` 已经在校验镜像自带的 checksum 结构。
 
-`npm run icns:build` 只在**更换图标源图**时需要手动跑一次：`assets/salary-cat.icns` 已随仓库入库，日常打包不碰它。
+`npm run icns:build` 只在**更换图标源图**时需要手动跑一次：`assets/pingu-app.icns` 已随仓库入库，日常打包不碰它。图标源是矢量 `assets/pingu-app.svg`，脚本先按 ≥1024 栅格化再烘各档，所以连 1024 那一档也是从矢量画出来的、不是放大来的。要试别的图或复现历史图标：
+
+```bash
+node scripts/build-icns.js <源图> <输出.icns>
+node scripts/build-icns.js assets/salary-cat.png assets/salary-cat.icns   # 例如退回旧的猫图标
+```
 
 几个必须知道的限制：
 
@@ -157,7 +162,7 @@ xattr -dr com.apple.quarantine /Applications/WorkMeow.app
 
 **必须先拖进「应用程序」再启动，不要直接在 DMG 里双击。** 带隔离标记的 app 在原地启动会触发 macOS 的 App Translocation：系统把它映射到一个 `/private/var/folders/.../AppTranslocation/` 下的临时只读路径再运行，而打工喵装 hook 时写的是**自己当前的可执行文件路径** —— 于是 `~/.claude/settings.json` 里会留下一串重启后就失效的临时路径。本机实测过这个现象。已经踩了的话，在设置里重新点一次「接入自检 / 修复」即可改回正确路径。
 
-**明确做不到的**：无公证（每个接收者都要放行一次，**每个新版本也要重新放行一次**）；仅 arm64；Retina 图标偏软（源图只有 512×512）；mac 无自动更新，新版本靠重新给一个 DMG。
+**明确做不到的**：无公证（每个接收者都要放行一次，**每个新版本也要重新放行一次**）；仅 arm64；mac 无自动更新，新版本靠重新给一个 DMG。
 
 #### 从源码启动迁到已安装的 `.app`
 

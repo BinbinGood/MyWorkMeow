@@ -1,15 +1,21 @@
 #!/usr/bin/env node
 'use strict';
 
-// 把 assets/salary-cat.png 烘成 macOS app bundle 图标 assets/salary-cat.icns。
+// 把图标源图烘成 macOS app bundle 用的 .icns。
 //
-// 为什么要预先烘、而不是让 electron-builder 直接吃那张 PNG：
+// 默认一对（package.json 的 build.mac.icon 指定的那个）：
+//   assets/pingu-app.svg  →  assets/pingu-app.icns
+// 也可以指定别的源与输出，用来复现历史图标或试新图：
+//   node scripts/build-icns.js [源图] [输出.icns]
+//   node scripts/build-icns.js assets/salary-cat.png assets/salary-cat.icns
+//
+// 为什么要预先烘、而不是让 electron-builder 直接吃源图：
 //   1) electron-builder 遇到非 .icns 的 mac.icon 会去 GitHub 下载 icons 工具链
 //      （app-builder-lib/out/util/toolsets/icons）。打包这件事应该离线可重复，
 //      不该每台新机器第一次打包都依赖一次外网；
 //   2) 自己烘才能控制留白。macOS 的 Dock/Finder 不会替你缩，Info.plist 指到的
-//      位图是多大就按多大画 —— 源图墨迹占满 90% 画布，直接转出来的图标在 Dock
-//      里会明显比系统自带 app 大一圈、显得「突出来」。
+//      位图是多大就按多大画 —— 源图墨迹占满画布，直接转出来的图标在 Dock 里
+//      会明显比系统自带 app 大一圈、显得「突出来」。
 //
 // 两个后处理：
 //   · 裁掉透明边：先用 alpha bbox 找出真实墨迹范围，避免把源图自带的空白
@@ -17,16 +23,14 @@
 //   · 按 INK_RATIO 缩进再补透明边：Apple 自家图标的墨迹大约占画布 82%
 //     （squircle 外接方形留白），照这个比例排才和 Dock 里的邻居一样大。
 //
-// 诚实的局限：源图只有 512×512，而 icns 需要 1024（icon_512x512@2x）。那一档
-// 只能从 512 放大，Retina Dock 最大尺寸下会比真 1024 源偏软。这里的做法是把
-// 那次放大变成显式的、单次 Lanczos3，而不是交给下游随便插值。真要解决需要一张
-// ≥1024 的源图。assets/pingu-tray.svg 是菜单栏企鹅、不是 app 主标，没有矢量路线。
+// 源是矢量（.svg）时先按 >=1024 一次性栅格化，于是 1024 档也是从矢量画出来的、
+// 不是放大来的。源是位图且短边不足 1024 时那一档只能放大，Retina Dock 最大尺寸下
+// 会偏软 —— 脚本会在末尾把这件事明确报出来，而不是让人以为没问题。
 //
 // 改图或改尺寸都跑这个脚本，不要手改 icns：
 //   npm run icns:build
 //
-// 产物随仓库入库（和 assets/pingu-tray.png 一样），所以 package:mac 不链它 ——
-// 只有换图标源时才需要手动跑一次。
+// 产物随仓库入库，所以 package:mac 不链它 —— 只有换图标源时才需要手动跑一次。
 
 const fs = require('fs');
 const os = require('os');
@@ -35,8 +39,8 @@ const { execFileSync } = require('child_process');
 const sharp = require('sharp');
 
 const root = path.join(__dirname, '..');
-const SRC = path.join(root, 'assets', 'salary-cat.png');
-const OUT = path.join(root, 'assets', 'salary-cat.icns');
+const SRC = path.resolve(root, process.argv[2] || path.join('assets', 'pingu-app.svg'));
+const OUT = path.resolve(root, process.argv[3] || path.join('assets', 'pingu-app.icns'));
 
 // 墨迹占画布的比例。0.82 ≈ Apple 自家图标的观感；调大图标在 Dock 里会显得比
 // 邻居突出，调小则显得缩水。
@@ -62,6 +66,9 @@ const ICONSET_NAMES = {
   1024: ['icon_512x512@2x'],
 };
 
+// 1024 是 icns 的最高档（icon_512x512@2x），也是这里的栅格化目标。
+const RASTER_TARGET = 1024;
+
 function bbox(data, width, height, channels) {
   let x0 = width;
   let x1 = -1;
@@ -77,31 +84,45 @@ function bbox(data, width, height, channels) {
       }
     }
   }
-  if (x1 < x0) throw new Error('salary-cat.png is fully transparent — nothing to bake');
+  if (x1 < x0) throw new Error(`${path.relative(root, SRC)} 全透明 —— 没有墨迹可烘`);
   return { x0, y0, width: x1 - x0 + 1, height: y1 - y0 + 1 };
+}
+
+// 矢量源按「渲染结果至少 RASTER_TARGET 像素」反推一个 dpi 出来，一次渲染到位。
+// 写死 dpi 的话，源 SVG 的 viewBox 一变渲染尺寸就跟着变，后面还得再放大回去，
+// 等于白拿一次重采样 —— 那正是这条路径想避免的。
+async function rasterizeIfVector(bytes) {
+  if (!/\.svg$/i.test(SRC)) return bytes;
+  const meta = await sharp(bytes).metadata();
+  const intrinsic = Math.max(meta.width || 0, meta.height || 0);
+  const density = intrinsic > 0
+    ? Math.max(72, Math.ceil((72 * RASTER_TARGET) / intrinsic))
+    : 72;
+  return sharp(bytes, { density }).png().toBuffer();
 }
 
 async function main() {
   if (process.platform !== 'darwin') {
     throw new Error('build-icns.js 只能在 macOS 上跑：生成 .icns 依赖系统自带的 /usr/bin/iconutil，'
-      + '没有跨平台替代。已入库的 assets/salary-cat.icns 可直接使用，只有换图标源时才需要重烘。');
+      + '没有跨平台替代。已入库的产物可直接使用，只有换图标源时才需要重烘。');
   }
   if (!fs.existsSync(SRC)) throw new Error(`missing icon source: ${SRC}`);
 
-  const src = fs.readFileSync(SRC);
-  const { data, info } = await sharp(src).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const raster = await rasterizeIfVector(fs.readFileSync(SRC));
+  const { data, info } = await sharp(raster).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const box = bbox(data, info.width, info.height, info.channels);
 
   // 注意：extract / resize / extend 不能串在同一条 sharp 管线里 —— sharp 会把
   // extend 排到 resize 之后执行，于是补边会加在已经缩好的输出上，得到的是
   // (inner + 2*pad) 而不是 size。每一档都必须各自 toBuffer。
   // （build-tray-icon.js:119-121 踩过同一个坑。）
-  const tight = await sharp(src)
+  const tight = await sharp(raster)
     .extract({ left: box.x0, top: box.y0, width: box.width, height: box.height })
     .png()
     .toBuffer();
 
-  const iconsetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workmeow-icns-')) + path.sep + 'salary-cat.iconset';
+  const stem = path.basename(OUT, path.extname(OUT));
+  const iconsetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workmeow-icns-')) + path.sep + `${stem}.iconset`;
   fs.mkdirSync(iconsetDir, { recursive: true });
 
   for (const size of SIZES) {
@@ -134,15 +155,23 @@ async function main() {
     }
   }
 
+  fs.mkdirSync(path.dirname(OUT), { recursive: true });
   execFileSync('/usr/bin/iconutil', ['-c', 'icns', iconsetDir, '-o', OUT]);
   fs.rmSync(path.dirname(iconsetDir), { recursive: true, force: true });
 
   // 按边长比报，才和 INK_RATIO 是同一个量纲（面积比会让两个数字看起来自相矛盾）。
   const srcRatio = (Math.max(box.width, box.height) / Math.max(info.width, info.height)) * 100;
-  console.log(`source   ${path.relative(root, SRC)}  ${info.width}x${info.height}px  (ink ${box.width}x${box.height} = ${srcRatio.toFixed(1)}% of canvas edge)`);
+  console.log(`source   ${path.relative(root, SRC)}  →  栅格 ${info.width}x${info.height}px  `
+    + `(ink ${box.width}x${box.height} = ${srcRatio.toFixed(1)}% of canvas edge)`);
   console.log(`baked    ${path.relative(root, OUT)}  ${fs.statSync(OUT).size} bytes`);
   console.log(`sizes    ${SIZES.join(' / ')}px  ink ${(INK_RATIO * 100).toFixed(0)}% of each frame`);
-  console.log(`note     1024 档由 ${info.width}px 源图单次 Lanczos3 放大而来 —— Retina Dock 最大档会偏软，需要 >=1024 源图才能真正解决。`);
+  const shortEdge = Math.min(info.width, info.height);
+  if (shortEdge < RASTER_TARGET) {
+    console.log(`note     源短边只有 ${shortEdge}px，1024 档是单次 Lanczos3 放大来的 —— `
+      + `Retina Dock 最大档会偏软，换 >=${RASTER_TARGET} 的源（矢量最好）才能真正解决。`);
+  } else {
+    console.log(`note     源短边 ${shortEdge}px >= ${RASTER_TARGET}，每一档都是降采样而来，没有放大。`);
+  }
 }
 
 main().catch((error) => {

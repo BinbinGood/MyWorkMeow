@@ -34,8 +34,14 @@ assert.strictEqual(pkg.build.win.artifactName, 'WorkMeow-${version}-Windows-${ar
 assert(/--publish never(?:\s|$)/.test(pkg.scripts['package:win']), 'Windows packaging must use the unified release job');
 assert.strictEqual(pkg.build.mac.identity, '-',
   '没有 Apple 证书，mac bundle 必须显式 ad-hoc 签名 —— 完全无签名的 arm64 bundle 起不来');
-assert(fs.existsSync(path.join(root, 'assets', 'salary-cat.icns')),
-  '烤好的 macOS bundle 图标必须随仓库入库（npm run icns:build）');
+// build.mac.icon 指向的东西必须是个真的存在的 .icns。指向不存在的路径、或者
+// 指着一张 PNG，electron-builder 都不会报错：前者静默产出一个顶着 Electron
+// 默认图标的 .app，后者会临时去 GitHub 下载 icons 工具链（打包就多一次外网依赖）。
+// 两种情况 dist 目录看起来都完全正常，所以只能在这里拦。
+assert.strictEqual(path.extname(pkg.build.mac.icon), '.icns',
+  'mac 打包图标必须是预烘好的 .icns（见 scripts/build-icns.js）');
+assert(fs.existsSync(path.join(root, pkg.build.mac.icon)),
+  `package.json 指向的 macOS 图标不存在：${pkg.build.mac.icon} —— 跑 npm run icns:build`);
 assert(/--mac(?:\s|$)/.test(pkg.scripts['package:mac'])
   && /finalize-dist-mac/.test(pkg.scripts['package:mac'])
   && /verify-dist-mac/.test(pkg.scripts['package:mac']),
@@ -68,7 +74,7 @@ assert.strictEqual(pkg.scripts.test, 'node test/run-all.js');
 // 两个 README 顶部的版本徽章必须跟 package.json 一致。npm version 不会改 Markdown，
 // 所以没有这条断言它就会静默停在某个旧版本号上。
 // shields.io 用 `-` 分隔 label/message/color，所以版本号里的字面连字符要写成 `--`
-// （1.7.8-mac.1 → 1.7.8--mac.1）；不转义的话 message 会被截成 1.7.8、颜色变成 mac.1。
+// （1.7.8-mac.2 → 1.7.8--mac.2）；不转义的话 message 会被截成 1.7.8、颜色变成 mac.2。
 const badgeVersion = pkg.version.replace(/-/g, '--');
 for (const [name, text] of [['README.md', readme], ['README_EN.md', readmeEn]]) {
   assert(text.includes(`badge/version-${badgeVersion}-F6A04A`),
