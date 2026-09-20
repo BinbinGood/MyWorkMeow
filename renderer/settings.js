@@ -550,12 +550,14 @@ function updateStatusText(state) {
 
 function renderUpdateState(next) {
   updateState = next && typeof next === 'object' ? next : {
-    supported: false, mode: 'unsupported', autoCheck: false,
+    supported: false, canInstall: false, mode: 'unsupported', autoCheck: false,
     currentVersion: '--', latestVersion: null, phase: 'unsupported', progress: null,
   };
   const state = updateState;
   const active = state.phase === 'checking' || state.phase === 'downloading';
-  updateToggle.setAttribute('aria-checked', String(!!state.autoCheck));
+  // 平台不支持时开关是禁用的，就不要再让它显示成「开」—— 之前 aria-checked 直接取
+  // autoCheck（默认 true），于是 mac 上出现过「开关是开的、但点不动」这种自相矛盾的画面。
+  updateToggle.setAttribute('aria-checked', String(!!state.supported && !!state.autoCheck));
   updateToggle.disabled = updateBusy || !state.supported;
   currentVersionEl.textContent = state.currentVersion || '--';
   latestVersionEl.textContent = state.latestVersion || '--';
@@ -569,7 +571,8 @@ function renderUpdateState(next) {
 
   updateAction.hidden = true;
   updateAction.dataset.action = '';
-  if (state.mode === 'portable' && state.phase === 'available') {
+  // mac 只能「查询 + 引导下载」，所以走和便携版同一条「前往下载」动作。
+  if ((state.mode === 'portable' || state.mode === 'mac') && state.phase === 'available') {
     updateAction.hidden = false;
     updateAction.dataset.action = 'open';
     updateAction.textContent = t('settings.openDownload');
@@ -584,14 +587,22 @@ function renderUpdateState(next) {
   }
   updateAction.disabled = updateBusy || active;
 
+  // 四个分支必须分开：之前 development 和 unsupported 共用 else，于是安装好的 mac 版
+  // （根本不是开发态）会显示「开发模式不执行在线更新」。
   if (state.mode === 'installer') {
     updateModeDescription.textContent = t('settings.installerUpdateDescription');
     updateHint.textContent = t('settings.updateInstallerHint');
   } else if (state.mode === 'portable') {
     updateModeDescription.textContent = t('settings.portableUpdateDescription');
     updateHint.textContent = t('settings.updatePortableHint');
-  } else {
+  } else if (state.mode === 'mac') {
+    updateModeDescription.textContent = t('settings.macUpdateDescription');
+    updateHint.textContent = t('settings.updateMacHint');
+  } else if (state.mode === 'development') {
     updateModeDescription.textContent = t('settings.developmentUpdateDescription');
+    updateHint.textContent = '';
+  } else {
+    updateModeDescription.textContent = t('settings.unsupportedUpdateDescription');
     updateHint.textContent = '';
   }
 }

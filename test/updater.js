@@ -6,8 +6,12 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const {
   RELEASES_URL,
+  MAC_RELEASES_URL,
+  MAC_LATEST_API,
   detectDistribution,
   errorMessage,
+  compareVersions,
+  pickMacAsset,
   createUpdateService,
 } = require('../backend/updater');
 
@@ -58,7 +62,11 @@ async function flush() {
 
 async function run() {
   assert.strictEqual(detectDistribution(app(false), { platform: 'win32' }), 'development');
-  assert.strictEqual(detectDistribution(app(), { platform: 'darwin' }), 'unsupported');
+  // mac 打包态是「能查不能自动装」，单独一种 mode；开发态在任何平台都先判成 development
+  // （以前 darwin 一律返回 unsupported，于是安装好的正式版也被显示成「开发模式」）。
+  assert.strictEqual(detectDistribution(app(), { platform: 'darwin' }), 'mac');
+  assert.strictEqual(detectDistribution(app(false), { platform: 'darwin' }), 'development');
+  assert.strictEqual(detectDistribution(app(), { platform: 'linux' }), 'unsupported');
   assert.strictEqual(detectDistribution(app(), {
     platform: 'win32', execPath: 'C:\\WorkMeow\\WorkMeow.exe',
     fs: { readdirSync: () => ['WorkMeow.exe', 'Uninstall 打工喵.exe'] }, path: path.win32,
@@ -119,6 +127,85 @@ async function run() {
   assert.strictEqual(portable.install(), false, 'ZIP builds must never invoke installer replacement');
   assert.strictEqual(await portable.openReleasePage(), true);
   assert.strictEqual(openedUrl, 'https://github.com/vista-zhangg/WorkMeow/releases/tag/v1.6.0');
+
+  // ---- 版本比较：唯一容易踩的坑是预发布段必须按段做数值比较 ----
+  assert(compareVersions('1.7.9-mac.1', '1.7.8-mac.2') > 0, '次版本更高就是更新');
+  assert(compareVersions('1.7.8-mac.10', '1.7.8-mac.2') > 0,
+    'mac.10 必须比 mac.2 新（字符串比较会反过来）');
+  assert(compareVersions('1.7.8', '1.7.8-mac.2') > 0, '正式版高于同号预发布版');
+  assert(compareVersions('1.7.8-mac.2', '1.7.8-mac.2') === 0);
+  assert(compareVersions('v1.7.8-mac.2', '1.7.8-mac.2') === 0, '前导 v 必须被忽略');
+  assert(compareVersions('乱七八糟', '1.7.8') === 0, '解析不了就当作同版本，不误报更新');
+
+  const release = {
+    tag_name: 'v1.7.8-mac.3',
+    assets: [
+      { name: 'WorkMeow-1.7.8-mac.3-macOS-arm64.dmg', browser_download_url: 'https://example.com/a.dmg', size: 10 },
+      { name: 'source.zip', browser_download_url: 'https://example.com/s.zip', size: 1 },
+    ],
+  };
+  assert.strictEqual(pickMacAsset(release).name, 'WorkMeow-1.7.8-mac.3-macOS-arm64.dmg');
+  assert.strictEqual(pickMacAsset({ assets: [{ name: 'source.zip' }] }), null, '只认 DMG');
+  assert.strictEqual(pickMacAsset({}), null);
+
+  // ---- macOS：查得到、但绝不下载或替换 ----
+  const macUpdater = new FakeUpdater();
+  let macOpenedUrl = null;
+  const mac = createUpdateService({
+    app: { isPackaged: true, getVersion: () => '1.7.8-mac.2' },
+    updater: macUpdater, config: config(true), mode: 'mac',
+    shell: { openExternal: async (url) => { macOpenedUrl = url; } },
+    fetchJson: async (url) => {
+      assert.strictEqual(url, MAC_LATEST_API, 'mac 必须查本 fork 的 Release');
+      return release;
+    },
+  });
+  assert.strictEqual(mac.snapshot().releaseUrl, MAC_RELEASES_URL,
+    'mac 的 Release 页面不能指向上游（上游不发 mac 产物）');
+  mac.start(false);
+  const macState = await mac.check(true);
+  assert.strictEqual(macUpdater.checks, 0, 'mac 不得走 electron-updater');
+  assert.strictEqual(macState.supported, true, 'mac 必须能查更新');
+  assert.strictEqual(macState.canInstall, false, 'mac 不得声称能自动安装');
+  assert.strictEqual(macState.phase, 'available');
+  assert.strictEqual(macState.latestVersion, '1.7.8-mac.3');
+  await mac.download();
+  assert.strictEqual(mac.snapshot().phase, 'available', 'mac 不得进入下载流程');
+  assert.strictEqual(mac.install(), false, 'mac 不得调用 installer 替换');
+  assert.strictEqual(await mac.openReleasePage(), true);
+  assert.strictEqual(macOpenedUrl, 'https://github.com/BinbinGood/MyWorkMeow/releases/tag/v1.7.8-mac.3');
+
+  const macCurrent = createUpdateService({
+    app: { isPackaged: true, getVersion: () => '1.7.8-mac.2' },
+    config: config(true), mode: 'mac', shell: {},
+    fetchJson: async () => ({ tag_name: 'v1.7.8-mac.2', assets: [] }),
+  });
+  macCurrent.start(false);
+  await macCurrent.check(true);
+  assert.strictEqual(macCurrent.snapshot().phase, 'up-to-date');
+  assert.strictEqual(macCurrent.snapshot().latestVersion, '1.7.8-mac.2');
+
+  const macFailing = createUpdateService({
+    app: { isPackaged: true, getVersion: () => '1.7.8-mac.2' },
+    config: config(true), mode: 'mac', shell: {},
+    fetchJson: async () => { throw new Error('fetch failed'); },
+  });
+  macFailing.start(false);
+  await macFailing.check(true);
+  assert.strictEqual(macFailing.snapshot().phase, 'error');
+  assert.match(macFailing.snapshot().error, /网络/);
+  assert.match(errorMessage(new Error('HTTP 404 https://api.github.com/...')), /尚未发布/);
+  assert.match(errorMessage(new Error('API rate limit exceeded')), /过于频繁/);
+  assert.match(errorMessage(new Error('The operation was aborted due to timeout')), /网络/);
+
+  // 真正不支持的平台（既非 win 也非 mac）：开关和检查按钮都要保持禁用。
+  const unsupported = createUpdateService({
+    app: app(), updater: new FakeUpdater(), config: config(true), mode: 'unsupported', shell: {},
+  });
+  unsupported.start(false);
+  await unsupported.check(true);
+  assert.strictEqual(unsupported.snapshot().supported, false);
+  assert.strictEqual(unsupported.snapshot().phase, 'unsupported');
 
   const latestUpdater = new FakeUpdater('latest');
   const latest = createUpdateService({

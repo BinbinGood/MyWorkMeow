@@ -162,7 +162,20 @@ xattr -dr com.apple.quarantine /Applications/WorkMeow.app
 
 **必须先拖进「应用程序」再启动，不要直接在 DMG 里双击。** 带隔离标记的 app 在原地启动会触发 macOS 的 App Translocation：系统把它映射到一个 `/private/var/folders/.../AppTranslocation/` 下的临时只读路径再运行，而打工喵装 hook 时写的是**自己当前的可执行文件路径** —— 于是 `~/.claude/settings.json` 里会留下一串重启后就失效的临时路径。本机实测过这个现象。已经踩了的话，在设置里重新点一次「接入自检 / 修复」即可改回正确路径。
 
-**明确做不到的**：无公证（每个接收者都要放行一次，**每个新版本也要重新放行一次**）；仅 arm64；mac 无自动更新，新版本靠重新给一个 DMG。
+**明确做不到的**：无公证（每个接收者都要放行一次，**每个新版本也要重新放行一次**）；仅 arm64；mac **不能自动安装更新** —— 设置页能查出有没有新版本（只查本仓库 `BinbinGood/MyWorkMeow` 的 Release，纯 HTTP，**不接 electron-updater**），但替换 .app 必须你手动拖 DMG 完成。
+
+#### mac 的更新检查为什么只做「查」
+
+electron-updater 的 mac 实现（`MacUpdater`）要靠 **zip 产物 + Squirrel.Mac 替换 bundle**，而替换要求 app 有有效代码签名。本项目 mac 侧只产 DMG、`build.mac.identity` 是 `-`（ad-hoc）、`notarize: false`，两个条件都不满足，所以整条自动安装链路是不成立的。
+
+于是 mac 走一条独立通道（`backend/updater.js` 的 `mode === 'mac'`）：拿 `app.getVersion()` 跟 `https://api.github.com/repos/BinbinGood/MyWorkMeow/releases/latest` 的 `tag_name` 比版本号，有新版就提示并给一个「前往下载」按钮打开 Release 页面。
+
+注意这里的地址**刻意不沿用 `RELEASES_URL`**：那个常量指向上游 `vista-zhangg/WorkMeow`，是 Windows 的更新源（`build.publish` 也指那里），而上游不发布 mac 产物，指过去就是死链。
+
+两个附带约束：
+
+- 走的是**未认证**的 GitHub API，限额 60 次/小时；默认检查间隔 6 小时（`DEFAULT_CHECK_INTERVAL_MS`），正常用不会碰到限流，真碰到会提示「请求过于频繁」。
+- 版本号比较自己实现（`compareVersions`），**没有引入 semver 依赖**。唯一要小心的点是预发布段必须按段做数值比较，否则 `1.7.8-mac.10` 会被字符串比较判成比 `1.7.8-mac.2` 小 —— 第 10 个 mac 版反而看不见更新，测试里有这条断言。
 
 #### 从源码启动迁到已安装的 `.app`
 

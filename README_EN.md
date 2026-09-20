@@ -11,7 +11,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20x64-555" alt="macOS and Windows x64">
-    <img src="https://img.shields.io/badge/version-1.7.8--mac.2-F6A04A" alt="Version 1.7.8-mac.2">
+    <img src="https://img.shields.io/badge/version-1.7.8--mac.3-F6A04A" alt="Version 1.7.8-mac.3">
     <a href="LICENSE"><img src="https://img.shields.io/badge/code%20license-MIT-2EA44F" alt="MIT License"></a>
   </p>
 </div>
@@ -25,7 +25,7 @@
 > - ✅ WorkBuddy is verified on macOS: the hook contract matches the agent kernel field by field (5/5 events delivered in an offline harness) and the usage fields are readable (248M tokens over 2563 rounds on this machine)
 > - ➖ Codex / TRAE / opencode are untouched — no macOS adaptation
 > - ✅ Local macOS packaging works: `npm run package:mac` produces one arm64 DMG (**ad-hoc signed, not notarized** — the first launch needs a one-time approval in System Settings; Apple Silicon only)
-> - ➖ Auto-update and SSH remote monitoring are still not implemented; macOS has no update channel, so a new version means installing a new DMG
+> - ➖ SSH remote monitoring is still not implemented; on macOS auto-update is **check-only**: Settings periodically checks this repository's releases and points you at the download page, but replacing the app stays manual (drag the DMG over the old copy). electron-updater is not involved — see the mac branch in `backend/updater.js`
 >
 > Windows behavior is unchanged from upstream (command generation branches per platform; the Windows branch was not modified). The application UI is Simplified Chinese.
 

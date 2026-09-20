@@ -11,7 +11,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20x64-555" alt="macOS and Windows x64">
-    <img src="https://img.shields.io/badge/version-1.7.8--mac.2-F6A04A" alt="Version 1.7.8-mac.2">
+    <img src="https://img.shields.io/badge/version-1.7.8--mac.3-F6A04A" alt="Version 1.7.8-mac.3">
     <a href="LICENSE"><img src="https://img.shields.io/badge/code%20license-MIT-2EA44F" alt="MIT License"></a>
   </p>
 </div>
@@ -25,7 +25,7 @@
 > - ✅ WorkBuddy 已在本机做完实测：hook 契约与内核逐字段对齐（离线驱动 5/5 事件全通），用量字段也确实可读（本机实测今日 2152 万 token、累计 2.48 亿）
 > - ➖ Codex / TRAE / opencode 未做 mac 适配，代码保持上游原样
 > - ✅ macOS 本地打包已做：`npm run package:mac` 出一个 arm64 DMG（**ad-hoc 签名、未公证**，首次启动需在系统设置里放行一次；仅 Apple Silicon）
-> - ➖ 自动更新、SSH 远程监控均未做；mac 没有自动更新通道，新版本靠重新装一个 DMG
+> - ➖ SSH 远程监控未做；自动更新在 mac 上是**「能查不能自己装」**：设置页会按点查本仓库的 Release 并提示新版本，点「前往下载」打开下载页，替换仍由你手动拖 DMG 完成（不接 electron-updater，见 `backend/updater.js` 的 mac 分支）
 >
 > Windows 侧的行为保持与上游一致（命令生成按平台分派，未改动 Windows 分支）。
 

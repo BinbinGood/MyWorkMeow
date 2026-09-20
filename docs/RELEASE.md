@@ -33,6 +33,7 @@ git push && git push --tags
 - **坏包到不了 Release。** `npm run package:mac` 里的 `verify-dist-mac.js` 会挂载 DMG 校验 ad-hoc 签名、entitlements、`CFBundleShortVersionString` 与 sharp 原生库，任何一项不过就非零退出，后面的 `gh release create` 根本不执行。
 - **`runs-on` 必须是 `macos-latest`**（Apple Silicon）。换成 Intel runner 会静默产出一个本项目不支持的 x64 包。
 - **CI 同样没有 Apple 证书**，所以自动打的包依然是 ad-hoc 签名、未公证。**CI 不解决 Gatekeeper 问题**，放行说明每次都要给 —— 这也是它固定写在 `.github/release-notes-mac.md` 里、由 workflow 自动贴进每个 Release 的原因。
+- **Release 正文的结构固定为「本次更新 + 折叠的安装说明」**（`test/branding.js` 里有断言钉住顺序）。放行说明每个版本都一样，所以折进 `<details>`；正文第一屏留给这一版的功能点改动。**每次发版只需要重写 `.github/release-notes-mac.md` 的第一节**，安装那段不要动。
 - **Windows 侧没有自动化**，`package:win` 仍然只能在 Windows 机器上手动跑。
 
 ## 正常产物
@@ -50,7 +51,7 @@ git push && git push --tags
 
 - `WorkMeow-<version>-macOS-arm64.dmg`
 
-**mac 侧没有 `latest.yml`、没有 `.blockmap`、也没有 `SHA256SUMS.txt`**：前两个是因为 `build.dmg.writeUpdateInfo` 为 `false`（`backend/updater.js` 对任何非 win32 平台直接返回 `unsupported`，mac 本就没有自动更新通道）；校验和文件是刻意去掉的 —— 它和 DMG 在同一次构建里由同一份字节生成，本地只能抓住那几秒内的磁盘损坏，而 `hdiutil verify` 已经在校验镜像自带的 checksum。中间目录 `dist/mac-arm64/` 会被 finalize 清掉。单独校验用 `npm run verify:dist:mac`。
+**mac 侧没有 `latest.yml`、没有 `.blockmap`、也没有 `SHA256SUMS.txt`**：前两个是因为 `build.dmg.writeUpdateInfo` 为 `false`（mac 不接 electron-updater，只做「查版本 + 引导去下载」，见 `backend/updater.js` 的 mac 分支）；校验和文件是刻意去掉的 —— 它和 DMG 在同一次构建里由同一份字节生成，本地只能抓住那几秒内的磁盘损坏，而 `hdiutil verify` 已经在校验镜像自带的 checksum。中间目录 `dist/mac-arm64/` 会被 finalize 清掉。单独校验用 `npm run verify:dist:mac`。
 
 **DMG 是 ad-hoc 签名、未公证的**（本机没有 Apple 开发者证书），所以每次交付都要一并给出 Gatekeeper 放行说明，见[本地开发与打包手册](LOCAL_DEPLOYMENT.md)里的「交付给别人时一并说明」。而且**每个新版本接收者都要重新放行一次**。DMG 仅支持 Apple Silicon。
 

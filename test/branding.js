@@ -70,11 +70,20 @@ assert(/--notes-file \.github\/release-notes-mac\.md/.test(macWorkflow)
 assert(/Apple Silicon/.test(read('.github/release-notes-mac.md'))
   && /隐私与安全性/.test(read('.github/release-notes-mac.md')),
   'Release 说明必须写清 arm64 限制与 Gatekeeper 放行路径 —— 缺了它接收者拿到的是个打不开的文件');
+// 发布说明以「本次更新」为主体、安装说明折叠在后：接收者要先看到这一版改了什么，
+// 而不是每个版本都一模一样的放行步骤。没有这几条断言，下次发版很容易又退回「一整页安装说明」。
+const releaseNotes = read('.github/release-notes-mac.md');
+assert(releaseNotes.includes('## 本次更新'),
+  'Release 说明必须有「## 本次更新」一节（每次发版改这里）');
+assert(releaseNotes.indexOf('## 本次更新') < releaseNotes.indexOf('Apple Silicon'),
+  '「本次更新」必须排在安装说明之前');
+assert(releaseNotes.includes('<details>'),
+  '安装说明要折叠进 <details>，别让 Release 页面被放行步骤占满');
 assert.strictEqual(pkg.scripts.test, 'node test/run-all.js');
 // 两个 README 顶部的版本徽章必须跟 package.json 一致。npm version 不会改 Markdown，
 // 所以没有这条断言它就会静默停在某个旧版本号上。
 // shields.io 用 `-` 分隔 label/message/color，所以版本号里的字面连字符要写成 `--`
-// （1.7.8-mac.2 → 1.7.8--mac.2）；不转义的话 message 会被截成 1.7.8、颜色变成 mac.2。
+// （1.7.8-mac.3 → 1.7.8--mac.3）；不转义的话 message 会被截成 1.7.8、颜色变成 mac.2。
 const badgeVersion = pkg.version.replace(/-/g, '--');
 for (const [name, text] of [['README.md', readme], ['README_EN.md', readmeEn]]) {
   assert(text.includes(`badge/version-${badgeVersion}-F6A04A`),
