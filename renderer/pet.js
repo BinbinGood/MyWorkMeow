@@ -706,6 +706,10 @@ function measureEdgeRect(next) {
 // 胶囊居中在猫正下方，只在会探出工作区时往内挪刚好够用的距离（capsuleShift 的
 // 「按需最小位移」口径）。横向贴边退役后 flex 中心恒在猫正下方，所以传猫的中心点
 // 就够了，不再需要按对齐反推 flex 中心（旧的 capsuleShiftFromEdge 已删）。
+// #notepad 当前挂哪边（+1 右肩 / -1 左肩）。滞回要读上一次的取值，所以必须是模块级
+// 状态，不能每次从 DOM 反读（读回来是字符串、且首帧还没写过）。默认 +1 = 右肩。
+let appliedNotepadSide = 1;
+
 function applyCapsuleShift(petScreenX, petWidth) {
   if (!stage || !stage.style) return;
   const rect = chip && !chip.hidden && typeof chip.getBoundingClientRect === 'function'
@@ -723,7 +727,36 @@ function applyCapsuleShift(petScreenX, petWidth) {
     })
     : 0;
   stage.style.setProperty('--chip-shift', shift + 'px');
+  applyNotepadSide(petScreenX, petWidth);
   applyPopupShift(petScreenX, petWidth);
+}
+
+// 日记本图标挂哪边肩膀，写进 --np-dir（+1 右肩 / -1 左肩）。
+//
+// 猫贴死屏幕右缘时猫的右缘**就是**屏幕缘，右肩外的一切必然出屏（实测出屏 61px），
+// 所以唯一的修法是换边 —— 判据、滞回和全部数字在 shared/pet-geometry.js notepadSide。
+//
+// 挂在 applyCapsuleShift 里而不是自己找时机：那里已经握着猫的屏幕坐标，且三个入口
+// （resize 后的 applyPendingEdgeLayout、!willResize 的就地分支、拖动途中）都会到，
+// 覆盖面和 --chip-shift 完全一致。拖动途中也算 —— 不算的话得等松手才翻边。
+//
+// appliedNotepadSide 是滞回需要的上一次取值，不是缓存（去重顺带做掉：值没变就不写，
+// 避免拖动每帧都标脏一个不变的属性）。
+function applyNotepadSide(petScreenX, petWidth) {
+  if (!stage || !stage.style) return;
+  const width = Number(petWidth) || 0;
+  const center = Number(petScreenX) + width / 2;
+  const dir = (window.PetGeometry && Number.isFinite(center))
+    ? window.PetGeometry.notepadSide({
+      petCenterX: center,
+      workArea: browserWorkArea(),
+      petWidth: width,
+      prev: appliedNotepadSide,
+    })
+    : 1;
+  if (dir === appliedNotepadSide) return;
+  appliedNotepadSide = dir;
+  stage.style.setProperty('--np-dir', String(dir));
 }
 
 // 弹窗（.peek / .ask / .bubble / .think）的按需内缩，和胶囊同一个口径、同一个

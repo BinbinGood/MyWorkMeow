@@ -153,7 +153,13 @@ function runProbeDecor() {
                  p.className = 'prop on spin'; }
         if (s) s.classList.add('on');
         if (k) { k.classList.remove('on'); void k.offsetWidth; k.classList.add('on'); }
-        return { prop: p && p.className, sleep: s && s.className, sidekick: k && k.className };
+        // 2026-09-20：#notepad 必须强点亮。它的可见性由 actionable 驱动（不是 .on），
+        // 上一轮 P 靶就是因为没点亮而 display:none、量不到数（日志里那条
+        // 「notepad: display:none」）。镜像换边的正靶就是它，不能再漏。
+        const np = document.getElementById('notepad');
+        if (np) { np.classList.remove('hidden'); np.style.display = 'flex'; }
+        return { prop: p && p.className, sleep: s && s.className, sidekick: k && k.className,
+                 notepad: np && (np.className + '|' + getComputedStyle(np).display) };
       } catch (e) { return 'lightUp threw: ' + String(e.stack || e); }
     })()`);
     const lightOff = () => js(`(() => {
@@ -168,6 +174,12 @@ function runProbeDecor() {
                       y: Math.round(wa.y + wa.height / 2 - 150),
                       width: b.width, height: b.height });
       const st = stOf(); if (st) applyPetSize(st, null);
+      // 2026-09-20：setBounds 只挪窗口，不会触发渲染端的 applyCapsuleShift（尺寸没变
+      // → 无 resize 事件），而 --np-dir 正是在那条路上写的。所以这里显式驱动一次，
+      // 否则 npDir 恒为 (unset) —— 和上一轮 stageClass 恒空串是同一个坑。
+      // 传的是**猫的屏幕 x**（notepadSide 要的是屏幕坐标），与产品路径同一个入参口径。
+      await js('(() => { try { applyCapsuleShift(' + Math.round(catScreenX) + ', 120); return 1; }'
+             + '          catch (e) { return "threw: " + String(e); } })()');
       await sleep(400);
       return win.getBounds();
     };
@@ -204,6 +216,10 @@ function runProbeDecor() {
       let ap; try { ap = appliedCatShift; } catch (e) { ap = 'unreachable'; }
       out.applied = ap;
       out.crLeft = getComputedStyle(document.querySelector('#compact-row')).left;
+      // 2026-09-20 镜像换边：--np-dir 是判据本身，直接读出来，不靠 rel 反推。
+      // catScreenCx 用来对账 notepadSide 的入参（猫中心的**屏幕**坐标，不是帧内坐标）。
+      out.npDir = getComputedStyle(document.querySelector('#stage')).getPropertyValue('--np-dir').trim() || '(unset)';
+      out.catScreenCx = Math.round((window.screenX + catCx) * 10) / 10;
       return out; })()`);
 
     // rAF 逐帧采 rel(D)（只采装饰相对猫的偏移，与帧位置、与猫的绝对位置都无关）

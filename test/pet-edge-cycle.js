@@ -1025,8 +1025,37 @@ assert(/\.sidekick \{[^}]*left:\s*calc\(50% \+ var\(--cat-shift, 0px\)\)/.test(p
 // 78 = 猫半宽 60 + 肩外 18。
 // ⚠️ 这一条与 --cat-shift 那层补偿是**两件事**：--cat-shift 修「猫在帧内挪了装饰不跟」，
 // 这里修「锚错了参照物」。只补前者不换锚点，图标照样在屏幕外。
-assert(/\.notepad \{[^}]*left:\s*calc\(50% \+ 78px \+ var\(--cat-shift, 0px\)\)/.test(petCss),
-  '#notepad 必须锚猫中心 left:calc(50% + 78px + var(--cat-shift))：锚 right 会被帧右缘拖走（帧宽 320→620→900），贴右缘时整块出屏');
+//
+// ★★ 2026-09-20：`+78px` 换成等价的**对称**形式 `var(--np-dir, 1) * 97px - 19px`，
+// 为的是镜像换边（用户：「喵在右边的时候日记本在左边，喵在左边的时候日记本在右边，
+// 这样都在屏幕里面了」）。dir=+1 时 50%+97-19 = 50%+78，与上面那版**逐像素相同**，
+// 所以上面整段论证一个字都不失效；dir=-1 时落到左肩。
+// 97 = 猫半宽 60 + 肩外 18 + 图标半宽 19 = **图标中心**相对猫中心的距离，两侧同一个数
+// （左缘口径的 +78/-116 不对称，没法用一个符号乘出来），再 -19 换回 left 锚点。
+// 为什么必须换边而不是像胶囊那样往内挪：钳的是猫本体（main.js clampCatOrigin），猫贴死
+// 右缘时猫占[1320,1440]、猫的右缘**就是**屏幕缘，右肩外的一切必然出屏，没有位移量能救。
+// 按外接盒 42.9 算（图标带 rotate(-8deg)，38 会漏算 2.5px/侧）：
+//   贴死左缘 猫[0,120]     挂右肩 [138.0,180.9] ✓   挂左肩 [-60.9,-18.0] 出屏左 61px
+//   贴死右缘 猫[1320,1440] 挂右肩 [1458.0,1500.9] 出屏右 61px   挂左肩 [1259.1,1302.0] ✓
+// 即换边是唯一全在屏内的摆法。判据 + 滞回在 shared/pet-geometry.js notepadSide。
+assert(/\.notepad \{[^}]*left:\s*calc\(50% \+ var\(--np-dir, 1\) \* 97px - 19px \+ var\(--cat-shift, 0px\)\)/.test(petCss),
+  '#notepad 必须锚猫中心 + 可镜像的 --np-dir：锚 right 会被帧右缘拖走（帧宽 320→620→900）、贴右缘时整块出屏；固定挂右肩则贴右缘时出屏 61px');
+// dir 必须有 fallback `1`：JS 没来得及写（首帧）或 PetGeometry 缺失时要退回右肩默认，
+// 不能解析失败 —— var() 无 fallback 时整条 calc 变 invalid at computed-value time，
+// left 退成 auto，图标会掉到 #stage 左上角。
+// ⚠️ 必须查「块内**每一处** --np-dir 都带 fallback」，不能只查「存在一处带 fallback 的」：
+// 后者在主写法还在的前提下恒绿，变异验证（M2'：另加一条 `var(--np-dir)`）实测空转通过。
+{
+  const decls = petCss.replace(/\/\*[\s\S]*?\*\//g, '');
+  const block = decls.match(/\.notepad \{[^}]*\}/);
+  assert(block, '找不到 .notepad 规则块');
+  const uses = block[0].match(/var\(\s*--np-dir[^)]*\)/g) || [];
+  assert(uses.length > 0, '.notepad 必须用 --np-dir 才能镜像换边');
+  for (const use of uses) {
+    assert(/var\(\s*--np-dir\s*,\s*1\s*\)/.test(use),
+      `--np-dir 每一处都必须带 fallback 1，发现裸用：${use} —— 首帧 JS 还没写，缺 fallback 整条 calc 失效、left 退成 auto`);
+  }
+}
 // 负向钉：右缘那条写法不能悄悄回来。必须先剥注释再查 —— 上面那段注释里就写着
 // `right:44` 当反面教材，直接对原文 test 会把注释当成声明、永远红（实测踩过）。
 {
@@ -1044,6 +1073,61 @@ assert(/\.notepad \{[^}]*left:\s*calc\(50% \+ 78px \+ var\(--cat-shift, 0px\)\)/
 // top:9 复现同一相对位置。⚠️ 按结构补的，探针至今造不出 edge-below（见下面 stageClass 那段）。
 assert(/#stage\.edge-below \.notepad \{[^}]*top:\s*9px;[^}]*bottom:\s*auto/.test(petCss),
   '#notepad 必须有 edge-below 覆盖：只写 bottom 会在猫贴屏幕顶时掉到猫下方约 620px');
+
+// ★★ 2026-09-20 镜像换边：--np-dir 的写入通道 + notepadSide 的行为。
+//
+// 通道必须挂在 applyCapsuleShift 里，理由是覆盖面：三个入口（resize 后的
+// applyPendingEdgeLayout、!willResize 的就地分支、拖动途中 1311 那次）都只经由它，
+// 自己另找时机必漏其一 —— 漏掉拖动那次就得松手才翻边，漏掉就地那次贴边会卡住。
+assert(/function applyCapsuleShift[\s\S]{0,900}?applyNotepadSide\(petScreenX, petWidth\)/.test(petJs),
+  'applyNotepadSide 必须由 applyCapsuleShift 调用：那是唯一同时覆盖 resize / 就地 / 拖动三条路的时机');
+assert(/function applyNotepadSide[\s\S]{0,900}?setProperty\('--np-dir'/.test(petJs),
+  'applyNotepadSide 必须写 --np-dir');
+// 必须传 prev，否则滞回失效 —— 没有 prev 时 notepadSide 退化成纯阈值函数，
+// 拖动途中指针在阈值上抖 ±1px 会让图标反复跳 2*97=194px。
+assert(/function applyNotepadSide[\s\S]{0,900}?prev:\s*appliedNotepadSide/.test(petJs),
+  'applyNotepadSide 必须把上一次的取值传回 notepadSide：不传就没有滞回，拖动到阈值上图标会反复跳 194px');
+// 绝不能借道 #stage.edge-left/.edge-right 实现换边：那套是**整列**翻转（align-items
+// 甩到窗口缘），为绕开旧的钳窗口死区而生，2026-09-17 退役，test/popup-style.js 有两条
+// 断言禁止回归。这里只换一个装饰挂哪边，猫本体不动、不涉及帧移 —— 也因此不吃 H3
+// 「凡需帧内补偿的方案都抖」那笔账（没有补偿、没有主进程反向帧移）。
+{
+  const decls = petCss.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert(!/edge-(?:left|right)/.test(decls),
+    '镜像换边不许复活横向贴边 class：那是整列翻转的退役机制，popup-style.js 已禁止');
+}
+
+// notepadSide 的行为钉在纯函数上（不依赖 Electron，这里能直接跑）。
+{
+  const WA = { x: 0, y: 30, width: 1440, height: 806 };
+  const side = (x, prev = 1) => geometry.notepadSide({ petCenterX: x, workArea: WA, prev });
+  // 用户要的两个场景，直接钉：
+  assert.strictEqual(side(60), 1, '猫贴死左缘（中心 60）时日记本必须挂右肩：挂左肩出屏左 61px');
+  assert.strictEqual(side(1380), -1, '猫贴死右缘（中心 1380）时日记本必须翻到左肩：挂右肩出屏右 61px');
+  assert.strictEqual(side(720), 1, '屏幕正中时保持默认右肩');
+  // 阈值：center + 97 + 42.92/2 > wa.right - 4  →  center > 1317.54
+  assert.strictEqual(side(1317), 1, '1317 时右肩还放得下，不该提前翻');
+  assert.strictEqual(side(1319), -1, '1319 时右肩放不下，必须翻');
+  // 滞回带 (1293.54, 1317.54]，宽 24px：带内保持左肩，出带才回右肩。
+  assert.strictEqual(side(1316, -1), -1, '已在左肩、center 1316 仍在滞回带内 → 保持左肩');
+  assert.strictEqual(side(1300, -1), -1, '滞回带内不许翻回');
+  assert.strictEqual(side(1293, -1), 1, '越过滞回带后必须回默认右肩');
+  // 消抖：阈值上 ±1.5px 抖 40 次，最多翻 1 次（第一次越界那下）。
+  let prev = 1; let flips = 0;
+  for (let i = 0; i < 40; i++) {
+    const next = side(1318 + (i % 2 ? -1.5 : 1.5), prev);
+    if (next !== prev) flips++;
+    prev = next;
+  }
+  assert(flips <= 1, `阈值上 ±1.5px 抖动 40 次只该翻 1 次，实际 ${flips} 次 —— 滞回没生效`);
+  // 两侧都放不下 / 入参非法 → 保持上一次，绝不能默认回 +1（那会在窄工作区里抖）。
+  assert.strictEqual(geometry.notepadSide({ petCenterX: 100, workArea: { x: 0, y: 0, width: 150, height: 800 }, prev: -1 }), -1,
+    '工作区窄到两侧都放不下时必须保持上一次取值，别抖');
+  assert.strictEqual(geometry.notepadSide({ petCenterX: NaN, workArea: WA, prev: -1 }), -1,
+    'petCenterX 非法时保持上一次取值');
+  // CSS 与纯函数用同一套几何：dir=+1 必须等于换边前的 +78px，否则两边会悄悄漂开。
+  assert.strictEqual(97 - 19, 78, '97(图标中心口径) - 19(图标半宽) 必须等于旧的 78px 左缘口径');
+}
 // #prop 不吃变量（它按猫的实时 rect 算），改成 applyCatShift 里重调 positionProp。
 // 实测 .peek 那条路本来就会重算（setStageEdgeLayout 里有一次）、.ask 那条路不会，
 // 于是贴右缘开 .ask 时道具偏了整整 −50px。

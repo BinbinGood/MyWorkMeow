@@ -405,12 +405,26 @@ html, body {
      50% 就是猫中心，与帧宽无关：#stage align-items:center 居中 #compact-row，
      #compact-row align-items:center 居中 #cat，所以猫中心恒在 #stage 的 50%
      （#compact-row 是 max-content、比猫宽，但居中套居中不改变这个等式）。
-     +78px = 猫半宽 60 + 肩外 18，复现初始设计的相对位置。
+     +78px = 猫半宽 60 + 肩外 18，复现初始设计的相对位置（现在写成等价的对称形式
+     `var(--np-dir)*97px - 19px`，见下面那段；dir=+1 时逐像素相同）。
      --cat-shift 的符号跟着变成 **+**（与 .sleep/.sidekick 一致）：锚 left 时猫往右
      挪 +50，图标就该跟着 +50。旧的 `-` 是 right 那个写法要的，换锚点后照抄会让
      偏移**翻倍**。三条装饰现在同一个符号，少一个反向的坑。 */
   position: absolute;
-  left: calc(50% + 78px + var(--cat-shift, 0px));
+  /* ★ 2026-09-20：改成**镜像**写法 —— 猫贴右缘时图标翻到左肩，贴左缘时回右肩，
+     这样它永远全在屏内（用户报的「都在屏幕里面了，能看到」）。
+     --np-dir 由 JS 写（renderer/pet.js applyNotepadSide ← applyCapsuleShift，和
+     --chip-shift/--pop-shift 同一个时机），+1 = 右肩（默认），-1 = 左肩。
+     为什么必须换边而不是往内挪：钳的是猫本体，猫贴死右缘时猫的右缘**就是**屏幕缘，
+     右肩外的一切必然出屏（实测挂错边固定出屏 61px），没有位移量能救。判据与滞回
+     都在 shared/pet-geometry.js notepadSide 里，那儿有完整数字。
+     为什么用「图标中心 ± 97」而不是「左缘 +78 / -116」：后者两侧不对称，没法用一个
+     符号乘出来。97 = 猫半宽 60 + 肩外 18 + 图标半宽 19，两侧同一个数；再减 19 换回
+     left 锚点。dir=+1 时 50%+97-19 = 50%+78px，与换边前**逐像素相同**（也正是
+     probeDecor.py 量的 rel，实测 +96.5，可直接对账）。
+     ⚠️ 不能用 #stage.edge-left/.edge-right 做这件事：那套是整列翻转、2026-09-17
+     退役、test/popup-style.js 两条断言禁止回归（见那里）。这里只动一个装饰。 */
+  left: calc(50% + var(--np-dir, 1) * 97px - 19px + var(--cat-shift, 0px));
   /* 竖直：bottom 量的是**帧底**，只在正常（justify-content:flex-end）那一路等于
      猫所在列的底。#stage.edge-below 把整列翻成 flex-start、猫跑到帧顶，帧底就落到
      猫下方约 620px —— 图标掉下去。这与 E2 那个 .action-pop（`top:14px` 按帧顶定位、

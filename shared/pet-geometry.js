@@ -14,6 +14,15 @@
   // 所以它是常量而不是测量值；main.js 的 PET_BODY_W 是同一个数。
   const PET_BODY_W = 120;
 
+  // #notepad 的几何，与 renderer/pet.css 的 .notepad 一一对应，改一处必须改两处。
+  // ICON_W/SHOULDER_GAP 复现初始提交（86f012f，帧宽 320）里 right:44 的相对位置：
+  // 猫占 100..220、图标落 238..276，即肩外 18px。
+  // ICON_BOX_W 是 rotate(-8deg) 后的外接盒：38·cos8° + 38·sin8° = 42.92，
+  // probeDecor.py 实测 w:42.9 —— 判越界必须用它，用 38 会每侧漏算 2.5px。
+  const NOTEPAD_ICON_W = 38;
+  const NOTEPAD_SHOULDER_GAP = 18;
+  const NOTEPAD_ICON_BOX_W = 42.92;
+
   function normalizeRect(rect) {
     const x = Number(rect && rect.x) || 0;
     const y = Number(rect && rect.y) || 0;
@@ -374,5 +383,54 @@
     return { direction: chosen.dir, points };
   }
 
-  return { chooseRestingLayout, choosePopupLayout, chooseDragVerticalLayout, capsuleShift, radialLayout, cornerMenuLayout };
+  // 日记本图标（#notepad）挂猫的哪一侧肩膀：+1 = 右肩（默认），-1 = 左肩。
+  //
+  // 为什么需要换边，而不是像胶囊那样「往内挪一点」：图标挂在猫**肩外**，而钳猫
+  // （main.js clampCatOrigin）让猫贴死屏幕缘时猫自己的那一侧缘**就是**屏幕缘 ——
+  // 猫占 [1320,1440] 时右肩外的一切必然出屏，没有任何位移量能救。实测两种摆法：
+  //   贴死左缘（猫 [0,120]）  挂右肩 [138.0,180.9] ✓   挂左肩 [-60.9,-18.0] 出屏左 61px
+  //   贴死右缘（猫 [1320,1440]）挂右肩 [1458.0,1500.9] 出屏右 61px   挂左肩 [1259.1,1302.0] ✓
+  // 即：换边是唯一能全在屏内的摆法，不是审美选择。
+  //
+  // ⚠️ 用图标的**外接盒** 42.9px 而不是 38px 判越界：图标带 transform:rotate(-8deg)，
+  // 38·cos8° + 38·sin8° = 42.92（probeDecor.py 实测 w:42.9），按 38 算会漏 2.5px/侧。
+  //
+  // 为什么不复活 #stage.edge-left/.edge-right：那套是**整列**翻转（align-items 甩到
+  // 窗口缘），为绕开旧的钳窗口死区而生，已于 2026-09-17 退役且被
+  // test/popup-style.js 两条断言禁止回归（理由见本文件顶部那段长注释）。这里只换
+  // **一个装饰**挂哪边，猫本体一动不动、不涉及帧移，和那套机制无关，也不吃 H3
+  // 「帧内补偿必抖」的账（没有补偿，没有主进程反向帧移，单个属性值变化而已）。
+  //
+  // 滞回（hysteresis）是必需的，不是保险：dir 只**读**猫的位置、不反过来移动猫，
+  // 所以静止时不会自激；但拖动途中指针在阈值上抖 ±1px，会让图标反复跳 2*97=194px。
+  // 带内保持上一次的选择 → 越界才翻、回到带内不翻回。prev 缺省 +1（首次按默认右肩）。
+  function notepadSide({ petCenterX, workArea, margin = 4, petWidth = PET_BODY_W,
+    iconWidth = NOTEPAD_ICON_W, gap = NOTEPAD_SHOULDER_GAP,
+    iconBoxWidth = NOTEPAD_ICON_BOX_W, hysteresis = 24, prev = 1 }) {
+    const wa = normalizeRect(workArea);
+    const center = Number(petCenterX);
+    const last = Number(prev) < 0 ? -1 : 1;
+    if (!Number.isFinite(center)) return last;
+    const pad = Math.max(0, Number(margin) || 0);
+    const body = Math.max(0, Number(petWidth) || 0);
+    // 图标中心相对猫中心的距离，两侧对称（CSS 那边用的是同一个数）。
+    const rel = body / 2 + Math.max(0, Number(gap) || 0) + Math.max(0, Number(iconWidth) || 0) / 2;
+    const halfBox = Math.max(0, Number(iconBoxWidth) || 0) / 2;
+    const slack = Math.max(0, Number(hysteresis) || 0);
+
+    // 两侧都放不下（工作区窄到离谱）→ 保持上一次，别抖。
+    if (rel + halfBox > (wa.width - 2 * pad) / 2) return last;
+
+    const rightFits = (center + rel + halfBox) <= (wa.right - pad);
+    const leftFits = (center - rel - halfBox) >= (wa.x + pad);
+    // 只有一侧放得下：无条件用那侧，滞回不适用（越界比抖更糟）。
+    if (rightFits && !leftFits) return 1;
+    if (leftFits && !rightFits) return -1;
+    if (!rightFits && !leftFits) return last;
+    // 两侧都放得下 → 回默认右肩，但要越过滞回带才算「真的回来了」。
+    if (last === -1 && (center + rel + halfBox) > (wa.right - pad - slack)) return -1;
+    return 1;
+  }
+
+  return { chooseRestingLayout, choosePopupLayout, chooseDragVerticalLayout, capsuleShift, notepadSide, radialLayout, cornerMenuLayout };
 });
