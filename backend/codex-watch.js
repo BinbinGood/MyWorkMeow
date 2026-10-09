@@ -57,6 +57,15 @@ const TOOL_MAP = {
 };
 const mapTool = (name) => TOOL_MAP[name] || String(name || 'Tool');
 
+function needsUserDecision(payload) {
+  if (payload.name === 'request_user_input') return true;
+  if (payload.name !== 'exec_command') return false;
+  try {
+    const args = typeof payload.arguments === 'string' ? JSON.parse(payload.arguments) : payload.arguments;
+    return args && args.sandbox_permissions === 'require_escalated';
+  } catch { return false; }
+}
+
 function fileSessionId(fp, metaId) {
   if (metaId) return String(metaId);
   // rollout-2026-07-11T04-50-16-<uuid>.jsonl → uuid 兜底
@@ -275,7 +284,7 @@ function createCodexWatch(deps) {
     t.turnActive = true;
     t.didWorkThisTurn = false;
     t.lastTool = null;
-    t.pendingUserInputCallId = null;
+    t.pendingDecisionCallId = null;
   }
 
   function markWork(t) {
@@ -284,7 +293,7 @@ function createCodexWatch(deps) {
   }
 
   function activeTurnState(t) {
-    if (t.pendingUserInputCallId) return 'notification';
+    if (t.pendingDecisionCallId) return 'notification';
     return t.didWorkThisTurn ? 'working' : 'thinking';
   }
 
@@ -319,9 +328,12 @@ function createCodexWatch(deps) {
     if (type === 'response_item') {
       const pt = p.type;
       if (pt === 'function_call' || pt === 'custom_tool_call') {
-        if (p.name === 'request_user_input') {
-          t.pendingUserInputCallId = p.call_id || true;
-          update(t, 'notification', 'Notification', { notificationType: 'request_user_input' });
+        if (needsUserDecision(p)) {
+          t.pendingDecisionCallId = p.call_id || true;
+          if (p.name === 'exec_command') markWork(t);
+          update(t, 'notification', 'Notification', {
+            notificationType: p.name === 'exec_command' ? 'exec_approval_request' : 'request_user_input',
+          });
           return;
         }
         markWork(t);
@@ -332,9 +344,9 @@ function createCodexWatch(deps) {
         t.lastTool = 'WebSearch';
         update(t, 'working', 'PreToolUse', { toolName: 'WebSearch' });
       } else if (pt === 'function_call_output' || pt === 'custom_tool_call_output') {
-        if (t.pendingUserInputCallId) {
-          if (t.pendingUserInputCallId === true || p.call_id === t.pendingUserInputCallId) {
-            t.pendingUserInputCallId = null;
+        if (t.pendingDecisionCallId) {
+          if (t.pendingDecisionCallId === true || p.call_id === t.pendingDecisionCallId) {
+            t.pendingDecisionCallId = null;
             update(t, activeTurnState(t), 'ElicitationResult');
           }
           return;
@@ -388,14 +400,14 @@ function createCodexWatch(deps) {
         update(t, 'attention', 'Stop', extra);
         t.turnActive = false;
         t.didWorkThisTurn = false;
-        t.pendingUserInputCallId = null;
+        t.pendingDecisionCallId = null;
         break;
       }
       case 'turn_aborted':
         update(t, 'idle', 'TurnAborted');
         t.turnActive = false;
         t.didWorkThisTurn = false;
-        t.pendingUserInputCallId = null;
+        t.pendingDecisionCallId = null;
         break;
       case 'context_compacted':
         // 同 'compacted'：长操作要自报长 TTL，别用 20s 的默认值。
@@ -484,14 +496,14 @@ function createCodexWatch(deps) {
         if (!obj) continue;
         const p = obj.payload || {};
         if (obj.type === 'response_item') {
-          if ((p.type === 'function_call' || p.type === 'custom_tool_call') && p.name === 'request_user_input') {
-            t.pendingUserInputCallId = p.call_id || true;
+          if ((p.type === 'function_call' || p.type === 'custom_tool_call') && needsUserDecision(p)) {
+            t.pendingDecisionCallId = p.call_id || true;
             state = 'notification';
             continue;
           }
-          if (t.pendingUserInputCallId && (p.type === 'function_call_output' || p.type === 'custom_tool_call_output')) {
-            if (t.pendingUserInputCallId === true || p.call_id === t.pendingUserInputCallId) {
-              t.pendingUserInputCallId = null;
+          if (t.pendingDecisionCallId && (p.type === 'function_call_output' || p.type === 'custom_tool_call_output')) {
+            if (t.pendingDecisionCallId === true || p.call_id === t.pendingDecisionCallId) {
+              t.pendingDecisionCallId = null;
               state = 'working';
             }
             continue;
@@ -505,11 +517,11 @@ function createCodexWatch(deps) {
         if (obj.type !== 'event_msg') continue;
         if (p.type === 'user_message' && !title) title = promptTitle(String(p.message || ''));
         if (p.type === 'user_message' || p.type === 'task_started') {
-          t.pendingUserInputCallId = null;
+          t.pendingDecisionCallId = null;
           state = 'thinking';
         }
         if (p.type === 'task_complete' || p.type === 'turn_aborted') {
-          t.pendingUserInputCallId = null;
+          t.pendingDecisionCallId = null;
           state = 'idle';
         }
         if (p.type === 'patch_apply_end' || p.type === 'mcp_tool_call_end' || p.type === 'web_search_end') state = 'working';
@@ -611,7 +623,7 @@ function createCodexWatch(deps) {
       fp, sid: null, offset: cursor ? cursor.offset : 0, carry: cursor ? cursor.carry : '',
       ignored: false, sawMeta: false, cwd: null, model: null, lastTool: null,
       lastAgentMessage: null, titleSet: false, turnActive: false, didWorkThisTurn: false,
-      pendingUserInputCallId: null,
+      pendingDecisionCallId: null,
     };
   }
 

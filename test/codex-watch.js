@@ -299,6 +299,61 @@ check('request_user_input → 等你回复；只等匹配的回复，不展示�
   assert.strictEqual(events.filter((event) => event.kind === 'needsinput').length, 1);
 });
 
+check('原生命令审批 → 等你回复；普通命令不误报，撤回后解除等待', () => {
+  const { root, dir } = mkSessions();
+  const events = [];
+  const core = createCore({ onActivity: (activity) => events.push(...adapter.activityToEvents(activity)) });
+  const watcher = createCodexWatch({ core, sessionsDir: root, pollMs: 999999 });
+  watcher.tick();
+  const fp = path.join(dir, `rollout-approval-${UUID_B}.jsonl`);
+  fs.writeFileSync(fp, meta(UUID_B) + line({ type: 'event_msg', payload: { type: 'task_started' } }));
+  watcher.tick();
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: {
+    type: 'function_call', name: 'exec_command', call_id: 'ordinary',
+    arguments: JSON.stringify({ cmd: 'pwd' }),
+  } }));
+  watcher.tick();
+  assert.strictEqual(core.getSession(UUID_B).state, 'working');
+  assert.strictEqual(events.filter((event) => event.kind === 'needsinput').length, 0);
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: {
+    type: 'function_call', name: 'exec_command', call_id: 'approval',
+    arguments: JSON.stringify({ cmd: 'open -a Calculator', sandbox_permissions: 'require_escalated', justification: 'test' }),
+  } }));
+  watcher.tick();
+  assert.strictEqual(core.getSession(UUID_B).state, 'notification');
+  assert.strictEqual(core.getSession(UUID_B).notificationType, 'exec_approval_request');
+  assert.strictEqual(events.at(-1).kind, 'needsinput');
+  assert.strictEqual(events.at(-1).choice.kind, 'continue');
+  assert(!JSON.stringify(events).includes('open -a Calculator'));
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: { type: 'reasoning' } }));
+  watcher.tick();
+  assert.strictEqual(core.getSession(UUID_B).state, 'notification');
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: {
+    type: 'function_call_output', call_id: 'approval', output: 'aborted by user',
+  } }));
+  watcher.tick();
+  assert.strictEqual(core.getSession(UUID_B).state, 'working');
+  assert.strictEqual(events.filter((event) => event.kind === 'needsinput').length, 1);
+});
+
+check('启动期间仍在审批的命令恢复等待状态，不回放旧气泡', () => {
+  const { root, dir } = mkSessions();
+  const fp = path.join(dir, `rollout-pending-approval-${UUID_A}.jsonl`);
+  fs.writeFileSync(fp, meta(UUID_A)
+    + line({ type: 'response_item', payload: {
+      type: 'function_call', name: 'exec_command', call_id: 'approval',
+      arguments: JSON.stringify({ cmd: 'open -a Calculator', sandbox_permissions: 'require_escalated' }),
+    } }));
+  const core = fakeCore();
+  const watcher = createCodexWatch({ core, sessionsDir: root });
+  watcher.tick();
+  assert.strictEqual(core.seeds[0].state, 'notification');
+  assert.strictEqual(core.updates.length, 0);
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'approval' } }));
+  watcher.tick();
+  assert.strictEqual(core.updates.at(-1).event, 'ElicitationResult');
+});
+
 check('启动时已有的待确认请求恢复等你回复，但不回放历史气泡', () => {
   const { root, dir } = mkSessions();
   const fp = path.join(dir, `rollout-pending-${UUID_A}.jsonl`);
