@@ -10,6 +10,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createCodexWatch, toContextUsage, mapTool } = require('../backend/codex-watch');
+const { resolveCodexSessionsDir } = require('../backend/codex-cli-resolver');
+const { createCore } = require('../backend/core');
+const adapter = require('../backend/adapter');
 
 let failures = 0;
 function check(name, fn) {
@@ -46,6 +49,24 @@ const line = (o) => JSON.stringify(o) + '\n';
 const meta = (id, extra = {}) => line({ type: 'session_meta', payload: { id, session_id: id, cwd: '/tmp/proj', originator: 'codex-tui', thread_source: 'user', ...extra } });
 
 console.log('[C1] 纯函数：payload 形状转换');
+check('Codex 会话目录：显式路径 > CODEX_HOME > 默认目录 > macOS Orca 目录', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'workmeow-codex-path-'));
+  const orca = path.join(home, 'Library', 'Application Support', 'orca', 'codex-runtime-home', 'home', 'sessions');
+  const standard = path.join(home, '.codex', 'sessions');
+  const options = { homeDir: home, env: {}, platform: 'darwin' };
+  try {
+    assert.strictEqual(resolveCodexSessionsDir(options), standard);
+    fs.mkdirSync(orca, { recursive: true });
+    assert.strictEqual(resolveCodexSessionsDir(options), orca);
+    assert.strictEqual(resolveCodexSessionsDir({ ...options, platform: 'win32' }), standard);
+    fs.mkdirSync(standard, { recursive: true });
+    assert.strictEqual(resolveCodexSessionsDir(options), standard);
+    assert.strictEqual(resolveCodexSessionsDir({ ...options, env: { CODEX_HOME: '/other/codex' } }), '/other/codex/sessions');
+    assert.strictEqual(resolveCodexSessionsDir({ ...options, sessionsDir: '/custom/sessions' }), '/custom/sessions');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
 check('toContextUsage：last_token_usage/total ÷ window → percent(source=codex)', () => {
   const cu = toContextUsage({ last_token_usage: { total_tokens: 274209 }, model_context_window: 353400 });
   assert.strictEqual(cu.used, 274209);
@@ -82,7 +103,29 @@ check('meta+尾部 user_message/token_count → seedSession(不发事件)', () =
   assert.strictEqual(core.seeds[0].cwd, '/tmp/proj');
   assert.strictEqual(core.seeds[0].sessionTitle, '帮我修个 bug');
   assert.strictEqual(core.seeds[0].contextUsage.percent, 10);
+  assert.strictEqual(core.seeds[0].state, 'thinking');
   assert.strictEqual(core.updates.length, 0, 'backfill 不应发 updateSession');
+});
+
+check('启动时正在执行的任务恢复 working，已完成的历史保持 idle，均不触发事件', () => {
+  const { root, dir } = mkSessions();
+  const running = path.join(dir, `rollout-running-${UUID_A}.jsonl`);
+  const finished = path.join(dir, `rollout-finished-${UUID_B}.jsonl`);
+  const events = meta(UUID_A)
+    + line({ type: 'event_msg', payload: { type: 'task_started' } })
+    + line({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command' } });
+  fs.writeFileSync(running, events);
+  fs.writeFileSync(finished, events.replaceAll(UUID_A, UUID_B)
+    + line({ type: 'event_msg', payload: { type: 'task_complete' } }));
+  const core = fakeCore();
+  const watcher = createCodexWatch({ core, sessionsDir: root });
+  watcher.tick();
+  assert.strictEqual(core.seeds.find((session) => session.id === UUID_A).state, 'working');
+  assert.strictEqual(core.seeds.find((session) => session.id === UUID_B).state, 'idle');
+  assert.deepStrictEqual(core.updates, []);
+  fs.appendFileSync(running, line({ type: 'response_item', payload: { type: 'reasoning' } }));
+  watcher.tick();
+  assert.strictEqual(core.updates.at(-1).state, 'working');
 });
 
 check('文件 mtime 落后但 rollout 仍在追加 → 仍跟踪并接收事件', () => {
@@ -223,6 +266,69 @@ check('turn_aborted → TurnAborted(idle)；approval → Notification', () => {
   w.tick();
   const evs = core.updates.map((u) => `${u.event}:${u.state}`);
   assert.deepStrictEqual(evs, ['SessionStart:idle', 'Notification:notification', 'TurnAborted:idle']);
+});
+
+check('request_user_input → 等你回复；只等匹配的回复，不展示请求内容', () => {
+  const { root, dir } = mkSessions();
+  const events = [];
+  const core = createCore({ onActivity: (activity) => events.push(...adapter.activityToEvents(activity)) });
+  const watcher = createCodexWatch({ core, sessionsDir: root, pollMs: 999999 });
+  watcher.tick();
+  const fp = path.join(dir, `rollout-input-${UUID_B}.jsonl`);
+  fs.writeFileSync(fp, meta(UUID_B) + line({ type: 'event_msg', payload: { type: 'task_started' } }));
+  watcher.tick();
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: {
+    type: 'function_call', name: 'request_user_input', call_id: 'input-1', arguments: '{"question":"私人命令"}',
+  } }));
+  watcher.tick();
+  assert.strictEqual(core.getSession(UUID_B).state, 'notification');
+  assert.strictEqual(core.getSession(UUID_B).notificationType, 'request_user_input');
+  assert.strictEqual(events.at(-1).kind, 'needsinput');
+  assert.strictEqual(events.at(-1).choice.kind, 'continue');
+  assert.strictEqual(events.at(-1).choice.allowInput, false);
+  assert(!JSON.stringify(events).includes('私人命令'));
+  assert(!events.some((event) => event.kind === 'operation' && event.tool === 'request_user_input'));
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: { type: 'reasoning' } })
+    + line({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'other', output: 'irrelevant' } }));
+  watcher.tick();
+  assert.strictEqual(core.getSession(UUID_B).state, 'notification');
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'input-1', output: 'done' } }));
+  watcher.tick();
+  assert.strictEqual(core.getSession(UUID_B).state, 'thinking');
+  assert.strictEqual(core.getSession(UUID_B).notificationType, null);
+  assert.strictEqual(events.filter((event) => event.kind === 'needsinput').length, 1);
+});
+
+check('启动时已有的待确认请求恢复等你回复，但不回放历史气泡', () => {
+  const { root, dir } = mkSessions();
+  const fp = path.join(dir, `rollout-pending-${UUID_A}.jsonl`);
+  fs.writeFileSync(fp, meta(UUID_A)
+    + line({ type: 'event_msg', payload: { type: 'task_started' } })
+    + line({ type: 'response_item', payload: { type: 'function_call', name: 'request_user_input', call_id: 'input-2' } }));
+  const core = fakeCore();
+  const watcher = createCodexWatch({ core, sessionsDir: root });
+  watcher.tick();
+  assert.strictEqual(core.seeds[0].state, 'notification');
+  assert.strictEqual(core.updates.length, 0);
+  fs.appendFileSync(fp, line({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'input-2' } }));
+  watcher.tick();
+  assert.strictEqual(core.updates.at(-1).event, 'ElicitationResult');
+  assert.notStrictEqual(core.updates.at(-1).state, 'notification');
+});
+
+check('backfill 在已完成的请求后不残留等待状态', () => {
+  const { root, dir } = mkSessions();
+  const fp = path.join(dir, `rollout-completed-input-${UUID_A}.jsonl`);
+  fs.writeFileSync(fp, meta(UUID_A)
+    + line({ type: 'response_item', payload: { type: 'function_call', name: 'request_user_input', call_id: 'input-3' } })
+    + line({ type: 'event_msg', payload: { type: 'turn_aborted' } }));
+  const core = fakeCore();
+  const watcher = createCodexWatch({ core, sessionsDir: root });
+  watcher.tick();
+  assert.strictEqual(core.seeds[0].state, 'idle');
+  fs.appendFileSync(fp, line({ type: 'event_msg', payload: { type: 'task_started' } }));
+  watcher.tick();
+  assert.strictEqual(core.updates.at(-1).state, 'thinking');
 });
 
 console.log('[C4] 过滤与健壮性');

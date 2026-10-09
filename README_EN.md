@@ -19,11 +19,12 @@
 > [!IMPORTANT]
 > **This is a macOS port of [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow), maintained independently in this repository.**
 >
-> The upstream project supports Windows x64 only. This fork makes it run on macOS, scoped to **status monitoring and token metering for Claude Code and WorkBuddy**:
+> The upstream project supports Windows x64 only. This fork supports **status monitoring and token metering for Claude Code, WorkBuddy, and Codex** on macOS:
 >
 > - ✅ Claude Code monitoring works on macOS from source (EPT CLI, the VS Code extension, cc-connect and friends all read the same `~/.claude/settings.json`, so one hook install covers every client)
 > - ✅ WorkBuddy is verified on macOS: the hook contract matches the agent kernel field by field (5/5 events delivered in an offline harness) and the usage fields are readable (248M tokens over 2563 rounds on this machine)
-> - ➖ Codex / TRAE / opencode are untouched — no macOS adaptation
+> - ✅ Codex local session status and usage support `CODEX_HOME` and Orca's macOS session directory (restart WorkMeow to pick up the change); subscription quota lookup is currently disabled
+> - ➖ TRAE / opencode remain unadapted on macOS
 > - ✅ Local macOS packaging works: `npm run package:mac` produces one arm64 DMG (**ad-hoc signed, not notarized** — the first launch needs a one-time approval in System Settings; Apple Silicon only)
 > - ➖ SSH remote monitoring is still not implemented; on macOS auto-update is **check-only**: Settings periodically checks this repository's releases and points you at the download page, but replacing the app stays manual (drag the DMG over the old copy). electron-updater is not involved — see the mac branch in `backend/updater.js`
 >
@@ -40,11 +41,10 @@ Switching between several agent windows just to check progress is distracting. W
 - **Session labels match the task names you see in WorkBuddy** — WorkBuddy's hook payload carries no title, so the desktop app opens its session store read-only (`sessions.title / custom_title` in `~/.workbuddy/workbuddy.db`) and shows "少样本底盘检测项目" instead of the date-stamped workspace folder; when the store is unreadable it falls back to the transcript title and then the folder name.
 - **Compaction no longer reports a false "just finished"** — `PreCompact` carries its own longer lifetime and clears the previous turn's completion badge (with `PostCompact` releasing it), so a compaction running for minutes keeps showing the sweeping state instead of snapping back to done.
 - **Unified usage view** — tokens, cache reads and writes, context windows, models, daily trends, and API-price estimates.
-- **Check Codex quota without opening Codex** — when Codex is installed, startup automatically discovers the native Codex Desktop CLI. Missing windows stay `--`, with no manual setup required.
-- **The tray lists the agents that are installed, not Codex by default** — every agent detected on this machine gets its own block at the top of the menu (no usage filter, no re-ordering, no truncation). Each block folds "name · quota · tokens · cost" into one line and wraps at the width limit on part boundaries, hanging continued lines under the name; blocks are separated by a divider. An agent without numbers yet still keeps its block and reads a status line instead of vanishing.
+- **The tray lists detected agents, not Codex by default** — each detected agent gets its own block. Available quota, tokens, and cost are shown together; Codex and Claude Code show local usage only. An agent without numbers retains a "no data" row.
 - **Integration health and repair** — verify all five agents, then repair or remove WorkMeow-managed integrations from Settings.
 - **One-click privacy mode** — right-click the cat to toggle the compact ON/OFF control, or use Settings, while keeping essential state and usage visible.
-- **Local-first operation** — conversations and usage stay on the machine; models.dev supplies public pricing while Codex authenticates and reads its own subscription quota.
+- **Local-first operation** — conversations and usage stay on the machine; models.dev supplies public pricing, and Codex subscription quota is not queried.
 - **Desktop-friendly controls** — drag, edge snapping, work peek, action center, system tray, auto-start (Windows / macOS), and scheduled break animations.
 
 ## Real state examples
@@ -83,7 +83,7 @@ WorkMeow stores only a processed copy under `~/.workmeow/pet-assets` for the cur
 | Agent | Integration | External configuration | In-pet approval | macOS |
 | --- | --- | --- | --- | --- |
 | Claude Code | Lifecycle hooks, transcript, and process data | Merge-safe WorkMeow hook install/uninstall | Supported | ✅ Verified |
-| Codex | Incremental local rollout JSONL reader; official App Server quota notifications | Does not modify Codex configuration or read credential files | Read-only alerts | ➖ Not ported |
+| Codex | Incremental local rollout JSONL reader | Does not modify Codex configuration or read credential files | Read-only alerts | ✅ Session status and usage (quota disabled) |
 | TRAE | Local IDE logs and process data | Installs a merge-safe hook only when TRAE is detected | Read-only alerts | ➖ Not ported |
 | WorkBuddy | Hooks, transcripts, usage and credit fields, read-only session-title store (`workbuddy.db`) | Installs a merge-safe hook only when WorkBuddy is detected (including the blocking `PermissionRequest`) | Supported (approvals + questions) | ✅ Status + usage + credits + task names verified |
 | opencode | Official plugin mechanism, events, and usage file | Installs/removes one standalone plugin file | Read-only alerts | ➖ Not ported |
@@ -172,7 +172,8 @@ Developer `npm` commands, regression tests, and the EXE packaging flow are docum
 - Claude Code, Codex, TRAE, WorkBuddy, and opencode session data is read and processed locally.
 - The local HTTP service binds to loopback only, and write endpoints require a fresh per-run token.
 - models.dev synchronization downloads a public price list only; transcripts, rollouts, permission contents, and usage statistics are not uploaded.
-- Codex quota uses one long-lived `codex app-server --stdio` connection. WorkMeow confirms the current account with `account/read` before reading quota and listening for updates. Codex owns authentication and upstream requests; WorkMeow does not read the contents of `~/.codex/auth.json` or call ChatGPT web endpoints. With file auth, replacing `auth.json` triggers an immediate reconnect. Keyring, auto, and ephemeral auth have no watchable file-event contract, so account changes converge through App Server account notifications, periodic `account/read`, and scheduled connection recycling. The UI therefore represents the account visible to WorkMeow's own App Server connection; it does not promise that a non-file auth switch in another process is detected immediately by the file watcher.
+- Codex status and usage come from local rollouts only. WorkMeow does not launch Codex App Server or query or display its subscription quota.
+- When a Codex rollout records a pending user-input or approval request, the pet shows a generic “waiting for your reply” bubble. Approve in Codex itself; WorkMeow does not show the command or approve it on your behalf.
 - Privacy mode from the cat menu or Settings masks on-screen details only; local monitoring and usage accounting continue, and pending items return when it is disabled.
 - Displayed cost is an estimate based on public API prices, not a subscription bill or a provider’s final invoice.
 
@@ -186,7 +187,6 @@ Codex rollouts ───┼──> local server / watchers ──> adapter / cor
 TRAE logs ────────┤                                      └────────> unified usage ledger
 WorkBuddy ────────┤
 opencode plugin ──┘
-Codex App Server ─────> tray context menu (5h / 7d) + low-quota bubble
 ```
 
 The main process owns watcher lifecycles, the tray, and windows. The backend state machine aggregates concurrent sessions. Renderers only receive a reduced status and event protocol. State vocabulary and priority are defined once in [`shared/states.js`](shared/states.js).

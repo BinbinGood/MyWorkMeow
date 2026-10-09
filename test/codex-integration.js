@@ -26,10 +26,12 @@ assert(/require\('\.\/backend\/codex-watch'\)/.test(main), 'main process must lo
 assert(/codexWatch\s*=\s*createCodexWatch\(/.test(main), 'main process must create the Codex watcher');
 assert(/codexWatch\.start\(\)/.test(main), 'main process must start the Codex watcher');
 assert(/if \(codexWatch\) codexWatch\.stop\(\)/.test(main), 'app shutdown must stop the Codex watcher');
-assert(/createCodexRateLimits\(/.test(main) && /codexRateLimits\.start\(\)/.test(main),
-  'main process must keep one Codex App Server quota client alive');
-assert(/if \(codexRateLimits\) codexRateLimits\.stop\(\)/.test(main),
-  'app shutdown must stop its Codex App Server child');
+assert(!/createCodexRateLimits\(|codexRateLimits\.start\(|codexQuotaBundle\(/.test(main),
+  'main process must not start Codex quota lookup');
+assert(/quota: supportsCreditQuota\(id\)/.test(main),
+  'Codex must use the same usage-only tray row as Claude Code');
+assert(!/stats\.codexQuota\s*=/.test(main),
+  'Codex quota must not be pushed to the bottom badge or popover');
 assert(/\['app-server', '--stdio'\]/.test(cliResolver), 'quota client must use the official stdio App Server');
 assert(/account\/rateLimits\/read/.test(rateLimits) && /account\/rateLimits\/updated/.test(rateLimits),
   'quota client must read and subscribe through the official rate-limit methods');
@@ -39,16 +41,11 @@ assert(/account\/read/.test(rateLimits), 'quota client must identify the current
 assert(!/appendFile|createWriteStream|console\.(?:log|info|warn|error)/.test(rateLimits),
   'quota refreshes must not create polling logs');
 assert(/\.slice\(-64\)/.test(rateLimits), 'the only persisted quota alert state must remain bounded');
-assert((main.match(/new Tray\(/g) || []).length === 1, 'Codex quota must reuse the existing tray slot');
+assert((main.match(/new Tray\(/g) || []).length === 1, 'usage must reuse the existing tray slot');
 assert(/assets', 'pingu-tray\.png'/.test(main), 'the tray must use the baked Pingu avatar');
-assert(!/refreshTrayQuotaIcon|renderTrayIcon/.test(main), 'quota must never replace the mascot tray icon');
+assert(!/refreshTrayQuotaIcon|renderTrayIcon/.test(main), 'usage must never replace the mascot tray icon');
 assert(/tray\.setToolTip\(baseTooltip\)/.test(main) && !/quotaTooltip/.test(main),
   'tray hover text must not expose quota details');
-// 额度就绪时不写状态行（省一行），只有失败时才把原因塞进这个 Agent 那一行。
-// 以前这段写死在 codexQuotaRows() 里，2026-09-15 跟着「每个 Agent 一行」搬到了
-// codexQuotaBundle() —— 但「健康时不占行」这条口径没变。
-assert(/status: ready \? null : quotaStatusLabel\(codexQuotaState\)/.test(main),
-  'healthy quota layout must stay compact and reserve the status row for failures');
 assert(/function enqueueQuotaAlert\(ev\)/.test(pet) && /showBubble\(text, 6500\)/.test(pet)
   && !/quota[^\n]*setState\(/.test(pet),
   'quota alerts must queue for the current bubble without adding a pet state');

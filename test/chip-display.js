@@ -45,6 +45,11 @@ assert.strictEqual(config.sanitize({ showQuota: false }).trayAgents.workbuddy, f
   'the legacy showQuota:false also migrates into the tray map');
 
 const w = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/agents.js', 'shared/pet-insights.js', 'renderer/icons.js', 'renderer/pet.js']);
+const usageOnly = loadRenderer(['shared/i18n.js', 'shared/states.js', 'shared/pet-assets.js', 'shared/agents.js', 'shared/pet-insights.js', 'renderer/icons.js', 'renderer/pet.js']);
+usageOnly.handlers.stats({ today: { tokens: 1234, cost: 0.123 }, sessions: [], bg: {}, idleMs: 1000,
+  quotaAgents: [{ id: 'codex', label: 'Codex', quota: null }] });
+assert.strictEqual(usageOnly.elements('chip-quota').hidden, true,
+  'usage-only Codex must not show a quota badge or a pending quota status');
 // 底部展示栏现在是「每个检测到的 Agent 一份额度」，所以渲染揣包里必须带上
 // quotaAgents 列表 —— 它同时驱动胶囊徽标、托盘行、设置页的开关。
 const codexAgent = { id: 'codex', label: 'Codex', quota: { kind: 'codex', ready: true, status: null } };

@@ -169,6 +169,30 @@ async function main() {
   assert(m.getStats().lifetime.tokens >= lifetimeBeforeRebuild,
     'rebuild preserves WorkBuddy lifetime when a rotated source is incomplete');
 
+  const corrections = createWorkbuddyMetering({
+    projectsDir: path.join(base, 'empty-projects'), stateDir: path.join(base, 'correction-state'),
+    pricingCachePath: cachePath, pricingOverridePath: path.join(base, 'absent-pricing.json'),
+  });
+  const correct = (input, output, cached) => corrections._processObject({}, 'stream.jsonl', {
+    role: 'assistant', timestamp: Date.now(), providerData: { model: 'gpt-4o', messageId: 'cache-correction',
+      usage: { inputTokens: input, outputTokens: output, totalTokens: input + output,
+        inputTokensDetails: [{ cached_tokens: cached }] } },
+  });
+  correct(1000, 100, 0);
+  delete corrections._state.messages['cache-correction'].cost;
+  correct(1000, 100, 800);
+  assert(Math.abs(corrections.getStats().today.cost - 0.0025) < 1e-12,
+    'late cache correction reduces cost without charging twice');
+  correct(500, 100, 400);
+  correct(1000, 110, 800);
+  const corrected = corrections.getStats();
+  assert(corrected.today.tokens === 1110 && corrected.today.msgs === 1,
+    'replayed partial usage does not lower the watermark');
+  assert(Math.abs(corrected.lifetime.cost - 0.0026) < 1e-12
+    && Math.abs(corrected.hourly.reduce((sum, value) => sum + value, 0) - 0.0026) < 1e-12,
+    'cost correction agrees across lifetime and hourly views');
+  corrections.stop();
+
   // ── 真实 WorkBuddy 行形状（2026-09 本机实测）──────────────────────────────
   // 一次模型请求落成 type:'function_call'（要工具）或 type:'message'（文本回复），
   // 转录里**没有** role/type === 'assistant' 的行。usage 挂在 providerData.usage

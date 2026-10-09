@@ -15,13 +15,12 @@
 
 const fs = require('fs');
 const fsp = fs.promises;
-const os = require('os');
 const path = require('path');
 const { STATE_DIR } = require('./paths');
 const { num, dayKey, mergeLifetime } = require('./metering-common');
 const { createMeterQueue } = require('./meter-queue');
+const { resolveCodexSessionsDir } = require('./codex-cli-resolver');
 
-const SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 const STATE_PATH = path.join(STATE_DIR, 'codex-usage.json');
 const PRICING_CACHE_PATH = path.join(STATE_DIR, 'pricing-cache.json'); // models.dev sync cache
 const PRICING_OVERRIDE_PATH = path.join(STATE_DIR, 'codex-pricing.json');
@@ -251,6 +250,11 @@ function deltaUsage(previous, current) {
   return out;
 }
 
+function sameUsage(previous, current) {
+  return previous && current.tokens > 0
+    && Object.keys(emptyUsage()).every((key) => num(previous[key]) === num(current[key]));
+}
+
 function parseTimestamp(value, fallback = Date.now()) {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value > 0 && value < 1e12 ? value * 1000 : value;
@@ -273,7 +277,7 @@ function addUsage(target, delta, messageDelta = 0) {
 }
 
 function createCodexMetering(options = {}) {
-  const sessionsDir = options.sessionsDir || SESSIONS_DIR;
+  const sessionsDir = resolveCodexSessionsDir({ sessionsDir: options.sessionsDir });
   const stateDir = options.stateDir || STATE_DIR;
   const statePath = options.statePath || path.join(stateDir, 'codex-usage.json');
 
@@ -413,13 +417,16 @@ function createCodexMetering(options = {}) {
       return;
     }
     if (object.type !== 'event_msg' || payload.type !== 'token_count') return;
+    const cumulative = normalizeUsage(payload.info && (payload.info.total_token_usage || payload.info.totalTokenUsage));
+    const repeated = sameUsage(fileState.quotaUsage, cumulative);
+    if (cumulative.tokens > 0) fileState.quotaUsage = cumulative;
     const at = parseTimestamp(object.timestamp, NaN);
     if (!Number.isFinite(at) || at < Date.now() - QUOTA_HISTORY_MS) return;
     const usage = normalizeUsage(payload.info && (payload.info.last_token_usage || payload.info.lastTokenUsage));
     const limits = payload.rate_limits || payload.rateLimits;
     const weekly = limits && [limits.primary, limits.secondary].find(w => w
       && (w.window_minutes ?? w.windowDurationMins) === 10080);
-    const row = { at, cost: usageCost(usage, priceFor(fileState.quotaModel || fileState.model, pricing)) };
+    const row = { at, cost: repeated ? 0 : usageCost(usage, priceFor(fileState.quotaModel || fileState.model, pricing)) };
     if (weekly) {
       row.resetsAt = weekly.resets_at ?? weekly.resetsAt;
       row.usedPercent = weekly.used_percent ?? weekly.usedPercent;
@@ -431,6 +438,7 @@ function createCodexMetering(options = {}) {
   async function backfillQuota(fileState, file) {
     if (Array.isArray(fileState.quotaEvents)) return;
     fileState.quotaEvents = [];
+    delete fileState.quotaUsage;
     if (!fileState.offset) return;
     // Upgrade existing ledgers without replaying their monetary/token totals.
     // The normal incremental pass below handles any unfinished trailing line.
@@ -467,6 +475,7 @@ function createCodexMetering(options = {}) {
     if (current.tokens <= 0) { recordQuotaEvent(fileState, object); return; }
     const sessionKey = fileState.sessionId || file;
     const previous = state.sessions[sessionKey] && state.sessions[sessionKey].usage;
+    if (!fileState.quotaUsage && previous) fileState.quotaUsage = previous;
     const ts = parseTimestamp(object.timestamp);
     // A rollout can be truncated/rotated while retaining a prefix that was
     // already consumed. During the replay pass, skip those old rows by their
@@ -474,6 +483,7 @@ function createCodexMetering(options = {}) {
     if (fileState.replaying && previous && ts <= Number(state.sessions[sessionKey].updatedAt || 0)
       && cumulative.tokens <= num(previous.tokens)) return;
     recordQuotaEvent(fileState, object);
+    if (sameUsage(previous, cumulative)) return;
     if (previous && cumulative.tokens < num(previous.tokens)) state.diagnostics.resets++;
     state.sessions[sessionKey] = { usage: cumulative, updatedAt: ts };
     record(ts, fileState.model, current);

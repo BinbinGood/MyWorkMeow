@@ -29,13 +29,12 @@
 // 读新增字节（单轮上限 512KB，读不完下一轮继续）。
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { detectEmotion } = require('./emotion');
 const { promptTitle } = require('./transcript');
 const { PRE_COMPACT_TTL_MS } = require('../shared/states');
+const { resolveCodexSessionsDir } = require('./codex-cli-resolver');
 
-const SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 const POLL_MS = 2500;
 const BACKFILL_MAX_AGE_MS = 30 * 60 * 1000; // 与 core 的 backfill 窗口对齐
 const IDLE_UNTRACK_MS = 60 * 60 * 1000;     // 文件超过 1h 没动 → 不再跟踪（再动会重新发现）
@@ -171,7 +170,7 @@ function toContextUsage(info) {
 
 function createCodexWatch(deps) {
   const core = deps.core;
-  const sessionsDir = deps.sessionsDir || SESSIONS_DIR; // 测试可注入
+  const sessionsDir = resolveCodexSessionsDir({ sessionsDir: deps.sessionsDir });
   const pollMs = deps.pollMs || POLL_MS;
 
   /** @type {Map<string, object>} file path → tracker */
@@ -276,6 +275,7 @@ function createCodexWatch(deps) {
     t.turnActive = true;
     t.didWorkThisTurn = false;
     t.lastTool = null;
+    t.pendingUserInputCallId = null;
   }
 
   function markWork(t) {
@@ -284,6 +284,7 @@ function createCodexWatch(deps) {
   }
 
   function activeTurnState(t) {
+    if (t.pendingUserInputCallId) return 'notification';
     return t.didWorkThisTurn ? 'working' : 'thinking';
   }
 
@@ -318,6 +319,11 @@ function createCodexWatch(deps) {
     if (type === 'response_item') {
       const pt = p.type;
       if (pt === 'function_call' || pt === 'custom_tool_call') {
+        if (p.name === 'request_user_input') {
+          t.pendingUserInputCallId = p.call_id || true;
+          update(t, 'notification', 'Notification', { notificationType: 'request_user_input' });
+          return;
+        }
         markWork(t);
         t.lastTool = mapTool(p.name);
         update(t, 'working', 'PreToolUse', { toolName: t.lastTool });
@@ -326,6 +332,13 @@ function createCodexWatch(deps) {
         t.lastTool = 'WebSearch';
         update(t, 'working', 'PreToolUse', { toolName: 'WebSearch' });
       } else if (pt === 'function_call_output' || pt === 'custom_tool_call_output') {
+        if (t.pendingUserInputCallId) {
+          if (t.pendingUserInputCallId === true || p.call_id === t.pendingUserInputCallId) {
+            t.pendingUserInputCallId = null;
+            update(t, activeTurnState(t), 'ElicitationResult');
+          }
+          return;
+        }
         markWork(t); // watcher 若在工具执行中恢复，只有 output 也足以确认本轮已开工
         update(t, 'working', 'PostToolUse', { toolName: t.lastTool || null });
       } else if (pt === 'reasoning') {
@@ -375,12 +388,14 @@ function createCodexWatch(deps) {
         update(t, 'attention', 'Stop', extra);
         t.turnActive = false;
         t.didWorkThisTurn = false;
+        t.pendingUserInputCallId = null;
         break;
       }
       case 'turn_aborted':
         update(t, 'idle', 'TurnAborted');
         t.turnActive = false;
         t.didWorkThisTurn = false;
+        t.pendingUserInputCallId = null;
         break;
       case 'context_compacted':
         // 同 'compacted'：长操作要自报长 TTL，别用 20s 的默认值。
@@ -421,7 +436,7 @@ function createCodexWatch(deps) {
       default:
         // 授权/追问类事件（TUI 的 on-request 审批等；名字随版本演进，按后缀匹配）
         if (/approval_request$/.test(et) || et === 'request_user_input' || et === 'elicitation_request') {
-          update(t, 'notification', 'Notification');
+          update(t, 'notification', 'Notification', { notificationType: et });
         }
         break;
     }
@@ -458,6 +473,7 @@ function createCodexWatch(deps) {
 
     let title = null;
     let contextUsage = null;
+    let state = 'idle';
     const start = Math.max(0, size - TAIL_PROBE_BYTES);
     const tail = readBytes(t.fp, start, size - start);
     if (tail) {
@@ -465,9 +481,38 @@ function createCodexWatch(deps) {
       if (start > 0) lines.shift(); // 掐头（可能是半行）
       for (const line of lines) {
         const obj = parseLine(line);
-        if (!obj || obj.type !== 'event_msg') continue;
+        if (!obj) continue;
         const p = obj.payload || {};
+        if (obj.type === 'response_item') {
+          if ((p.type === 'function_call' || p.type === 'custom_tool_call') && p.name === 'request_user_input') {
+            t.pendingUserInputCallId = p.call_id || true;
+            state = 'notification';
+            continue;
+          }
+          if (t.pendingUserInputCallId && (p.type === 'function_call_output' || p.type === 'custom_tool_call_output')) {
+            if (t.pendingUserInputCallId === true || p.call_id === t.pendingUserInputCallId) {
+              t.pendingUserInputCallId = null;
+              state = 'working';
+            }
+            continue;
+          }
+          if (p.type === 'function_call' || p.type === 'custom_tool_call' || p.type === 'web_search_call'
+            || p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
+            state = 'working';
+          }
+          continue;
+        }
+        if (obj.type !== 'event_msg') continue;
         if (p.type === 'user_message' && !title) title = promptTitle(String(p.message || ''));
+        if (p.type === 'user_message' || p.type === 'task_started') {
+          t.pendingUserInputCallId = null;
+          state = 'thinking';
+        }
+        if (p.type === 'task_complete' || p.type === 'turn_aborted') {
+          t.pendingUserInputCallId = null;
+          state = 'idle';
+        }
+        if (p.type === 'patch_apply_end' || p.type === 'mcp_tool_call_end' || p.type === 'web_search_end') state = 'working';
         if (p.type === 'token_count') {
           const cu = toContextUsage(p.info);
           if (cu) contextUsage = cu;
@@ -484,10 +529,13 @@ function createCodexWatch(deps) {
       originator: t.originator || null,
       sourcePid: null,
       headless: false,
+      state,
       createdAt: mtimeMs,
       updatedAt: mtimeMs,
     });
     t.titleSet = !!title;
+    t.turnActive = state === 'thinking' || state === 'working' || state === 'notification';
+    t.didWorkThisTurn = state === 'working';
   }
 
   // “掠夺”要拿的是用户最近的 Codex 会话，而不是仅限 30 分钟内仍活跃的
@@ -563,6 +611,7 @@ function createCodexWatch(deps) {
       fp, sid: null, offset: cursor ? cursor.offset : 0, carry: cursor ? cursor.carry : '',
       ignored: false, sawMeta: false, cwd: null, model: null, lastTool: null,
       lastAgentMessage: null, titleSet: false, turnActive: false, didWorkThisTurn: false,
+      pendingUserInputCallId: null,
     };
   }
 

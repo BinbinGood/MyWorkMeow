@@ -45,14 +45,9 @@ const adapter = require('./backend/adapter');
 const hooks = require('./backend/hooks');
 const { focusSession } = require('./backend/focus');
 const { createCodexWatch } = require('./backend/codex-watch');
+const { resolveCodexSessionsDir } = require('./backend/codex-cli-resolver');
 const { createTraeWatch } = require('./backend/trae-watch');
 const { createCodexMetering } = require('./backend/codex-metering');
-const { createCodexRateLimits, unavailableState: unavailableCodexQuota } = require('./backend/codex-rate-limits');
-const { createWeeklyQuotaEstimator } = require('./backend/codex-quota-estimate');
-const weeklyQuotaEstimator = createWeeklyQuotaEstimator({
-  statePath: require('./backend/paths').statePath('codex-quota-calibration.json'),
-});
-const codexQuotaTray = require('./backend/codex-quota-tray');
 const { createWorkbuddyMetering } = require('./backend/workbuddy-metering');
 const { createTitles: createWorkbuddyTitles } = require('./backend/workbuddy-titles');
 const { createWorkbuddyCompactWatch } = require('./backend/workbuddy-compact-watch');
@@ -173,8 +168,6 @@ let traeWatch = null;   // TRAE SOLO CN 日志只读监听器
 // 会话状态机日志里捞。见 backend/workbuddy-compact-watch.js 顶部的实证说明。
 let workbuddyCompactWatch = null;
 let codexMetering = null; // Codex rollout 累计 token 台账（与状态 watcher 解耦）
-let codexRateLimits = null; // Codex App Server 订阅额度（独立于 rollout token 台账）
-let codexQuotaState = unavailableCodexQuota('idle');
 let workbuddyMetering = null; // WorkBuddy 转录 token 台账（只读，从 ~/.workbuddy/projects 扫描）
 let traeMetering = null; // TRAE agent 日志 token 台账（只读，从 Trae CN logs 扫描）
 let opencodeMetering = null; // opencode 用量台账（只读，tail ~/.workmeow/opencode-usage.jsonl）
@@ -209,8 +202,6 @@ let statsTimer = null;
 let trayTimer = null;
 let emitDebounce = null;
 const recentOps = []; // ring for the panel "操作流"; newest first, capped
-const pendingQuotaAlerts = new Map();
-let quotaAlertTimer = null;
 
 // ── window geometry ───────────────────────────────────────────────────────────
   // 帧**宽**由渲染端按内容给（静息胶囊的内蕴宽度，或打开的弹窗宽度），这样两种
@@ -539,7 +530,6 @@ function makePetWindow(agent) {
   win.webContents.on('did-finish-load', () => {
     sendWin(win, IPC.XIABAN_SCHEDULE, getXiabanSchedule());
     if (core) sendWin(win, IPC.PET_STATS, buildStats(st.agent));
-    deliverQuotaAlerts(win);
   });
   return win;
 }
@@ -649,9 +639,9 @@ function watcherHealth(watcher) {
 }
 
 function codexDetected() {
-  const configured = env.value('CODEX_DIR');
+  const sessionsDir = resolveCodexSessionsDir({ sessionsDir: env.value('CODEX_DIR') });
   try {
-    return configured ? fs.existsSync(configured) : fs.existsSync(path.join(os.homedir(), '.codex'));
+    return fs.existsSync(sessionsDir);
   } catch { return false; }
 }
 
@@ -722,7 +712,6 @@ function showPet() {
   if (!mergedWin || mergedWin.isDestroyed()) reconcilePets();
   if (mergedWin && !mergedWin.isDestroyed()) {
     mergedWin.show();
-    deliverQuotaAlerts(mergedWin);
   }
   refreshTrayMenu();
 }
@@ -867,44 +856,6 @@ function sendPetEvent(ev) {
   sendPet(IPC.PET_EVENT, privacy.protectEvent(ev, config.get().privacyMode === true));
 }
 
-function quotaAlertEvent(alert) {
-  const remaining = codexQuotaTray.percentText(alert);
-  const reset = codexQuotaTray.resetText(alert, alert.kind);
-  const key = alert.kind === 'weekly' ? 'quota.alertWeekly' : 'quota.alertFiveHour';
-  return {
-    kind: 'quota-alert',
-    text: t(key, { remaining, reset }),
-    agent: 'codex',
-    ts: Date.now(),
-  };
-}
-
-function deliverQuotaAlerts(targetWin = null) {
-  if (quotaAlertTimer) clearTimeout(quotaAlertTimer);
-  quotaAlertTimer = null;
-  const alerts = [...pendingQuotaAlerts.values()];
-  if (!alerts.length) return;
-  const events = alerts.map(quotaAlertEvent);
-  const event = privacy.protectEvent({
-    ...events[0],
-    text: events.map((item) => item.text).join('\n'),
-    quotaAlerts: events.map((item, index) => ({ id: alerts[index].alertId, text: item.text })),
-  }, config.get().privacyMode === true);
-  const win = targetWin || firstAlivePetWin();
-  const loading = win && win.webContents && typeof win.webContents.isLoadingMainFrame === 'function'
-    ? win.webContents.isLoadingMainFrame()
-    : !win;
-  if (win && !loading) sendWin(win, IPC.PET_EVENT, event);
-}
-
-function showQuotaAlert(alert) {
-  if (!alert || typeof alert.alertId !== 'string' || !alert.alertId) return;
-  pendingQuotaAlerts.set(alert.alertId, alert);
-  if (quotaAlertTimer) return;
-  quotaAlertTimer = setTimeout(deliverQuotaAlerts, 80);
-  if (quotaAlertTimer.unref) quotaAlertTimer.unref();
-}
-
 // 没有计量数据源的工具（未来工具）用的空台账
 function emptyMeter() {
   return {
@@ -982,26 +933,8 @@ function buildStats(agent = 'all', snapshot = null, cachedMeter = null) {
     usageProvider: 'all',
   });
   stats.chipDisplay = getChipDisplay();
-  // 底部展示栏每个**检测到**的 Agent 一个额度徽标，显不显示由 chipDisplay.quotaAgents
-  // 逐个控制（以前是一个会动态改名的「额度槽位」，见 config.js quotaAgents 的说明）。
+  // 底部展示栏只给提供额度的 Agent 画徽标；其余 Agent 仍在托盘显示用量。
   stats.quotaAgents = trayAgents();
-  const quotaWindows = codexQuotaState.windows || {};
-  const quotaAccount = codexQuotaState.account && typeof codexQuotaState.account === 'object'
-    ? {
-      type: codexQuotaState.account.type || null,
-      planType: codexQuotaState.account.planType || null,
-    }
-    : null;
-  stats.codexQuota = {
-    windows: quotaWindows,
-    status: codexQuotaState.status,
-    statusText: quotaStatusLabel(codexQuotaState),
-    updatedAt: codexQuotaState.updatedAt,
-    account: quotaAccount,
-    estimate: weeklyQuotaEstimator.observe({
-      quotaHistory: codexMetering ? codexMetering.getQuotaHistory() : [],
-    }, codexQuotaState),
-  };
   return privacy.protectStats(stats, config.get().privacyMode === true);
 }
 
@@ -1038,7 +971,7 @@ function scheduleEmit() {
 }
 
 function bootBackend() {
-  const codexDir = env.value('CODEX_DIR') || undefined;
+  const codexDir = resolveCodexSessionsDir({ sessionsDir: env.value('CODEX_DIR') });
   core = createCore({
     onActivity: (act) => {
       for (const ev of adapter.activityToEvents(act)) { recordOp(ev); sendPetEvent(ev); }
@@ -1069,28 +1002,6 @@ function bootBackend() {
     });
     codexWatch.start();
 
-    if (!env.flag('NO_NET')) {
-      // One official, long-lived App Server owns Codex authentication and emits
-      // rate-limit updates. No auth.json or ChatGPT web endpoint is read here.
-      codexRateLimits = createCodexRateLimits({
-        version: require('./package.json').version,
-        onUpdate: (next) => {
-          codexQuotaState = next;
-          refreshTrayMenu();
-          // Pair a fresh local ledger with the quota observation. Suppress
-          // older async completions if a newer account/quota update arrives.
-          codexMetering.scan().then(() => {
-            if (codexQuotaState !== next) return;
-            emitStats();
-          }).catch(() => {
-            if (codexQuotaState !== next) return;
-            emitStats();
-          });
-        },
-        onAlert: showQuotaAlert,
-      });
-      codexRateLimits.start();
-    }
   }
 
   metering = createMetering();
@@ -1516,15 +1427,7 @@ function registerIpc() {
     w.blur();
     releaseClickThrough(st);
   });
-  ipcMain.on(IPC.QUOTA_ALERT_SHOWN, (e, alertIds) => {
-    const st = stateOfSender(e.sender);
-    if (!st || !codexRateLimits || typeof codexRateLimits.acknowledgeAlert !== 'function') return;
-    const ids = Array.isArray(alertIds) ? alertIds : [alertIds];
-    for (const alertId of ids) {
-      if (typeof alertId !== 'string' || !pendingQuotaAlerts.has(alertId)) continue;
-      if (codexRateLimits.acknowledgeAlert(alertId)) pendingQuotaAlerts.delete(alertId);
-    }
-  });
+  ipcMain.on(IPC.QUOTA_ALERT_SHOWN, () => {});
 
   // Click-through: the renderer hit-tests the cursor and toggles this so the
   // transparent parts of the pet window let clicks reach apps behind it.
@@ -1841,18 +1744,8 @@ function setCreditQuota(payload) {
   return { ok: true, agents: trayAgents() };
 }
 
-function quotaStatusLabel(quota) {
-  if (quota.status === 'ready') return t('tray.quotaStatusReady');
-  if (quota.status === 'connecting') return t('tray.quotaStatusConnecting');
-  if (quota.error === 'codex-not-found') return t('tray.quotaStatusCodexMissing');
-  if (quota.error === 'not-signed-in') return t('tray.quotaStatusSignedOut');
-  if (quota.error === 'chatgpt-account-required') return t('tray.quotaStatusChatgptRequired');
-  return t('tray.quotaStatusUnavailable');
-}
-
 // 缓存「哪些工具被检测到」，但**不**缓存用量数字 —— 用量是内存里的现成结果，
-// 取一次几乎零成本，而集成检测要读若干配置文件。托盘的刷新触发点包含 Codex
-// 额度的每次状态变化，没必要每次都去摸一遍磁盘。
+// 取一次几乎零成本，而集成检测要读若干配置文件。
 const DETECTED_TTL_MS = 15000;
 let detectedCache = { at: 0, ids: new Set() };
 
@@ -1876,17 +1769,14 @@ function detectedSourceIds() {
 //   · 检测到就算「有效」—— 不再按「今天有没有用量」过滤，位置从此固定
 //   · 顺序固定按注册表，不排序 —— 行不会跳来跳去
 //   · 不截断 —— 有几个显示几个
-//   · 不再有「额度槽位归谁」这个概念 —— 每个 Agent 显示自己的额度，
-//     所以设置页写 Codex 而托盘写 WorkBuddy 这种东西不会再出现
+//   · 不再有「额度槽位归谁」这个概念 —— 有额度的 Agent 显示自己的额度
 //
 // 剩余额度由用户手填的每期总量减去本机已用得出 —— WorkBuddy 的余额只在服务端，
 // 本机拿不到（详见交接报告「第四轮」），所以只能这样反推。
-// Codex 的额度是它自己的接口给的，不需要手填。
 function trayAgentRows() {
   const meters = meterStats();
   const detected = detectedSourceIds();
   const quota = config.get().creditQuota || {};
-  const codexQuota = codexQuotaBundle();
   return withSourceValues(meters).map(({ id, label, value }) => {
     const today = (value && value.today) || {};
     const lifetime = (value && value.lifetime) || {};
@@ -1905,10 +1795,8 @@ function trayAgentRows() {
       credit: today.credit,
       lifetimeTokens: lifetime.tokens,
       lifetimeCredit: lifetime.credit,
-      quota: id === 'codex'
-        ? codexQuota
-        : supportsCreditQuota(id)
-          ? {
+      quota: supportsCreditQuota(id)
+        ? {
             kind: 'credit',
             ready: !!configured,
             remaining: cycle ? creditCycle.remainingQuota(configured.monthly, cycle.used) : null,
@@ -1917,30 +1805,10 @@ function trayAgentRows() {
             monthly: configured ? configured.monthly : null,
             resetDay: configured ? configured.resetDay : null,
             cycleStart: cycle ? cycle.startKey : null,
-          }
-          : null,
+        }
+        : null,
     };
   });
-}
-
-// Codex 的额度包。注意「检测到但额度没到手」也要返回 —— 有效 Agent 必须在
-// 托盘/设置页各占一格，不能因为暂时没数字就整格消失（这是之前最容易看出的
-// 不一致：设置页写着 Codex，托盘里却什么都找不到）。
-function codexQuotaBundle() {
-  if (!codexDetected()) return null;
-  const ready = codexQuotaState.status === 'ready';
-  const windows = codexQuotaState.windows || {};
-  return {
-    kind: 'codex',
-    ready,
-    status: ready ? null : quotaStatusLabel(codexQuotaState),
-    // 托盘一行只要 `5h 82%` 这样的压缩片段；完整形态渲染端本来就有 stats.codexQuota
-    windows: ready
-      ? [['fiveHour', '5h'], ['weekly', '7d']]
-        .map(([key, label]) => ({ label, percent: Number(windows[key] && windows[key].remainingPercent) }))
-        .filter((w) => Number.isFinite(w.percent))
-      : [],
-  };
 }
 
 // 「托盘弹出菜单要不要显示这个 Agent 那一行」。缺省放行，只有显式 false 才关。
@@ -2044,9 +1912,7 @@ if (!gotTheLock) {
 app.on('window-all-closed', () => { /* tray app: stay alive */ });
 
 app.on('before-quit', () => {
-  try { if (quotaAlertTimer) clearTimeout(quotaAlertTimer); } catch {}
   try { if (codexWatch) codexWatch.stop(); } catch {}
-  try { if (codexRateLimits) codexRateLimits.stop(); } catch {}
   try { if (traeWatch) traeWatch.stop(); } catch {}
   try { if (workbuddyCompactWatch) workbuddyCompactWatch.stop(); } catch {}
   try { if (stopWatcher) stopWatcher(); } catch {}

@@ -149,6 +149,10 @@ async function main() {
     assert(cat.classList.contains('talking'));
     w.handlers.event({ kind: 'needsinput', project: 'p' });
     check('needsinput 事件即时生效', () => assert(cat.classList.contains('needsinput')));
+    check('待确认请求显示等你回复气泡', () => {
+      assert(w.elements('bubble-text').textContent.includes('等你回复'));
+      assert(!w.elements('bubble').classList.contains('hidden'));
+    });
     w.handlers.stats(baseStats({ needsinputCount: 1, workingCount: 1 }));
     check('下个快照 talking 不复活（transient 已清）', () => assert(cat.classList.contains('needsinput')));
   }

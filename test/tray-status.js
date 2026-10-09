@@ -200,6 +200,15 @@ const codexPending = tray.buildStatusRows({
 assert(/Codex/.test(flat(codexPending)), 'a detected-but-unready Codex still gets its line');
 assertTranslated(codexPending, 'the pending Codex line renders');
 
+const codexUsageOnly = tray.buildStatusRows({
+  agents: [{ id: 'codex', label: 'Codex', detected: true, tokens: 1234, cost: 0.42, quota: null }],
+  t,
+});
+assert(/Token/.test(flat(codexUsageOnly)) && /费用/.test(flat(codexUsageOnly)),
+  'usage-only Codex still shows tokens and cost');
+assert(!/额度|未找到|5h|7d/.test(flat(codexUsageOnly)),
+  'usage-only Codex does not show quota or a missing CLI warning');
+
 // 多个 Agent 之间插分隔线 —— 折行之后光看行首不容易分辨归属
 const two = tray.buildStatusRows({
   agents: [

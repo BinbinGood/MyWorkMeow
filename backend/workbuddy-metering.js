@@ -218,7 +218,10 @@ function emptyDay() {
 }
 
 function addUsage(target, delta, messageDelta = 0) {
-  for (const key of Object.keys(emptyUsage())) target[key] = num(target[key]) + num(delta[key]);
+  for (const key of Object.keys(emptyUsage())) {
+    const value = key === 'cost' && Number.isFinite(delta.cost) ? delta.cost : num(delta[key]);
+    target[key] = num(target[key]) + value;
+  }
   target.msgs = num(target.msgs) + messageDelta;
 }
 
@@ -326,13 +329,21 @@ function createWorkbuddyMetering(options = {}) {
     const key = messageId || `${model}@${ts}`;
     const prev = state.messages[key];
     if (prev && !Object.keys(emptyUsage()).some((field) => num(usage[field]) > num(prev[field]))) return;
+    if (prev) {
+      usage = { ...usage };
+      for (const field of Object.keys(emptyUsage())) usage[field] = Math.max(num(usage[field]), num(prev[field]));
+      ts = prev.ts || ts;
+      model = prev.model || model;
+    }
     const delta = prev ? subUsage(usage, prev) : usage;
     // A provider can revise the cache/reasoning breakdown without changing the
     // reported total. Keep those component corrections instead of dropping the
     // row solely because delta.tokens is zero.
     if (!Object.keys(emptyUsage()).some((field) => num(delta[field]) > 0)) return;
     const p = priceForInstance(model);
-    const cost = p ? usageCost(delta, p) : 0;
+    const totalCost = p ? usageCost(usage, p) : 0;
+    const previousCost = prev && Number.isFinite(prev.cost) ? prev.cost : (prev && p ? usageCost(prev, p) : 0);
+    const cost = totalCost - previousCost;
     delta.cost = cost;
 
     const dayK = dayKey(ts);
@@ -355,7 +366,7 @@ function createWorkbuddyMetering(options = {}) {
     const row = (models[modelKey] = models[modelKey] || emptyDay());
     addUsage(row, delta, messageDelta);
 
-    state.messages[key] = { ...usage, ts, model: model || (prev && prev.model) || 'unknown' };
+    state.messages[key] = { ...usage, cost: totalCost, ts, model: model || (prev && prev.model) || 'unknown' };
     state.diagnostics.events++;
   }
 

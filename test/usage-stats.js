@@ -14,6 +14,9 @@ assert.strictEqual(merged.cacheRead, 160, 'cache reads are normalized across pro
 assert.strictEqual(merged.cacheWrite5m, 24, 'cache writes are normalized across providers');
 assert.strictEqual(merged.tokens, 489, 'provider token totals are not double-counted');
 assert.strictEqual(merged.messages, 4, 'message aliases are kept in sync');
+assert.strictEqual(mergeUsageRows([['claude', {
+  input: 10, output: 2, cacheRead: 3, inputTotal: null,
+}]]).inputTotal, 13, 'null inputTotal does not override the provider components');
 
 const daily = mergeDaily([
   ['claude', { daily: { '2026-08-08': { input: 10, output: 2, cacheRead: 3, tokens: 5, msgs: 1 } } }],

@@ -19,11 +19,12 @@
 > [!IMPORTANT]
 > **这是 [vista-zhangg/WorkMeow](https://github.com/vista-zhangg/WorkMeow) 的 macOS 移植分支，在本仓库独立维护。**
 >
-> 上游原项目仅支持 Windows x64。本分支让它能在 macOS 上运行，范围限定为 **Claude Code 与 WorkBuddy 的状态监控与用量统计**：
+> 上游原项目仅支持 Windows x64。本分支在 macOS 上支持 **Claude Code、WorkBuddy 和 Codex 的状态监控与用量统计**：
 >
 > - ✅ macOS 上跑源码即可监控 Claude Code（EPT CLI、VS Code 扩展、cc-connect 等客户端都走同一份 `~/.claude/settings.json`，装一次 hook 全覆盖）
 > - ✅ WorkBuddy 已在本机做完实测：hook 契约与内核逐字段对齐（离线驱动 5/5 事件全通），用量字段也确实可读（本机实测今日 2152 万 token、累计 2.48 亿）
-> - ➖ Codex / TRAE / opencode 未做 mac 适配，代码保持上游原样
+> - ✅ Codex 本机会话状态与用量支持 `CODEX_HOME` 和 Orca 的 macOS 会话目录（重启 WorkMeow 后生效）；订阅额度查询暂已关闭
+> - ➖ TRAE / opencode 未做 mac 适配，代码保持上游原样
 > - ✅ macOS 本地打包已做：`npm run package:mac` 出一个 arm64 DMG（**ad-hoc 签名、未公证**，首次启动需在系统设置里放行一次；仅 Apple Silicon）
 > - ➖ SSH 远程监控未做；自动更新在 mac 上是**「能查不能自己装」**：设置页会按点查本仓库的 Release 并提示新版本，点「前往下载」打开下载页，替换仍由你手动拖 DMG 完成（不接 electron-updater，见 `backend/updater.js` 的 mac 分支）
 >
@@ -42,11 +43,10 @@
 - **会话名就是你在 WorkBuddy 里看到的任务名**：WorkBuddy 的 hook 载荷不带标题，桌面端会**只读**打开它的会话库（`~/.workbuddy/workbuddy.db` 的 `sessions.title / custom_title`）取任务名，所以列表里显示的是「少样本底盘检测项目」而不是按时间命名的目录名；库读不到时照旧回落到 transcript 标题 / 目录名。
 - **压缩上下文时不会误报完成**：`PreCompact` 会自己带一个更长的存活时长并清掉上一轮的完成徽标（`PostCompact` 收尾），所以压缩几十秒以上时喵仍显示「整理记忆」，不会中途变回「刚完成」。
 - **统一用量面板**：聚合 token、缓存读写、上下文窗口、模型、每日趋势与 API 公价折算。
-- **托盘按接入的 Agent 展示，不再预设 Codex**：菜单顶部给**每一个本机检测到的 Agent** 各一段（不按用量筛选、不排序、不截断），段内是「名称　额度　·　Token　·　费用」拼成的一行，超过宽度上限就在片段边界折行，续行悬挂缩进；Agent 之间用分隔线隔开。暂时没有数字的 Agent 也保留整段，写成状态文字（例如「未找到 Codex，正在自动重试」「积分未设置每期总量」），不会让行忽有忽无。
-- **无需打开 Codex 即可查额度**：装了 Codex 时自动发现桌面 Codex 自带的 CLI；缺失窗口明确显示 `--`，无需手动配置。
+- **托盘按接入的 Agent 展示，不再预设 Codex**：菜单顶部给**每一个本机检测到的 Agent** 各一段（不按用量筛选、不排序、不截断），按可用数据拼接额度、Token、费用，Codex 与 Claude Code 只显示本地用量。没有数字的 Agent 仍保留一行「暂无数据」。
 - **接入自检与修复**：在设置中核对五个 Agent 的 Hook、插件或只读监听状态，可一键修复或卸载 WorkMeow 接入。
 - **一键隐私模式**：右键打工喵通过 ON/OFF 快速切换，也可在设置中控制；隐藏敏感明细但保留必要状态和用量。
-- **本地优先**：会话与统计数据留在本机；公共价格由 models.dev 提供，订阅额度由 Codex 自己认证并读取。
+- **本地优先**：会话与统计数据留在本机；公共价格由 models.dev 提供；不查询 Codex 订阅额度。
 - **轻量桌面交互**：拖动、贴边、工作速览、行动中心、系统托盘、开机启动（Windows / macOS）和下班彩蛋。
 
 ## 真实状态示例
@@ -85,7 +85,7 @@ WorkMeow 只把处理后的副本保存在当前用户的 `~/.workmeow/pet-asset
 | Agent | 接入方式 | 是否修改外部配置 | 桌宠内授权 | macOS |
 | --- | --- | --- | --- | --- |
 | Claude Code | `hook/workmeow-hook.js` 生命周期 hook、transcript、进程信息 | 合并安装/卸载 WorkMeow hook，不覆盖已有 hook | 支持 | ✅ 已实测 |
-| Codex | 增量读取本机 rollout JSONL；官方 App Server 订阅额度通知 | 不修改 Codex 配置、不读取凭据文件 | 只读提醒 | ➖ 未适配 |
+| Codex | 增量读取本机 rollout JSONL | 不修改 Codex 配置、不读取凭据文件 | 只读提醒 | ✅ 会话状态与用量（不查额度） |
 | TRAE | 读取本机 IDE 日志与进程信息 | 仅在检测到 TRAE 后合并安装 hook | 只读提醒 | ➖ 未适配 |
 | WorkBuddy | hook、transcript、用量与 credit 字段、只读会话标题库（`workbuddy.db`） | 仅在检测到 WorkBuddy 后合并安装 hook（含阻塞式 `PermissionRequest`） | 支持（授权 + 选择题） | ✅ 状态 + 用量 + 积分 + 任务名已实测；授权通道桌宠侧已实测 |
 | opencode | 官方插件机制、事件与用量文件 | 安装/卸载一个独立插件文件 | 只读提醒 | ➖ 未适配 |
@@ -156,7 +156,8 @@ Windows 侧行为与上游一致，安装包请到[上游 Releases](https://gith
 - Claude Code、Codex、TRAE、WorkBuddy 与 opencode 的会话数据只在本机读取和处理。
 - 本地 HTTP 服务只监听 loopback，写接口要求每次运行随机生成的令牌。
 - models.dev 同步只下载公开价目表，不上传 transcript、rollout、权限内容或统计数据。
-- Codex 额度通过一个长生命周期的 `codex app-server --stdio` 连接读取；WorkMeow 会先用 `account/read` 确认当前账户，再读取额度并监听更新。认证与上游请求均由 Codex 负责；WorkMeow 不读取 `~/.codex/auth.json` 的内容，也不访问 ChatGPT 网页接口。文件认证下，`auth.json` 被替换会触发立即重连；keyring / auto / ephemeral 没有可监听的文件事件，账户切换依赖 App Server 的账户通知、周期性 `account/read` 和定期重建连接收敛。因此界面表示的是 WorkMeow 自己这条 App Server 连接当前可见的账户，不承诺另一进程中的非文件认证切换能被文件 watcher 即时发现。
+- Codex 只读取本地 rollout 的状态与用量；不会启动 Codex App Server，也不查询或展示订阅额度。
+- Codex 在 rollout 中发出待确认请求时，喵会显示通用的「等你回复」气泡；请回到 Codex 完成确认。喵不会展示待执行命令，也不会代替 Codex 同意执行。
 - 右键打工喵或在设置中开启「隐私模式」只会遮蔽屏幕展示；监控与用量统计继续在本机运行，关闭后未处理事项自动恢复。
 - 面板费用是按公开 API 单价折算的估计值，不等同于订阅账单或厂商最终结算。
 
@@ -170,7 +171,6 @@ Codex rollout ───┼──> local server / watcher ──> adapter / core 
 TRAE 日志 ───────┤                                  └────────────> 统一用量台账
 WorkBuddy ───────┤
 opencode 插件 ───┘
-Codex App Server ───────> 托盘右键菜单（5h / 7d）+ 临界额度气泡
 ```
 
 主进程负责 watcher 生命周期、托盘和窗口；后端状态机聚合多会话；renderer 只接收收敛后的状态与事件协议。状态词汇和优先级由 [`shared/states.js`](shared/states.js) 统一定义。

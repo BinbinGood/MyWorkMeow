@@ -109,10 +109,27 @@ function defaultCodexHome(env = process.env) {
   return env.CODEX_HOME || path.join(os.homedir(), '.codex');
 }
 
+function resolveCodexSessionsDir(options = {}) {
+  const env = options.env || process.env;
+  if (options.sessionsDir) return options.sessionsDir;
+  if (env.CODEX_HOME) return path.join(env.CODEX_HOME, 'sessions');
+
+  const home = options.homeDir || os.homedir();
+  const standard = path.join(home, '.codex', 'sessions');
+  const fsImpl = options.fs || fs;
+  if (fsImpl.existsSync(standard)) return standard;
+  if ((options.platform || process.platform) === 'darwin') {
+    const orca = path.join(home, 'Library', 'Application Support', 'orca', 'codex-runtime-home', 'home', 'sessions');
+    if (fsImpl.existsSync(orca)) return orca;
+  }
+  return standard;
+}
+
 module.exports = {
   desktopNativeCandidates,
   npmNativeCandidates,
   pathDirectories,
   resolveCodexCommand,
   defaultCodexHome,
+  resolveCodexSessionsDir,
 };
